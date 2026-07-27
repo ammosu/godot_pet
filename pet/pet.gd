@@ -38,7 +38,7 @@ const OPENAI_KEY := "OPENAI_API_KEY"
 ## pets/pet_pack.gd for why.
 const PET_GALLERY_URL := "https://codex-pets.net/"
 
-enum MenuId { FALLBACK, GET_PETS, FEED, NUDGES, ROAM, CALIBRATE, RECENTRE, SET_KEY, QUIT }
+enum MenuId { FALLBACK, GET_PETS, FEED, NUDGES, SPEAK, ROAM, CALIBRATE, RECENTRE, SET_KEY, QUIT }
 
 @onready var _window_ctl: WindowController = $WindowController
 @onready var _brain: PetBrain = $Brain
@@ -340,6 +340,9 @@ func _build_menu() -> void:
 	_menu.add_item("餵食", MenuId.FEED)
 	_menu.add_check_item("主動說話", MenuId.NUDGES)
 	_menu.set_item_checked(_menu.get_item_index(MenuId.NUDGES), Nudger.is_enabled())
+	_menu.add_check_item(_voice_label(), MenuId.SPEAK)
+	_menu.set_item_checked(_menu.get_item_index(MenuId.SPEAK), TTSService.is_enabled())
+	_menu.set_item_disabled(_menu.get_item_index(MenuId.SPEAK), not TTSService.is_available())
 	_menu.add_check_item("自由走動", MenuId.ROAM)
 	_menu.set_item_checked(_menu.get_item_index(MenuId.ROAM), _brain.is_roaming())
 	_menu.add_check_item("校準動畫列", MenuId.CALIBRATE)
@@ -383,6 +386,8 @@ func _on_menu_pressed(id: int) -> void:
 			_feed()
 		MenuId.NUDGES:
 			_toggle_nudges()
+		MenuId.SPEAK:
+			_toggle_speech()
 		MenuId.ROAM:
 			_toggle_roaming()
 		MenuId.CALIBRATE:
@@ -430,6 +435,18 @@ func _on_secret_submitted(value: String) -> void:
 func _feed() -> void:
 	PetState.feed()
 	_on_pet_nudged("happy", "謝謝！這個好吃。")
+
+
+## Naming the voice saves adding a whole picker just to see which one is in use.
+func _voice_label() -> String:
+	if not TTSService.is_available():
+		return "說話出聲（這台機器沒有語音）"
+	return "說話出聲（%s）" % TTSService.get_voice_name()
+
+
+func _toggle_speech() -> void:
+	TTSService.set_enabled(not TTSService.is_enabled())
+	_menu.set_item_checked(_menu.get_item_index(MenuId.SPEAK), TTSService.is_enabled())
 
 
 func _toggle_nudges() -> void:

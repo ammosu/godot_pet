@@ -165,6 +165,20 @@ announced in 2025 but still ships only inside Codex tooling; the workarounds in
 circulation impersonate the Codex CLI's OAuth client to spend ChatGPT
 subscription entitlement, which this project does not do.
 
+### Speech
+
+`autoload/tts_service.gd` uses `DisplayServer.tts_speak()` — the OS voices, so
+no API and no cost. Sentences are spoken as they stream in rather than after the
+reply completes; `tts_speak` queues rather than interrupting, so consecutive
+sentences run together on their own.
+
+Voice languages are reported as BCP 47 with a **hyphen** (`zh-TW`), while
+`OS.get_locale()` uses an underscore (`zh_TW`), and
+`tts_get_voices_for_language()` matches on a plain prefix. An underscore
+silently matches nothing and the fallback then picks whichever voice happens to
+be first in a 180-entry list — which will read Chinese in an English voice on
+most machines.
+
 ### Needs and unprompted speech
 
 All four needs are modelled as "higher is better" (`fullness`, not hunger) so a

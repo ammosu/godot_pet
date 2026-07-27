@@ -19,6 +19,11 @@ EventBus="*res://autoload/event_bus.gd"
 PetState="*res://autoload/pet_state.gd"
 LLMService="*res://autoload/llm_service.gd"
 Nudger="*res://autoload/nudger.gd"
+TTSService="*res://autoload/tts_service.gd"
+
+[audio]
+
+general/text_to_speech=true
 
 [display]
 

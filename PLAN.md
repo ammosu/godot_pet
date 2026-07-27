@@ -233,10 +233,12 @@ var voices := DisplayServer.tts_get_voices_for_language("zh")
 DisplayServer.tts_speak(text, voice_id, 50, 1.2, 1.0, utt_id, true)  # pitch 調高比較像寵物
 DisplayServer.tts_set_utterance_callback(DisplayServer.TTS_UTTERANCE_ENDED, _on_done)
 ```
-- 串流時**按句子**送 TTS（遇到 `。！？\n` 就送一句），不要等全文講完才開口
-- `TTS_UTTERANCE_BOUNDARY` 回呼可拿到字元位置 → 拿來做嘴巴開合同步
+- 串流時**按句子**送 TTS（遇到 `。！？\n` 就送一句），不要等全文講完才開口。沒標點的長句累積到 40 字也會先送，不然會一路沉默到最後
+- `tts_speak` 預設是**排隊**不是插隊，所以一句一句送會自然接續。使用者送新訊息時 `tts_stop()` 打斷
+- **語言代碼是連字號**：Godot 回報 `zh-TW`，但 `OS.get_locale()` 給的是 `zh_TW`。`tts_get_voices_for_language()` 是前綴比對，用底線會**靜默比對不到**然後 fallback 去拿清單第一個聲音 —— 在這台機器上碰巧是中文的 Meijia，換一台就會用英文聲音念中文
+- `TTS_UTTERANCE_BOUNDARY` 回呼可拿到字元位置 → 可拿來做嘴巴開合同步（未做，pixel art 沒有嘴型幀）
 
-**驗收**：回應同時有聲音，講話時嘴巴動，設定裡可關掉。
+**驗收**：回應同時有聲音，選單可關掉，送新訊息會打斷上一句。
 
 ### Phase 8 — 語音輸入（2 天，工程量最大）
 - 專案設定 `audio/driver/enable_input = true`
