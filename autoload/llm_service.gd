@@ -18,10 +18,29 @@ const PROVIDERS := {
 	"openai": "res://llm/providers/openai_provider.gd",
 }
 
+## Replies are asked to open with a tag like "[happy]" naming the pet's mood.
+## It drives the animation and is stripped before the text reaches the bubble.
+##
+## An inline tag rather than tool use, because it costs no extra round-trip and
+## survives streaming: the mood is known from the very first tokens, so the pet
+## reacts before it has finished the sentence.
+const EMOTIONS := ["neutral", "happy", "excited", "sad", "greeting", "sleepy"]
+
+## Give up on finding a tag after this many characters — the model skipped it.
+const TAG_SCAN_LIMIT := 24
+
 var _provider: LLMProvider = null
 var _provider_name := ""
 var _history: Array[Dictionary] = []
 var _persona := ""
+
+## Leading-tag parser state. Text is held back until the tag resolves one way or
+## the other, so a partially-arrived "[hap" never reaches the bubble.
+var _tag_resolved := true
+var _tag_buffer := ""
+## What the bubble actually showed, which is what goes into the history — the
+## model shouldn't have to re-read its own tags.
+var _clean_reply := ""
 
 
 func _ready() -> void:
@@ -75,7 +94,7 @@ func set_provider(name: String) -> void:
 	_provider = script.new()
 	_provider.name = "Provider"
 	add_child(_provider)
-	_provider.chunk_received.connect(EventBus.reply_chunk.emit)
+	_provider.chunk_received.connect(_on_chunk)
 	_provider.finished.connect(_on_finished)
 	_provider.failed.connect(_on_failed)
 
@@ -110,13 +129,64 @@ func _on_user_said(text: String) -> void:
 
 	_history.append({"role": "user", "content": trimmed})
 	_trim_history()
+	_tag_resolved = false
+	_tag_buffer = ""
+	_clean_reply = ""
 	_provider.send(_history.duplicate(true), build_system_prompt())
 
 
 func _on_finished(full_text: String) -> void:
-	_history.append({"role": "assistant", "content": full_text})
+	# Nothing but a tag arrived, or the tag never closed: release what's left.
+	if not _tag_resolved:
+		_release_tag_buffer(_tag_buffer.lstrip(" \n\t"))
+	var reply := _clean_reply if not _clean_reply.is_empty() else full_text
+	_history.append({"role": "assistant", "content": reply})
 	_trim_history()
-	EventBus.reply_finished.emit(full_text)
+	EventBus.reply_finished.emit(reply)
+
+
+# --- Emotion tag --------------------------------------------------------------
+
+func _on_chunk(text: String) -> void:
+	if _tag_resolved:
+		_emit_text(text)
+		return
+
+	_tag_buffer += text
+	var head := _tag_buffer.lstrip(" \n\t")
+	if head.is_empty():
+		# Only whitespace so far — the tag may still be on its way.
+		if _tag_buffer.length() < TAG_SCAN_LIMIT:
+			return
+		_release_tag_buffer("")
+		return
+
+	if not head.begins_with("["):
+		_release_tag_buffer(head)
+		return
+
+	var close := head.find("]")
+	if close < 0:
+		if _tag_buffer.length() > TAG_SCAN_LIMIT:
+			_release_tag_buffer(head)
+		return
+
+	var emotion := head.substr(1, close - 1).strip_edges().to_lower()
+	if EMOTIONS.has(emotion):
+		EventBus.emotion_changed.emit(emotion)
+	_release_tag_buffer(head.substr(close + 1).lstrip(" \n"))
+
+
+func _release_tag_buffer(text: String) -> void:
+	_tag_resolved = true
+	_tag_buffer = ""
+	if not text.is_empty():
+		_emit_text(text)
+
+
+func _emit_text(text: String) -> void:
+	_clean_reply += text
+	EventBus.reply_chunk.emit(text)
 
 
 func _on_failed(message: String) -> void:

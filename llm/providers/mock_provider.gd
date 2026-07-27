@@ -8,13 +8,15 @@ extends LLMProvider
 const THINK_DELAY := Vector2(0.4, 0.9)
 const CHARS_PER_SECOND := 26.0
 
+## Tagged like the real thing, so the emotion parser and the animation wiring
+## get exercised offline too.
 const REPLIES: Array[String] = [
-	"嗯……我在聽喔。今天過得還好嗎？",
-	"欸，你終於想起我了！我剛剛在這邊發呆好久欸。",
-	"這個我知道！大概啦。你要不要再說詳細一點？",
-	"好喔，那我先記著。不過我記性沒有很好，你可能要多提醒我幾次。",
-	"你打字的時候我都有在旁邊看，只是不好意思打擾你。",
-	"我覺得你該休息一下了，桌面都被視窗塞滿了。",
+	"[neutral] 嗯……我在聽喔。今天過得還好嗎？",
+	"[greeting] 欸，你終於想起我了！我剛剛在這邊發呆好久欸。",
+	"[excited] 這個我知道！大概啦。你要不要再說詳細一點？",
+	"[happy] 好喔，那我先記著。不過我記性沒有很好，你可能要多提醒我幾次。",
+	"[sleepy] 你打字的時候我都有在旁邊看，只是不好意思打擾你。",
+	"[sad] 我覺得你該休息一下了，桌面都被視窗塞滿了。",
 ]
 
 var _busy := false
@@ -80,7 +82,7 @@ func _pick_reply(messages: Array) -> String:
 	if not messages.is_empty():
 		last = str(messages[-1].get("content", ""))
 	if last.ends_with("?") or last.ends_with("？"):
-		return "唔……這個問題有點難欸。你先告訴我你自己怎麼想的？"
+		return "[neutral] 唔……這個問題有點難欸。你先告訴我你自己怎麼想的？"
 	if last.length() > 40:
-		return "哇，你講了好多。我大概聽懂了一半，重點是不是「%s」？" % last.substr(0, 12)
+		return "[excited] 哇，你講了好多。我大概聽懂了一半，重點是不是「%s」？" % last.substr(0, 12)
 	return REPLIES[randi() % REPLIES.size()]

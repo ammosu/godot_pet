@@ -171,22 +171,35 @@ Godot 的 `HTTPRequest` 是一次性的，拿不到串流。要串流得用 `HTT
 **驗收**：回應像真的在打字，中途可按 ESC 打斷。
 
 ### Phase 5 — 讓 LLM 驅動動畫（1 天）★ 這步是「活起來」的關鍵
-兩種做法，建議 **A 起步、B 進階**：
+**採用內嵌標記，不用 tool use。** 標記不多花一次 round-trip，而且**跟串流相容** —
+情緒在最前面幾個 token 就知道了，寵物在講完整句話之前就先做出表情。
+tool use 比較可靠，但要嘛多一輪往返、要嘛得在串流裡處理 tool block，對這個用途不划算。
 
-**A. 內嵌標記**（簡單、與串流相容）
-system prompt 要求模型在句首輸出 `[emotion:happy]`，解析後從顯示文字剔除、發 `emotion_changed`。
-缺點：模型偶爾不聽話 → 要有 fallback。
+- system prompt 要求每則回話開頭標 `[happy]` 之類，只能從六個裡挑：
+  `neutral` / `happy` / `excited` / `sad` / `greeting` / `sleepy`
+- `LLMService` 在串流中剝掉標記才送進泡泡；歷史紀錄也存剝掉後的版本
+- 模型不聽話（沒標記、標記沒閉合）→ 掃過 24 字就放棄，整段當內文送出
 
-**B. Tool use**（可靠）
-定義工具給模型：
-```json
-{"name": "express", "input_schema": {"type":"object","properties":{
-  "emotion": {"enum":["neutral","happy","sad","angry","sleepy","excited"]},
-  "action":  {"enum":["none","jump","spin","come_closer","sleep"]}}}}
-```
-模型每次回應先呼叫 `express` 再講話。缺點：多一次 round-trip 或需處理串流中的 tool block。
+**串流解析要小心**：標記可能被切成 `[hap` + `py]` 兩個 chunk。文字要先扣住不送，
+等標記確定成立或確定不存在才放行，否則泡泡會閃過半截標記。
 
-**驗收**：說「你今天好棒」→ 寵物播 happy 動畫再回話。
+**這個 pack 的實際列對映**（原本的猜測錯了三列，而且**沒有睡覺動畫**）：
+
+| 列 | 內容 | 對映 |
+|---|---|---|
+| 0 | 站著眨眼 | idle |
+| 1 | 走路 | walk |
+| 2 | 跑步 | run |
+| 3 | 舉手打招呼 | wave ← greeting |
+| 4 | 張嘴說話 | talk ← neutral |
+| 5 | 大哭抓馬尾 | sad |
+| 6 | 雙手交握閉眼 | sleep（勉強代用）← sleepy |
+| 7 | 法杖蓄力 | excited |
+| 8 | 光球 + 閃光 + 笑 | happy |
+
+列語意每個 pack 都不一樣，所以可在 `user://config.cfg` 用 `[pet_rows]` 逐隻覆寫，不必改程式。
+
+**驗收**：說「哈囉好久不見」→ 模型回 `[greeting]` → 寵物播揮手動畫再講話。
 
 ### Phase 6 — 狀態系統與主動行為（1–2 天）
 - `pet_state.gd`：`hunger` / `energy` / `mood` / `affection`，0–100

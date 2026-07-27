@@ -22,6 +22,16 @@ const SIZE_CHOICES: Array[Dictionary] = [
 ]
 const DEFAULT_SIZE_FACTOR := 0.75
 
+## The mood the model reports -> the animation to play while it talks.
+const EMOTION_STATES := {
+	&"neutral": &"talk",
+	&"happy": &"happy",
+	&"excited": &"excited",
+	&"sad": &"sad",
+	&"greeting": &"wave",
+	&"sleepy": &"sleep",
+}
+
 enum MenuId { FALLBACK, ROAM, CALIBRATE, RECENTRE, QUIT }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -58,14 +68,17 @@ func _ready() -> void:
 
 	_chat.submitted.connect(_on_chat_submitted)
 	_chat.input_toggled.connect(_on_input_toggled)
+	_chat.bubble_hidden.connect(_on_bubble_hidden)
 	EventBus.reply_chunk.connect(_on_reply_chunk)
 	EventBus.reply_finished.connect(_on_reply_finished)
 	EventBus.reply_failed.connect(_on_reply_failed)
+	EventBus.emotion_changed.connect(_on_emotion_changed)
 
 	# Park last: it moves the window, and _on_pet_moved has to be listening for
 	# the chat UI to learn how much of the window ended up on screen.
 	_window_ctl.park_at_default_spot()
 	_brain.setup(_window_ctl)
+
 
 ## Centre the pet in the window and match the display's DPI scale, so it looks
 ## the same physical size on a Retina and a non-Retina screen, then apply the
@@ -230,14 +243,23 @@ func _on_reply_chunk(text: String) -> void:
 	_chat.append_reply(text)
 
 
+## Hold the mood for the whole reply; it reads better than flicking back to a
+## neutral talking loop halfway through a sentence.
+func _on_emotion_changed(emotion: String) -> void:
+	_visual.play_state(EMOTION_STATES.get(StringName(emotion), &"talk"))
+
+
 func _on_reply_finished(_full_text: String) -> void:
 	_chat.end_reply()
-	if not _chat.is_input_open():
-		_brain.on_talk_ended()
 
 
 func _on_reply_failed(message: String) -> void:
 	_chat.show_notice("（我剛剛斷線了：%s）" % message)
+
+
+## Wait for the bubble to clear rather than for the stream to end — the text is
+## still typing itself out for a while after the last token lands.
+func _on_bubble_hidden() -> void:
 	if not _chat.is_input_open():
 		_brain.on_talk_ended()
 

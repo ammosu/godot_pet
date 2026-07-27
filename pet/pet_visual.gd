@@ -7,19 +7,27 @@ class_name PetVisual
 
 ## Logical state -> spritesheet row.
 ##
-## The format doesn't declare row semantics and the two ecosystems that use it
-## disagree, so this is a best guess read off a real sheet. Use the calibration
-## mode (right-click menu) to check a given pet and correct the mapping.
+## The format declares no row semantics and the two ecosystems that use it
+## disagree, so this is read off a real sheet rather than from any spec. Rows 0-5
+## are consistent enough to rely on; 6-8 are whatever the artist felt like, and
+## no pack seen so far has a genuine sleep animation.
+##
+## Correct it per pet without touching code by adding to user://config.cfg:
+##     [pet_rows]
+##     frieren-maplestory={"happy": 6, "sleep": 4}
+## Use the calibration mode in the right-click menu to see which row is which.
 const DEFAULT_STATE_ROWS := {
 	&"idle": 0,
 	&"walk": 1,
 	&"run": 2,
 	&"wave": 3,
-	&"sleep": 4,
+	&"talk": 4,
 	&"sad": 5,
-	&"talk": 6,
-	&"happy": 7,
-	&"special": 8,
+	## Nothing sleeps in these packs; row 6 is usually the calmest, eyes-closed
+	## loop, which is the closest stand-in.
+	&"sleep": 6,
+	&"excited": 7,
+	&"happy": 8,
 }
 
 ## Padding added around the character's bounding box when building the hit region.
@@ -65,6 +73,11 @@ func load_pack(pack: PetPack) -> void:
 		_fallback.visible = true
 		_hit_polygon = _fallback.get_hit_polygon()
 		return
+
+	_state_rows = DEFAULT_STATE_ROWS.duplicate()
+	var overrides: Dictionary = Config.get_value("pet_rows", pack.id, {})
+	for state in overrides:
+		_state_rows[StringName(state)] = int(overrides[state])
 
 	_sprite.sprite_frames = pack.frames
 	# Measure the resting pose, not the whole sheet. Action frames fling limbs and

@@ -10,6 +10,8 @@ class_name ChatPanel
 
 signal submitted(text: String)
 signal input_toggled(open: bool)
+## The line finished being read and faded away.
+signal bubble_hidden
 
 ## Design-unit sizes; everything is multiplied by the display scale.
 const BUBBLE_MAX_WIDTH := 260.0
@@ -171,9 +173,12 @@ func show_notice(message: String) -> void:
 
 
 func hide_bubble() -> void:
+	if not _bubble.visible:
+		return
 	_kill_fade()
 	_streaming = false
 	_bubble.visible = false
+	bubble_hidden.emit()
 
 
 func is_showing() -> bool:
