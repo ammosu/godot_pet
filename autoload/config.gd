@@ -8,12 +8,57 @@ extends Node
 const PATH := "user://config.cfg"
 
 var _file := ConfigFile.new()
+var _dotenv := {}
 
 
 func _ready() -> void:
 	var err := _file.load(PATH)
 	if err != OK and err != ERR_FILE_NOT_FOUND:
 		push_warning("Config: failed to load %s (%d)" % [PATH, err])
+	_load_dotenv()
+
+
+## API keys and the like. Never log the result.
+##
+## Order: the real environment first (so a key exported in the shell always
+## wins), then a .env file, then the saved config.
+func get_secret(key: String) -> String:
+	var value := OS.get_environment(key)
+	if not value.is_empty():
+		return value
+	if _dotenv.has(key):
+		return str(_dotenv[key])
+	return str(_file.get_value("secrets", key, ""))
+
+
+func has_secret(key: String) -> bool:
+	return not get_secret(key).is_empty()
+
+
+func set_secret(key: String, value: String) -> void:
+	set_value("secrets", key, value)
+
+
+## `.env` beside the project while developing, or beside the executable once
+## exported. Godot doesn't do this for us.
+func _load_dotenv() -> void:
+	var paths := ["res://.env", OS.get_executable_path().get_base_dir().path_join(".env")]
+	for path in paths:
+		var text := FileAccess.get_file_as_string(path)
+		if text.is_empty():
+			continue
+		for line in text.split("\n", false):
+			var entry := line.strip_edges()
+			if entry.is_empty() or entry.begins_with("#"):
+				continue
+			entry = entry.trim_prefix("export ").strip_edges()
+			var split := entry.split("=", true, 1)
+			if split.size() != 2:
+				continue
+			var value := split[1].strip_edges()
+			if value.length() >= 2 and (value.begins_with("\"") or value.begins_with("'")):
+				value = value.substr(1, value.length() - 2)
+			_dotenv[split[0].strip_edges()] = value
 
 
 func get_value(section: String, key: String, default: Variant = null) -> Variant:

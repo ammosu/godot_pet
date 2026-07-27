@@ -1,10 +1,11 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene load_steps=7 format=3]
 
 [ext_resource type="Script" path="res://pet/pet.gd" id="1_pet"]
 [ext_resource type="Script" path="res://pet/window_controller.gd" id="2_window"]
 [ext_resource type="Script" path="res://pet/pet_brain.gd" id="3_brain"]
 [ext_resource type="Script" path="res://pet/pet_visual.gd" id="4_visual"]
 [ext_resource type="Script" path="res://pet/fallback_blob.gd" id="5_blob"]
+[ext_resource type="Script" path="res://ui/chat_panel.gd" id="6_chat"]
 
 [node name="Pet" type="Node2D"]
 script = ExtResource("1_pet")
@@ -16,7 +17,7 @@ script = ExtResource("2_window")
 script = ExtResource("3_brain")
 
 [node name="Visual" type="Node2D" parent="."]
-position = Vector2(160, 160)
+position = Vector2(180, 300)
 script = ExtResource("4_visual")
 
 [node name="Sprite" type="AnimatedSprite2D" parent="Visual"]
@@ -32,5 +33,22 @@ offset_top = -140.0
 offset_right = 90.0
 offset_bottom = -114.0
 horizontal_alignment = 1
+
+[node name="Chat" type="Control" parent="."]
+mouse_filter = 2
+script = ExtResource("6_chat")
+
+[node name="Bubble" type="PanelContainer" parent="Chat"]
+visible = false
+
+[node name="Text" type="RichTextLabel" parent="Chat/Bubble"]
+bbcode_enabled = true
+fit_content = true
+scroll_active = false
+autowrap_mode = 2
+
+[node name="Input" type="LineEdit" parent="Chat"]
+visible = false
+placeholder_text = "跟我說說話…"
 
 [node name="Menu" type="PopupMenu" parent="."]

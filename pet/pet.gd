@@ -6,9 +6,11 @@ extends Node2D
 ## How far the mouse must travel before a click counts as a drag.
 const DRAG_THRESHOLD := 4.0
 
-## Menu ids above these offsets select an installed pet pack / a body size.
+## Menu ids above these offsets select an installed pet pack / a body size /
+## an LLM backend.
 const PET_ID_BASE := 100
 const SIZE_BASE := 200
+const PROVIDER_BASE := 300
 
 ## Multipliers on the display scale. Pixel art prefers integers, but on a 2x
 ## display the odd ones land on a whole physical pixel often enough to look fine.
@@ -25,6 +27,7 @@ enum MenuId { FALLBACK, ROAM, CALIBRATE, RECENTRE, QUIT }
 @onready var _window_ctl: WindowController = $WindowController
 @onready var _brain: PetBrain = $Brain
 @onready var _visual: PetVisual = $Visual
+@onready var _chat: ChatPanel = $Chat
 @onready var _menu: PopupMenu = $Menu
 
 var _installed_pets := PackedStringArray()
@@ -41,17 +44,28 @@ func _ready() -> void:
 	_load_selected_pack()
 	_scale_menu_theme()
 	_build_menu()
-	_window_ctl.park_at_default_spot()
 
 	_brain.state_changed.connect(_on_brain_state)
 	_brain.facing_changed.connect(_visual.set_facing)
 	_brain.set_roaming(bool(Config.get_value("pet", "roaming", true)))
-	_brain.setup(_window_ctl)
 
 	EventBus.pet_grabbed.connect(_on_grabbed)
 	EventBus.pet_released.connect(_on_released)
 	EventBus.pet_tapped.connect(_on_tapped)
+	# How much of the window is on screen changes as the pet walks, and the chat
+	# UI has to stay inside it.
+	EventBus.pet_moved.connect(_on_pet_moved)
 
+	_chat.submitted.connect(_on_chat_submitted)
+	_chat.input_toggled.connect(_on_input_toggled)
+	EventBus.reply_chunk.connect(_on_reply_chunk)
+	EventBus.reply_finished.connect(_on_reply_finished)
+	EventBus.reply_failed.connect(_on_reply_failed)
+
+	# Park last: it moves the window, and _on_pet_moved has to be listening for
+	# the chat UI to learn how much of the window ended up on screen.
+	_window_ctl.park_at_default_spot()
+	_brain.setup(_window_ctl)
 
 ## Centre the pet in the window and match the display's DPI scale, so it looks
 ## the same physical size on a Retina and a non-Retina screen, then apply the
@@ -61,14 +75,43 @@ func _layout_visual() -> void:
 	_visual.position = _window_ctl.get_window_anchor()
 
 
-## Push the visual's silhouette to the window as the click-through mask. The
-## visual's transform maps its local space to viewport pixels, which is what
-## DisplayServer expects.
+## Push the visual's silhouette to the window as the click-through mask, and
+## point the bubble at the top of the pet's head. The visual's transform maps its
+## local space to viewport pixels, which is what DisplayServer expects.
 func _refresh_hit_region() -> void:
 	var points := PackedVector2Array()
 	for p in _visual.get_hit_polygon():
 		points.append(_visual.transform * p)
+
+	var pet_box := _bounding_box(points)
+	_window_ctl.set_content_bounds(pet_box)
+	_chat.configure(_window_ctl.get_ui_scale(), _window_ctl.get_window_size(), pet_box)
+	_chat.set_safe_area(_window_ctl.get_visible_area())
+
+	# Passthrough takes a single polygon, so a disjoint pet-plus-input region
+	# isn't expressible: fall back to one box around both while typing.
+	var input_box := _chat.get_input_rect()
+	if input_box.has_area():
+		points = _rect_points(pet_box.merge(input_box))
 	_window_ctl.set_hit_region(points)
+
+
+func _bounding_box(points: PackedVector2Array) -> Rect2:
+	if points.is_empty():
+		return Rect2()
+	var box := Rect2(points[0], Vector2.ZERO)
+	for p in points:
+		box = box.expand(p)
+	return box
+
+
+func _rect_points(box: Rect2) -> PackedVector2Array:
+	return PackedVector2Array([
+		box.position,
+		Vector2(box.end.x, box.position.y),
+		box.end,
+		Vector2(box.position.x, box.end.y),
+	])
 
 
 # --- Pet packs ----------------------------------------------------------------
@@ -159,6 +202,44 @@ func _on_tapped() -> void:
 	var tween := create_tween()
 	tween.tween_method(_visual.set_squash, 0.12, 0.0, 0.25) \
 		.set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
+	_chat.toggle_input()
+
+
+# --- Conversation -------------------------------------------------------------
+
+func _on_pet_moved(_screen_position: Vector2i) -> void:
+	_chat.set_safe_area(_window_ctl.get_visible_area())
+
+
+func _on_input_toggled(open: bool) -> void:
+	# The input needs clicks, so the passthrough mask has to grow to include it.
+	_refresh_hit_region()
+	if open:
+		_brain.on_talk_started()
+	elif not _chat.is_showing():
+		_brain.on_talk_ended()
+
+
+func _on_chat_submitted(text: String) -> void:
+	_chat.begin_reply()
+	_brain.on_talk_started()
+	EventBus.user_said.emit(text)
+
+
+func _on_reply_chunk(text: String) -> void:
+	_chat.append_reply(text)
+
+
+func _on_reply_finished(_full_text: String) -> void:
+	_chat.end_reply()
+	if not _chat.is_input_open():
+		_brain.on_talk_ended()
+
+
+func _on_reply_failed(message: String) -> void:
+	_chat.show_notice("（我剛剛斷線了：%s）" % message)
+	if not _chat.is_input_open():
+		_brain.on_talk_ended()
 
 
 # --- Menu ---------------------------------------------------------------------
@@ -202,6 +283,14 @@ func _build_menu() -> void:
 		_menu.set_item_checked(_menu.get_item_index(SIZE_BASE + i),
 			is_equal_approx(float(choice["factor"]), _size_factor))
 
+	_menu.add_separator("語言模型")
+	var providers := LLMService.list_providers()
+	for i in providers.size():
+		var provider := providers[i]
+		_menu.add_radio_check_item(LLMService.provider_label(provider), PROVIDER_BASE + i)
+		_menu.set_item_checked(_menu.get_item_index(PROVIDER_BASE + i),
+			provider == LLMService.get_provider_name())
+
 	_menu.add_separator()
 	_menu.add_check_item("自由走動", MenuId.ROAM)
 	_menu.set_item_checked(_menu.get_item_index(MenuId.ROAM), _brain.is_roaming())
@@ -221,6 +310,10 @@ func _open_menu() -> void:
 
 
 func _on_menu_pressed(id: int) -> void:
+	if id >= PROVIDER_BASE:
+		LLMService.select_provider(LLMService.list_providers()[id - PROVIDER_BASE])
+		_build_menu()
+		return
 	if id >= SIZE_BASE:
 		_set_size_factor(float(SIZE_CHOICES[id - SIZE_BASE]["factor"]))
 		return

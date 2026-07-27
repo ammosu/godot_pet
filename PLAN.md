@@ -151,8 +151,13 @@ func cancel() -> void: pass
 ```
 - 先做 `mock_provider.gd`（固定延遲 + 假逐字回應）→ 整條 UI 流程用 Mock 跑通再接真 API
 - `claude_provider.gd`：`POST https://api.anthropic.com/v1/messages`，headers 需 `x-api-key`、`anthropic-version`
-- API key **絕不寫進程式碼**：`Config` 依序讀取 環境變數 → `user://config.cfg`（`user://` 在 macOS 是 `~/Library/Application Support/Godot/app_userdata/<專案>/`，不在 repo 裡）
-- 對話泡泡：`RichTextLabel` + `visible_ratio` 做打字效果；泡泡出現時放大視窗、消失時縮回
+- API key **絕不寫進程式碼**：`Config.get_secret()` 依序讀取 環境變數 → 專案／執行檔旁的 `.env` → `user://config.cfg`（`user://` 在 macOS 是 `~/Library/Application Support/Godot/app_userdata/<專案>/`，不在 repo 裡）
+- 對話泡泡：`RichTextLabel` + `visible_characters` 做打字效果
+
+實作時踩到的坑：
+- **啟動預設值不能寫回設定檔**。`set_provider()` 原本每次都存檔，導致第一次跑的預設值（那時還沒有 openai）被寫死，之後自動偵測永遠失效。改成只有使用者從選單選擇才存
+- **泡泡邊界要對「螢幕」不是「視窗」**。視窗刻意溢出螢幕邊緣好讓寵物貼角落，泡泡只對視窗做 clamp 會跑到螢幕外。而且光 clamp 位置不夠——泡泡固定寬度比螢幕上剩的空間還寬時，寬度也要跟著縮
+- `EventBus.pet_moved` 必須在 `park_at_default_spot()` **之前**連接，否則停靠那一次移動不會通知到 UI
 
 **驗收**：打字送出 → 泡泡逐字出現回應 → 3 秒後淡出。Mock 與真 API 可用設定切換。
 

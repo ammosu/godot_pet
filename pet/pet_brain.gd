@@ -103,6 +103,19 @@ func on_tapped() -> void:
 		_enter(Mode.IDLE)
 
 
+## Hold still for the duration of a conversation — a pet that wanders off
+## mid-sentence drags its speech bubble along with it.
+func on_talk_started() -> void:
+	_idle_streak = 0
+	if _mode != Mode.DRAG:
+		_enter(Mode.TALK)
+
+
+func on_talk_ended() -> void:
+	if _mode == Mode.TALK:
+		_enter(Mode.IDLE)
+
+
 # --- Transitions --------------------------------------------------------------
 
 func _enter(mode: Mode) -> void:

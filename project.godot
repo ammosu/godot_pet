@@ -16,6 +16,7 @@ run/max_fps=60
 
 Config="*res://autoload/config.gd"
 EventBus="*res://autoload/event_bus.gd"
+LLMService="*res://autoload/llm_service.gd"
 
 [display]
 
@@ -28,6 +29,11 @@ window/per_pixel_transparency/allowed=true
 ; Popups must be real OS windows, otherwise they get clipped inside the tiny
 ; transparent pet window.
 window/subwindows/embed_subwindows=false
+
+[gui]
+
+; Bundled fonts have no CJK coverage — fall back to the system's.
+theme/custom="res://ui/theme.tres"
 
 [rendering]
 

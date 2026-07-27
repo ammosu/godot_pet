@@ -7,8 +7,13 @@ class_name WindowController
 ##
 ## Nothing else in the project should touch `get_window()` directly.
 
-## Design size of the pet window, in DPI-independent units.
-const BASE_SIZE := Vector2i(320, 320)
+## Design size of the pet window, in DPI-independent units. Taller than the pet
+## needs so a speech bubble has room above it and the input has room below.
+const BASE_SIZE := Vector2i(360, 440)
+
+## Where the pet stands inside the window: centred horizontally, low enough to
+## leave the top two thirds for the bubble.
+const ANCHOR_RATIO := Vector2(0.5, 0.68)
 
 var _win: Window
 var _hit_region := PackedVector2Array()
@@ -48,24 +53,36 @@ func get_ui_scale() -> float:
 
 # --- Position -----------------------------------------------------------------
 
-## Absolute desktop position of the pet's centre.
+## Absolute desktop position of the pet.
 func get_pet_screen_position() -> Vector2i:
-	return _win.position + _half_size()
+	return _win.position + _anchor_offset()
 
 
-## Move the window so the pet's centre lands on `screen_pos`.
+## Move the window so the pet lands on `screen_pos`.
 func set_pet_screen_position(screen_pos: Vector2i) -> void:
-	_win.position = _clamp_to_desktop(screen_pos - _half_size())
+	_win.position = _clamp_to_desktop(screen_pos - _anchor_offset())
 	EventBus.pet_moved.emit(get_pet_screen_position())
 
 
-## Where the pet's centre sits *inside* the window, in viewport pixels.
+## Where the pet stands *inside* the window, in viewport pixels.
 func get_window_anchor() -> Vector2:
-	return Vector2(_win.size) * 0.5
+	return Vector2(_win.size) * ANCHOR_RATIO
 
 
-func _half_size() -> Vector2i:
-	return Vector2i(_win.size.x / 2, _win.size.y / 2)
+func get_window_size() -> Vector2i:
+	return _win.size
+
+
+## The slice of the window that's actually on screen, in viewport pixels. The
+## window is allowed to hang off the desktop edge so the pet can reach the
+## corner, so UI that must stay readable has to be clamped to this instead.
+func get_visible_area() -> Rect2:
+	var screen := DisplayServer.screen_get_usable_rect(DisplayServer.window_get_current_screen())
+	return Rect2(Vector2(screen.position - _win.position), Vector2(screen.size))
+
+
+func _anchor_offset() -> Vector2i:
+	return Vector2i(get_window_anchor())
 
 
 ## Union of every screen, including the menu bar and Dock strips. Dragging is
@@ -96,12 +113,10 @@ func _clamp_to_desktop(top_left: Vector2i) -> Vector2i:
 ## stroll behind the Dock on its own — you can still drag it there.
 func get_walk_bounds() -> Vector2:
 	var rect := DisplayServer.screen_get_usable_rect(DisplayServer.get_primary_screen())
-	var half := float(_win.size.x) * 0.5
-	var left_pad := float(_content_rect.position.x)
-	var right_pad := float(_win.size.x - _content_rect.end.x)
+	var anchor_x := float(_anchor_offset().x)
 	return Vector2(
-		rect.position.x + half - left_pad,
-		rect.position.x + rect.size.x - half + right_pad)
+		rect.position.x + anchor_x - float(_content_rect.position.x),
+		rect.position.x + rect.size.x + anchor_x - float(_content_rect.end.x))
 
 
 ## Bottom-right of the primary screen, with a small margin — the classic
@@ -110,7 +125,7 @@ func park_at_default_spot() -> void:
 	var rect := DisplayServer.screen_get_usable_rect(DisplayServer.get_primary_screen())
 	var margin := roundi(16.0 * _ui_scale)
 	var content_pos := rect.position + rect.size - Vector2i(margin, margin) - _content_rect.size
-	set_pet_screen_position(content_pos - _content_rect.position + _half_size())
+	set_pet_screen_position(content_pos - _content_rect.position + _anchor_offset())
 
 
 # --- Click-through ------------------------------------------------------------
@@ -119,18 +134,15 @@ func park_at_default_spot() -> void:
 ## go to whatever is behind the window.
 func set_hit_region(points: PackedVector2Array) -> void:
 	_hit_region = points
-	_content_rect = _bounding_box(points)
 	if not _passthrough_suspended:
 		DisplayServer.window_set_mouse_passthrough(_hit_region)
 
 
-func _bounding_box(points: PackedVector2Array) -> Rect2i:
-	if points.is_empty():
-		return Rect2i(Vector2i.ZERO, _win.size)
-	var box := Rect2(points[0], Vector2.ZERO)
-	for p in points:
-		box = box.expand(p)
-	return Rect2i(box.abs())
+## The pet's visible extent inside the window, used for every screen-edge
+## calculation. Kept separate from the hit region, which grows to cover chat UI
+## and would otherwise drag the pet away from the screen edge.
+func set_content_bounds(rect: Rect2) -> void:
+	_content_rect = Rect2i(rect.abs()) if rect.has_area() else Rect2i(Vector2i.ZERO, _win.size)
 
 
 ## Make the whole window catch input. Used while dragging: a fast mouse move can
