@@ -29,6 +29,13 @@ const EMOTIONS := ["neutral", "happy", "excited", "sad", "greeting", "sleepy"]
 ## 是什麼意思" typed with the error still on screen.
 const LOOK_TAG := "look"
 
+## Heading of the persona section that teaches `[look]`, dropped for one turn
+## after the user says no. Must match `prompts/persona.md`.
+const LOOK_SECTION := "看螢幕"
+
+## Replaces it for that turn.
+const NO_LOOK_NOTE := "\n\n## 看螢幕\n你看不到螢幕畫面。使用者剛剛拒絕了截圖，所以這次只能用文字回答，需要的話請他把內容貼給你。不要輸出 `[look]`。"
+
 ## Give up on finding a tag after this many characters — the model skipped it.
 const TAG_SCAN_LIMIT := 24
 
@@ -49,6 +56,8 @@ var _reply_is_ephemeral := false
 ## True while answering with an image attached, so a second [look] can't send it
 ## round again.
 var _in_vision_pass := false
+## Set when the user turned a screenshot down, so the model can't just ask again.
+var _look_declined := false
 ## Kept so a [look] can re-ask the same thing with a screenshot attached.
 var _last_question := ""
 
@@ -75,7 +84,8 @@ func list_providers() -> PackedStringArray:
 
 func provider_label(name: String) -> String:
 	if name == "openai":
-		return "OpenAI · %s" % Config.get_value("llm", "openai_model", "gpt-5.4-nano")
+		var openai: GDScript = load(PROVIDERS["openai"])
+		return "OpenAI · %s" % Config.get_value("llm", "openai_model", openai.DEFAULT_MODEL)
 	if name == "mock":
 		return "Mock（不呼叫 API）"
 	return name
@@ -145,14 +155,27 @@ func request_background(system: String, prompt: String, on_done: Callable) -> bo
 	return true
 
 
-func build_system_prompt() -> String:
-	var sections := PackedStringArray([_persona])
+func build_system_prompt(allow_look := true) -> String:
+	var sections := PackedStringArray([_persona if allow_look else _persona_without_looking()])
 	var memories := MemoryStore.context_block()
 	if not memories.is_empty():
 		sections.append(memories)
 	sections.append("## 你現在的狀態\n%s\n\n讓這些狀態影響你的語氣，但**不要直接把它們念出來**，也不要說「我的心情是普通」這種話。"
 		% PetState.describe())
 	return "\n\n".join(sections)
+
+
+## The persona with its screen section cut out, for the turn after the user says
+## no. Merely appending "you can't look this time" doesn't work: the persona
+## tells the model to answer a screen question with nothing but `[look]`, and a
+## small model follows the character sheet over the footnote — it asked again,
+## the tag was swallowed, and the pet ended up saying nothing at all.
+func _persona_without_looking() -> String:
+	var kept := PackedStringArray()
+	for section in _persona.split("\n## "):
+		if not section.begins_with(LOOK_SECTION):
+			kept.append(section)
+	return "\n## ".join(kept) + NO_LOOK_NOTE
 
 
 ## Record something the pet said without the model's involvement — an unprompted
@@ -206,14 +229,49 @@ func _on_user_said(text: String) -> void:
 	_clean_reply = ""
 	_reply_is_ephemeral = false
 	_in_vision_pass = false
+	_look_declined = false
+
+	# Ask for the screen *before* answering, when the question plainly needs it.
+	# Waiting for the model to request it costs a wasted round-trip at best, and
+	# on a small model it never happens at all.
+	if VisionService.wants_a_look(trimmed):
+		EventBus.screen_look_requested.emit(trimmed, false)
+		return
+
 	_provider.send(MemoryStore.recent_messages(), build_system_prompt())
+
+
+## The user said no to a screenshot, so answer the question as best we can
+## without one. `_look_declined` makes the reply stick: the model would
+## otherwise answer a screen question with `[look]` and ask all over again.
+func answer_without_looking() -> void:
+	if _provider == null:
+		return
+	if _provider.is_busy():
+		_provider.cancel()
+	_tag_resolved = false
+	_tag_buffer = ""
+	_clean_reply = ""
+	_reply_is_ephemeral = false
+	_in_vision_pass = false
+	_look_declined = true
+	# Suppressing `[look]` on the way in isn't enough: the model asked for a
+	# reason, and asked again the moment it was re-sent the same question with
+	# the same prompt. It has to be told the answer was no.
+	_provider.send(MemoryStore.recent_messages(), build_system_prompt(false))
 
 
 func _on_finished(full_text: String) -> void:
 	# Nothing but a tag arrived, or the tag never closed: release what's left.
 	if not _tag_resolved:
 		_release_tag_buffer(_tag_buffer.lstrip(" \n\t"))
-	var reply := _clean_reply if not _clean_reply.is_empty() else full_text
+	# Trust the parser once it has resolved: falling back to the raw text there
+	# puts a bare `[look]` in the bubble and in history when the reply was
+	# nothing but a tag the parser deliberately swallowed.
+	var reply := _clean_reply if _tag_resolved else full_text
+	if reply.strip_edges().is_empty():
+		reply = "……我好像沒話說了，再問我一次？"
+		EventBus.reply_chunk.emit(reply)
 	MemoryStore.append("assistant", reply, _reply_is_ephemeral)
 	# Don't pay to summarise on the back of a turn that can't be summarised.
 	if not _reply_is_ephemeral:
@@ -250,7 +308,7 @@ func _on_chunk(text: String) -> void:
 		return
 
 	var tag := head.substr(1, close - 1).strip_edges().to_lower()
-	if tag == LOOK_TAG and not _in_vision_pass:
+	if tag == LOOK_TAG and not _in_vision_pass and not _look_declined:
 		_take_a_look()
 		return
 	if EMOTIONS.has(tag):

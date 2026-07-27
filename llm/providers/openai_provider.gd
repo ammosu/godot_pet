@@ -10,7 +10,14 @@ extends LLMProvider
 const HOST := "api.openai.com"
 const PORT := 443
 const ENDPOINT := "/v1/chat/completions"
-const DEFAULT_MODEL := "gpt-5.4-nano"
+## Not nano, despite nano being cheaper and perfectly good at chatting. The pet
+## asks to see the screen by emitting `[look]` in the mood-tag slot, and nano
+## simply doesn't: measured 0/12 on questions that plainly need a screenshot
+## ("我現在在幹嘛？", "這個錯誤是什麼意思？"), where mini scores 9/9 and still
+## correctly declines on questions that don't. Nano *can* read a screenshot once
+## one is attached — it just never asks for one, so the feature is dead on it.
+## Override with `openai_model` under `[llm]` in config.cfg.
+const DEFAULT_MODEL := "gpt-5.4-mini"
 const KEY_NAME := "OPENAI_API_KEY"
 
 ## Abandon the request if nothing arrives for this long.

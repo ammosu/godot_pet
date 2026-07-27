@@ -255,15 +255,41 @@ the model itself — goes out as `EventBus.screen_look_requested`, and `pet.gd`
 puts a confirmation dialog up; "每次都可以" stores consent in config. It never
 runs on a timer or from a nudge.
 
-Typing "看一下我在幹嘛" is the obvious way to ask, so the model can request a
-look by emitting `[look]` in the mood-tag slot, at which point the same question
-is re-sent with a screenshot attached. Letting the model decide beats
-keyword-matching, since it also covers "這個錯誤是什麼意思" typed with the error
-on screen. `_in_vision_pass` stops a second `[look]` looping.
+Typing "看一下我在幹嘛" is the obvious way to ask, so there are two triggers, and
+both are needed:
+
+- `VisionService.wants_a_look()` matches the question locally, in `_on_user_said`,
+  before the model is called at all. Deterministic and free.
+- The model can emit `[look]` in the mood-tag slot, at which point the same
+  question is re-sent with a screenshot attached. This covers what the phrase
+  list can't — "這個錯誤是什麼意思" typed with the error still on screen.
+
+Leaving it to `[look]` alone was a mistake: **`gpt-5.4-nano` never emits it** —
+0/12 on questions that plainly need a screenshot, where `gpt-5.4-mini` scores
+9/9 and still declines correctly on ones that don't. Nano reads an attached
+screenshot perfectly well, it just never asks for one, so the whole feature was
+dead on the model that was configured. Hence both the local trigger and
+`DEFAULT_MODEL` being mini.
+
+`_in_vision_pass` stops a second `[look]` looping. `_look_declined` stops the
+model re-asking after a refusal — and suppressing the tag is *not* enough on its
+own: the persona tells the model to answer a screen question with nothing but
+`[look]`, a small model follows the character sheet over any appended footnote,
+and the swallowed tag left the pet saying nothing at all. So
+`build_system_prompt(false)` cuts the `## 看螢幕` section out of the persona for
+that one turn.
+
+Related: `_on_finished` must take `_clean_reply` whenever the tag parser
+resolved, never the raw text — the old `if not _clean_reply.is_empty()` fallback
+put a bare `[look]` in the bubble and in history.
 
 The `[look]` handler must defer before cancelling the provider: it runs inside
 the provider's own chunk signal, and tearing down the HTTP client mid-poll
 leaves `_poll_body` reading from a client that's gone.
+
+Turning a look down still has to produce an answer. A refusal from the menu is
+just a nudge, but a refusal to a *typed* question leaves that question sitting in
+history unanswered, so `LLMService.answer_without_looking()` answers it blind.
 
 macOS needs Screen Recording permission, and **the failure is silent**: without
 it the capture contains just the wallpaper and the app's own windows, with no

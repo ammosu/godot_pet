@@ -508,8 +508,13 @@ func _resolve_look(allowed: bool, remember: bool) -> void:
 		Config.set_value("vision", "consent", CONSENT_ALWAYS)
 	if allowed:
 		VisionService.look(str(pending["question"]), bool(pending["record"]))
-	else:
+	elif bool(pending["record"]):
+		# Nobody is waiting on an answer — this came from the menu.
 		_on_pet_nudged("neutral", "好啦，那我不看。")
+	else:
+		# The question is already sitting in history unanswered. Leaving it there
+		# would look like the pet ignored it, so answer it blind instead.
+		LLMService.answer_without_looking()
 
 
 ## Memory that can't be inspected is memory you can't trust, and a pet quietly

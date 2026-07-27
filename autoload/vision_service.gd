@@ -27,8 +27,37 @@ const FLAT_IMAGE_THRESHOLD := 0.02
 const PROBE_SIZE := 64
 
 
+## Questions that can't be answered without seeing the screen. Deliberately
+## narrow: these fire before the model gets a word in, so a false positive costs
+## a consent prompt the user didn't ask for, plus a screenshot's worth of tokens.
+##
+## This exists because the model can't be relied on to ask. `[look]` works on a
+## mid-sized model and not at all on a nano one, which fails the wrong way —
+## the pet insists it has no eyes instead of using the ones it has. Matching
+## locally makes the obvious phrasings work on any backend, and `[look]` still
+## covers everything this list doesn't ("這個排版對嗎", "為什麼跑不起來").
+const LOOK_PATTERNS := [
+	"我在幹嘛", "我在幹麻", "我在做什麼", "我在忙什麼",
+	"看一下我的螢幕", "看我的螢幕", "看一下螢幕", "看看我的螢幕",
+	"看一下畫面", "看我的畫面", "看看畫面", "看一下我的桌面", "看我的桌面",
+	"我的螢幕", "我的畫面", "螢幕上", "畫面上",
+]
+
+
 func is_supported() -> bool:
 	return OS.get_name() in ["macOS", "Windows", "Linux"]
+
+
+## Does this question obviously need a screenshot? Checked before the question
+## goes to the model at all.
+func wants_a_look(question: String) -> bool:
+	if not is_supported():
+		return false
+	var text := question.to_lower()
+	for pattern in LOOK_PATTERNS:
+		if text.contains(pattern):
+			return true
+	return false
 
 
 ## Capture, downscale, and hand it to the model. The reply streams into the
