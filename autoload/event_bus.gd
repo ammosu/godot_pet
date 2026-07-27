@@ -28,3 +28,7 @@ signal action_requested(action: String)
 
 # --- Needs (Phase 6+) ---
 signal state_tick(state: Dictionary)
+## What the brain is currently doing: idle / walk / sleep / drag / talk.
+signal pet_activity_changed(activity: StringName)
+## The pet started a conversation on its own. Not an LLM reply — see nudger.gd.
+signal pet_nudged(emotion: String, text: String)

@@ -5,7 +5,8 @@ class_name PetBrain
 ## announces the result as a logical state name and lets the visual worry about
 ## which animation that is.
 ##
-## Phase 6 replaces the timers here with the needs system (hunger/energy/mood).
+## Sleep is driven by PetState's energy rather than by a timer, so naps line up
+## with what the pet tells the user about itself.
 
 signal state_changed(state: StringName)
 signal facing_changed(facing: int)
@@ -20,20 +21,21 @@ const WALK_DISTANCE := Vector2(40.0, 130.0)
 ## The pet stays within this much of "home" — the corner it was parked at, or
 ## wherever it was last dropped — instead of roaming the whole desktop.
 const HOME_RANGE := 200.0
-## Consecutive idle spells before the pet nods off.
-const IDLES_BEFORE_SLEEP := 5
-const SLEEP_SECONDS := 30.0
 ## Give up on a walk that somehow never arrives.
 const WALK_TIMEOUT := 25.0
+## Wake up regardless after this long, in case energy never climbs.
+const SLEEP_TIMEOUT := 30.0 * 60.0
+## How long a tired pet stays up after being poked awake.
+const WAKE_GRACE_SECONDS := 90.0
 
 var _window: WindowController
 var _mode := Mode.IDLE
 var _timer := 0.0
 var _facing := 1
-var _idle_streak := 0
 var _paused := false
 var _roaming := true
 var _home_x := 0.0
+var _wake_grace := 0.0
 
 ## Tracked as a float so slow walks don't stall on integer window positions.
 var _walk_x := 0.0
@@ -70,6 +72,7 @@ func _process(delta: float) -> void:
 	if _window == null or _paused:
 		return
 	_timer -= delta
+	_wake_grace = maxf(0.0, _wake_grace - delta)
 	match _mode:
 		Mode.IDLE:
 			if _timer <= 0.0:
@@ -77,7 +80,7 @@ func _process(delta: float) -> void:
 		Mode.WALK:
 			_step_walk(delta)
 		Mode.SLEEP:
-			if _timer <= 0.0:
+			if PetState.is_rested() or _timer <= 0.0:
 				_enter(Mode.IDLE)
 		Mode.DRAG, Mode.TALK:
 			pass
@@ -90,23 +93,23 @@ func on_grabbed() -> void:
 
 
 func on_released() -> void:
-	_idle_streak = 0
 	# Dropping the pet somewhere is how you tell it where to live.
 	set_home_here()
 	_enter(Mode.IDLE)
 
 
 func on_tapped() -> void:
-	# Being poked wakes the pet up and buys it another few minutes.
-	_idle_streak = 0
-	if _mode == Mode.SLEEP:
-		_enter(Mode.IDLE)
+	if _mode != Mode.SLEEP:
+		return
+	# Being poked awake buys a grace period, otherwise the pet — still exhausted —
+	# would nod straight off again on the next idle cycle.
+	_wake_grace = WAKE_GRACE_SECONDS
+	_enter(Mode.IDLE)
 
 
 ## Hold still for the duration of a conversation — a pet that wanders off
 ## mid-sentence drags its speech bubble along with it.
 func on_talk_started() -> void:
-	_idle_streak = 0
 	if _mode != Mode.DRAG:
 		_enter(Mode.TALK)
 
@@ -128,7 +131,7 @@ func _enter(mode: Mode) -> void:
 			_pick_walk_target()
 			state_changed.emit(&"walk")
 		Mode.SLEEP:
-			_timer = SLEEP_SECONDS
+			_timer = SLEEP_TIMEOUT
 			state_changed.emit(&"sleep")
 		Mode.DRAG:
 			state_changed.emit(&"drag")
@@ -137,9 +140,7 @@ func _enter(mode: Mode) -> void:
 
 
 func _finish_idle() -> void:
-	_idle_streak += 1
-	if _idle_streak >= IDLES_BEFORE_SLEEP:
-		_idle_streak = 0
+	if PetState.is_exhausted() and _wake_grace <= 0.0:
 		_enter(Mode.SLEEP)
 	elif _roaming:
 		_enter(Mode.WALK)

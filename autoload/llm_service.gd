@@ -116,7 +116,17 @@ func clear_history() -> void:
 
 
 func build_system_prompt() -> String:
-	return _persona
+	return "%s\n\n## 你現在的狀態\n%s\n\n讓這些狀態影響你的語氣，但**不要直接把它們念出來**，也不要說「我的心情是普通」這種話。" \
+		% [_persona, PetState.describe()]
+
+
+## Record something the pet said without the model's involvement — an unprompted
+## line — so its next reply doesn't contradict it.
+func note_pet_said(text: String) -> void:
+	if text.strip_edges().is_empty():
+		return
+	_history.append({"role": "assistant", "content": text})
+	_trim_history()
 
 
 func _on_user_said(text: String) -> void:

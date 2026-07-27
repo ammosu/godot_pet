@@ -16,7 +16,9 @@ run/max_fps=60
 
 Config="*res://autoload/config.gd"
 EventBus="*res://autoload/event_bus.gd"
+PetState="*res://autoload/pet_state.gd"
 LLMService="*res://autoload/llm_service.gd"
+Nudger="*res://autoload/nudger.gd"
 
 [display]
 

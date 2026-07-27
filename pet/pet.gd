@@ -32,7 +32,7 @@ const EMOTION_STATES := {
 	&"sleepy": &"sleep",
 }
 
-enum MenuId { FALLBACK, ROAM, CALIBRATE, RECENTRE, QUIT }
+enum MenuId { FALLBACK, FEED, NUDGES, ROAM, CALIBRATE, RECENTRE, QUIT }
 
 @onready var _window_ctl: WindowController = $WindowController
 @onready var _brain: PetBrain = $Brain
@@ -73,6 +73,7 @@ func _ready() -> void:
 	EventBus.reply_finished.connect(_on_reply_finished)
 	EventBus.reply_failed.connect(_on_reply_failed)
 	EventBus.emotion_changed.connect(_on_emotion_changed)
+	EventBus.pet_nudged.connect(_on_pet_nudged)
 
 	# Park last: it moves the window, and _on_pet_moved has to be listening for
 	# the chat UI to learn how much of the window ended up on screen.
@@ -154,6 +155,7 @@ func _apply_pack(pet_id: String) -> void:
 func _on_brain_state(state: StringName) -> void:
 	# The brain's "drag" isn't an animation any pack provides; reuse idle.
 	_visual.play_state(&"idle" if state == &"drag" else state)
+	EventBus.pet_activity_changed.emit(state)
 
 
 # --- Input --------------------------------------------------------------------
@@ -257,6 +259,19 @@ func _on_reply_failed(message: String) -> void:
 	_chat.show_notice("（我剛剛斷線了：%s）" % message)
 
 
+## The pet speaking up on its own. Same presentation as a reply, but the text is
+## canned rather than generated — see nudger.gd for why.
+func _on_pet_nudged(emotion: String, text: String) -> void:
+	if _chat.is_showing() or _chat.is_input_open():
+		return
+	_brain.on_talk_started()
+	_chat.begin_reply()
+	_on_emotion_changed(emotion)
+	_chat.append_reply(text)
+	_chat.end_reply()
+	LLMService.note_pet_said(text)
+
+
 ## Wait for the bubble to clear rather than for the stream to end — the text is
 ## still typing itself out for a while after the last token lands.
 func _on_bubble_hidden() -> void:
@@ -314,6 +329,9 @@ func _build_menu() -> void:
 			provider == LLMService.get_provider_name())
 
 	_menu.add_separator()
+	_menu.add_item("餵食", MenuId.FEED)
+	_menu.add_check_item("主動說話", MenuId.NUDGES)
+	_menu.set_item_checked(_menu.get_item_index(MenuId.NUDGES), Nudger.is_enabled())
 	_menu.add_check_item("自由走動", MenuId.ROAM)
 	_menu.set_item_checked(_menu.get_item_index(MenuId.ROAM), _brain.is_roaming())
 	_menu.add_check_item("校準動畫列", MenuId.CALIBRATE)
@@ -345,6 +363,10 @@ func _on_menu_pressed(id: int) -> void:
 	match id:
 		MenuId.FALLBACK:
 			_switch_pack("")
+		MenuId.FEED:
+			_feed()
+		MenuId.NUDGES:
+			_toggle_nudges()
 		MenuId.ROAM:
 			_toggle_roaming()
 		MenuId.CALIBRATE:
@@ -354,6 +376,17 @@ func _on_menu_pressed(id: int) -> void:
 			_brain.set_home_here()
 		MenuId.QUIT:
 			get_tree().quit()
+
+
+func _feed() -> void:
+	PetState.feed()
+	_on_pet_nudged("happy", "謝謝！這個好吃。")
+
+
+func _toggle_nudges() -> void:
+	var enabled := not Nudger.is_enabled()
+	Nudger.set_enabled(enabled)
+	_menu.set_item_checked(_menu.get_item_index(MenuId.NUDGES), enabled)
 
 
 func _toggle_roaming() -> void:
