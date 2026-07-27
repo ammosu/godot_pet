@@ -124,6 +124,12 @@ Three consequences of overhanging:
   speech bubble also narrows when that slice is thinner than its natural width.
 - `get_visible_area()` changes as the pet walks, so `EventBus.pet_moved` must be
   connected **before** `park_at_default_spot()` runs in `_ready()`.
+- Because that slice moves the bubble and the input *within* the window,
+  `_on_pet_moved` has to re-push the mask as well as re-clamp the layout. It
+  didn't, and the symptom was a bubble or input with one side sliced off,
+  seemingly at random — the mask still described where the UI used to be. The
+  reliable repro is dragging the pet with the input open: a drag also knocks the
+  brain out of `TALK`, so the pet then walks off with the field still up.
 
 ### The passthrough mask clips rendering on Windows
 

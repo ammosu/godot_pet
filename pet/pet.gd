@@ -95,6 +95,10 @@ func _ready() -> void:
 	# Only worth ticking where the mask clips rendering; elsewhere the bubble is
 	# outside it by design and moving is free.
 	set_process(WindowController.passthrough_clips_rendering())
+	# The bubble decides its own size and position in its _process; ours reads the
+	# result. Without this the mask trails it by a frame, which shows up as the
+	# growing edge of a streaming reply being shaved off.
+	_chat.process_priority = -1
 
 	# Park last: it moves the window, and _on_pet_moved has to be listening for
 	# the chat UI to learn how much of the window ended up on screen.
@@ -263,6 +267,11 @@ func _on_grabbed() -> void:
 func _on_released() -> void:
 	_visual.set_squash(0.0)
 	_brain.on_released()
+	# Being picked up drops the brain out of TALK, so without this the pet strolls
+	# off the moment it's put down — dragging the field the user is typing into
+	# along with it.
+	if _chat.is_input_open() or _chat.is_showing():
+		_brain.on_talk_started()
 
 
 func _on_tapped() -> void:
@@ -275,8 +284,22 @@ func _on_tapped() -> void:
 
 # --- Conversation -------------------------------------------------------------
 
+## Moving changes how much of the window is on screen, and the chat UI is laid
+## out inside that slice — so walking towards a screen edge slides the bubble and
+## the input sideways *within* the window.
+##
+## The mask has to follow them. It doesn't get that for free: _process only
+## refreshes it while a bubble is up, so an open input would keep the region it
+## had when it opened, and where the mask clips rendering that region shears off
+## whichever side the field just moved towards. Dragging the pet is the reliable
+## way to see it — a drag also drops the brain out of TALK, so the pet then walks
+## off with the input still open and the stale mask trailing behind.
+##
+## Cheap to call on every walk step: set_hit_region() drops a region identical to
+## the one already pushed, which is the common case.
 func _on_pet_moved(_screen_position: Vector2i) -> void:
 	_chat.set_safe_area(_window_ctl.get_visible_area())
+	_refresh_mask()
 
 
 func _on_input_toggled(open: bool) -> void:
