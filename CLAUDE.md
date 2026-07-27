@@ -98,9 +98,15 @@ scaled (see `_scale_menu_theme` in `pet/pet.gd`).
 
 ### The window deliberately hangs off the screen
 
-The window is much larger than the pet (it reserves room for the bubble above
-and the input below), and is allowed to overhang the desktop edge so the pet
-itself can reach the corner. Three consequences:
+The window is far larger than the pet and is allowed to overhang the desktop
+edge so the pet itself can reach the corner.
+
+Its size is what limits the speech bubble, not the screen: the bubble grows
+upward from the pet's head and is clipped by the window, so a window sized close
+to the pet makes long replies scroll away while most of the display sits empty.
+The extra area is transparent and click-through, costing only fill rate.
+
+Three consequences of overhanging:
 
 - Screen-edge clamping uses `set_content_bounds()` — the *visible pet* — not the
   window rect. This is kept separate from `set_hit_region()`, which grows to

@@ -17,7 +17,7 @@ script = ExtResource("2_window")
 script = ExtResource("3_brain")
 
 [node name="Visual" type="Node2D" parent="."]
-position = Vector2(180, 300)
+position = Vector2(220, 608)
 script = ExtResource("4_visual")
 
 [node name="Sprite" type="AnimatedSprite2D" parent="Visual"]

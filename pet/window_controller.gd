@@ -7,13 +7,18 @@ class_name WindowController
 ##
 ## Nothing else in the project should touch `get_window()` directly.
 
-## Design size of the pet window, in DPI-independent units. Taller than the pet
-## needs so a speech bubble has room above it and the input has room below.
-const BASE_SIZE := Vector2i(360, 440)
+## Design size of the pet window, in DPI-independent units.
+##
+## Far larger than the pet, because the speech bubble grows upward from its head
+## and is clipped by the window, not by the screen — at 440 tall the bubble ran
+## out of room after a few lines and started scrolling away text while most of
+## the display sat empty. The extra area is transparent and click-through, so it
+## costs nothing but fill rate.
+const BASE_SIZE := Vector2i(440, 760)
 
-## Where the pet stands inside the window: centred horizontally, low enough to
-## leave the top two thirds for the bubble.
-const ANCHOR_RATIO := Vector2(0.5, 0.68)
+## Where the pet stands inside the window: centred horizontally, and low enough
+## that nearly all of it is bubble space.
+const ANCHOR_RATIO := Vector2(0.5, 0.80)
 
 var _win: Window
 var _hit_region := PackedVector2Array()

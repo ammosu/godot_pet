@@ -20,7 +20,7 @@ const CHAT_PLACEHOLDER := "跟我說說話…"
 enum InputMode { CHAT, SECRET }
 
 ## Design-unit sizes; everything is multiplied by the display scale.
-const BUBBLE_MAX_WIDTH := 260.0
+const BUBBLE_MAX_WIDTH := 300.0
 const BUBBLE_MIN_WIDTH := 130.0
 const BUBBLE_PADDING := 12.0
 const BUBBLE_CORNER := 14.0
@@ -36,7 +36,8 @@ const CHARS_PER_SECOND := 32.0
 ## How long a finished line stays up: a base plus reading time, capped.
 const HOLD_BASE := 2.5
 const HOLD_PER_CHAR := 0.09
-const HOLD_MAX := 12.0
+## A long reply has to stay up long enough to actually be read to the end.
+const HOLD_MAX := 22.0
 const FADE_TIME := 0.4
 
 @onready var _bubble: PanelContainer = $Bubble
