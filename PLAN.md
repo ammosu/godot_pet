@@ -156,8 +156,9 @@ func cancel() -> void: pass
   - 右鍵選單「設定 OpenAI API key」→ 遮蔽輸入框貼上 → 存進 Keychain，`.env` 就不需要了
   - **不做 OAuth**：OpenAI 的第三方 "Sign in with ChatGPT" 2025 年announce 過但至今只在 Codex 自家工具出貨；外面流通的做法是冒用 Codex CLI 的 client_id 去花訂閱額度，這個專案不做
 
-實作時踩到的兩個坑：
-- 密鑰要走 **stdin 不能走 argv**（`ps` 對同使用者的行程是可見的）。用 `OS.execute_with_pipe()` 拿到 stdio 再寫入。macOS 的 `security -w` 不帶值時會互動式詢問**兩次**，所以要送兩遍
+實作時踩到的三個坑：
+- 密鑰盡量走 **stdin 不要走 argv**（`ps` 對同使用者的行程是可見的）。用 `OS.execute_with_pipe()` 拿到 stdio 再寫入。macOS 的 `security -w` 不帶值時會互動式詢問**兩次**，所以要送兩遍
+- **但 `security` 從 stdin 讀密碼會在 128 字元靜默截斷**，exit code 還是 0、什麼都不說 —— 而 OpenAI 的 project key 是 164 字元。所以**每次寫入都要讀回來比對**，對不上就改走 argv（argv 沒有長度限制）。一把在 `ps` 裡閃現一瞬間的 key，遠比一把被默默砍半、事後只看得到 401 的 key 好處理
 - **存進去的值必須是 ASCII**。`security find-generic-password -w` 遇到非 ASCII 會印出沒有任何標記的 hex，而字面值 `deadbeef` 讀回來也是 `deadbeef` —— 兩者無法區分。所以寫入時就擋掉，不要在讀取時猜
 - 對話泡泡：`RichTextLabel` + `visible_characters` 做打字效果
 

@@ -163,10 +163,17 @@ then `config.cfg`. Anything the user types in goes to the credential store —
 `security` on macOS, `secret-tool` on Linux, and plaintext config elsewhere, with
 `set_secret()` returning false so the UI can say so.
 
-Secrets are passed to those tools over **stdin via `OS.execute_with_pipe()`,
-never in argv**, which `ps` exposes to anything running as the same user. On
-macOS that means `security add-generic-password -U -w` with the value piped
-twice, since `-w` with no argument prompts and asks for confirmation.
+Secrets are passed over stdin via `OS.execute_with_pipe()` where possible, since
+`ps` exposes argv to anything running as the same user. On macOS that means
+`security add-generic-password -U -w` with the value piped twice, because `-w`
+with no argument prompts and asks for confirmation.
+
+**Every write is read back before being reported as successful.** macOS
+`security` truncates a prompt-read password at 128 characters, exits 0 and says
+nothing — and an OpenAI project key is 164. When the readback doesn't match, the
+write is redone through argv, which has no such limit. A key briefly visible to
+`ps` is a far smaller problem than one silently cut in half, which surfaces
+later as an authentication failure with no clue as to why.
 
 Stored values must be ASCII. `security find-generic-password -w` prints a
 non-ASCII password as an unmarked hex dump, and a literal `deadbeef` comes back

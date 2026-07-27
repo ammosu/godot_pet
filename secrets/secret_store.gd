@@ -9,8 +9,9 @@ class_name SecretStore
 ##   Linux   `secret-tool`  — libsecret / GNOME Keyring, from libsecret-tools
 ##   other   none, and Config falls back to .env or config.cfg
 ##
-## Secrets are written over the child process's **stdin, never as an argument**:
-## argv is readable through `ps` by anything running as the same user.
+## Secrets are written over the child process's stdin where possible, because
+## argv is readable through `ps` by anything running as the same user. Every
+## write is read back before it's reported as successful — see write().
 
 const SERVICE := "godot-pet"
 
@@ -109,19 +110,36 @@ static func write(key: String, value: String) -> bool:
 		return false
 	match backend():
 		Backend.KEYCHAIN:
-			# `-w` with no value makes security prompt on stdin, and it asks for
-			# confirmation, so the secret has to be sent twice. `-U` updates an
-			# existing item instead of failing.
-			return _run_with_stdin(
-				["add-generic-password", "-a", key, "-s", SERVICE, "-U", "-w"],
-				"%s\n%s\n" % [value, value])
+			# security's prompt truncates at 128 characters, exits 0 and says
+			# nothing — and an OpenAI project key is longer than that. So a stdin
+			# write is only trusted if it reads back intact, and otherwise gets
+			# redone through argv, which has no such limit. A key briefly visible
+			# to `ps` is a far smaller problem than one silently cut in half.
+			if _keychain_write_via_stdin(key, value) and read(key) == value:
+				return true
+			return _keychain_write_via_argv(key, value) and read(key) == value
 		Backend.LIBSECRET:
-			# secret-tool reads the secret from stdin by design. No trailing
-			# newline: it would become part of the stored value.
-			return _run_with_stdin(
+			# secret-tool reads the secret from stdin by design, with no length
+			# limit. Read back anyway — a half-written key fails in a way that
+			# looks like a bad key, which is a miserable thing to debug.
+			var stored := _run_with_stdin(
 				["store", "--label=Godot Pet", "service", SERVICE, "account", key],
 				value)
+			return stored and read(key) == value
 	return false
+
+
+## `-w` with no value makes security prompt, and it asks for confirmation, so
+## the secret goes in twice. `-U` updates an existing item instead of failing.
+static func _keychain_write_via_stdin(key: String, value: String) -> bool:
+	return _run_with_stdin(
+		["add-generic-password", "-a", key, "-s", SERVICE, "-U", "-w"],
+		"%s\n%s\n" % [value, value])
+
+
+static func _keychain_write_via_argv(key: String, value: String) -> bool:
+	var args := ["add-generic-password", "-a", key, "-s", SERVICE, "-U", "-w", value]
+	return OS.execute(_tool, PackedStringArray(args), []) == 0
 
 
 static func erase(key: String) -> bool:
