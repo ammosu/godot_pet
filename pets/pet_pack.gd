@@ -4,21 +4,29 @@ class_name PetPack
 ## Loads a pet in the Codex Pets / petdex sprite format:
 ##
 ##   {pet-id}/pet.json          metadata
-##   {pet-id}/spritesheet.webp  8 x 9 grid of equally sized cells, 72 frames
+##   {pet-id}/spritesheet.webp  8 columns of 192x208 cells, one row per state
 ##
 ## Row = animation state, column = frame within that state.
 ##
 ## The manifest declares *nothing* about the animation — no frame counts, no
-## state names. So both are inferred: frames are packed left to right, and a row
-## ends at its first blank cell. State names come from a caller-supplied row map,
-## because the two ecosystems using this format disagree on the row order.
+## state names, and no grid size. So all of it is inferred: frames are packed
+## left to right and a row ends at its first blank cell, while the row count
+## comes from the sheet's own height. State names come from a caller-supplied row
+## map, because the two ecosystems using this format disagree on the row order.
+##
+## The row count is measured rather than assumed because the format grew: the
+## original sheets were 9 rows, and `spriteVersionNumber: 2` packs are 11, with
+## nothing in the manifest to say so. Hard-coding 9 rejected every v2 pack
+## outright, on the divisibility check below.
 ##
 ## No artwork ships with this project. Packs are read from wherever
 ## `npx codex-pets add <id>` installed them, which keeps asset licensing between
 ## the user and the pet's author.
 
 const COLS := 8
-const ROWS := 9
+## Shape of one cell. Only the ratio is used — a pack drawn at 2x keeps it — and
+## it's what lets the row count be derived from the sheet's height.
+const CELL_ASPECT := Vector2i(192, 208)
 const DEFAULT_FPS := 8.0
 
 ## A cell whose drawn content is smaller than this in either axis counts as blank.
@@ -95,22 +103,47 @@ static func load_from_dir(dir: String) -> PetPack:
 		return null
 	if image.get_format() != Image.FORMAT_RGBA8:
 		image.convert(Image.FORMAT_RGBA8)
-	if image.get_width() % COLS != 0 or image.get_height() % ROWS != 0:
-		push_warning("PetPack: %s is %dx%d, not divisible into a %dx%d grid"
-			% [sheet_path, image.get_width(), image.get_height(), COLS, ROWS])
+	var cell := _cell_size_for(image)
+	if cell == Vector2i.ZERO:
+		push_warning("PetPack: %s is %dx%d, which is not %d columns of %d:%d cells"
+			% [sheet_path, image.get_width(), image.get_height(),
+				COLS, CELL_ASPECT.x, CELL_ASPECT.y])
 		return null
 
 	var pack := PetPack.new()
 	pack.id = data.get("id", dir.get_file())
 	pack.display_name = data.get("displayName", pack.id)
 	pack.description = data.get("description", "")
-	pack.cell_size = Vector2i(image.get_width() / COLS, image.get_height() / ROWS)
+	pack.cell_size = cell
 	pack._slice(image)
 
 	if pack.frame_total() == 0:
 		push_warning("PetPack: %s has no usable frames" % sheet_path)
 		return null
 	return pack
+
+
+## Cell size implied by the sheet's width, or zero if the sheet isn't a whole
+## number of rows of them. The columns are fixed at COLS; everything else is
+## measured, since nothing in the manifest declares the grid.
+static func _cell_size_for(image: Image) -> Vector2i:
+	var width := image.get_width()
+	var height := image.get_height()
+	if width <= 0 or width % COLS != 0:
+		return Vector2i.ZERO
+	var cell_width := width / COLS
+	# Integer maths throughout: a sheet whose cells aren't a whole number of
+	# pixels tall is malformed, not something to round into shape.
+	if cell_width * CELL_ASPECT.y % CELL_ASPECT.x != 0:
+		return Vector2i.ZERO
+	var cell_height := cell_width * CELL_ASPECT.y / CELL_ASPECT.x
+	if cell_height <= 0 or height % cell_height != 0:
+		return Vector2i.ZERO
+	return Vector2i(cell_width, cell_height)
+
+
+func row_count() -> int:
+	return row_frame_counts.size()
 
 
 func frame_total() -> int:
@@ -135,11 +168,12 @@ func _slice(image: Image) -> void:
 	var sheet := ImageTexture.create_from_image(image)
 	frames = SpriteFrames.new()
 	frames.remove_animation(&"default")
-	row_frame_counts.resize(ROWS)
-	row_rects.resize(ROWS)
+	var rows := image.get_height() / cell_size.y
+	row_frame_counts.resize(rows)
+	row_rects.resize(rows)
 
 	var content := Rect2i()
-	for row in ROWS:
+	for row in rows:
 		var anim := row_anim(row)
 		frames.add_animation(anim)
 		frames.set_animation_loop(anim, true)

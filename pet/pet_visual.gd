@@ -166,8 +166,13 @@ func _advance_calibration(delta: float) -> void:
 	if _calibration_timer > 0.0:
 		return
 	_calibration_timer = CALIBRATION_STEP
-	for _i in PetPack.ROWS:
-		_calibration_row = (_calibration_row + 1) % PetPack.ROWS
+	# Row count varies by pack — 9 on the original sheets, 11 on v2 — so ask the
+	# pack rather than assuming.
+	var rows := _pack.row_count()
+	if rows <= 0:
+		return
+	for _i in rows:
+		_calibration_row = (_calibration_row + 1) % rows
 		if _pack.has_row(_calibration_row):
 			break
 	_sprite.play(PetPack.row_anim(_calibration_row))

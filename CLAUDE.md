@@ -145,15 +145,21 @@ The two consequences:
 
 Art is the Codex Pets / petdex format, loaded at runtime from
 `~/.codex/pets/{id}/` (installed by `npx codex-pets add <id>`): `pet.json` plus
-an 8x9 grid of 192x208 cells, one animation state per row.
+8 columns of 192x208 cells, one animation state per row.
 
 **No artwork ships in this repo, ever.** The format and tooling are MIT but the
 packs are not — originals default to CC BY-NC-SA and fan works of third-party
 characters are personal, non-commercial use only. Reading packs from the user's
 own install keeps licensing between them and the pet's author.
 
-The manifest declares neither frame counts nor row semantics:
+The manifest declares neither the grid, nor frame counts, nor row semantics:
 
+- **The row count is measured, never assumed.** The format grew: original sheets
+  are 9 rows, `spriteVersionNumber: 2` packs are 11, and nothing in `pet.json`
+  says which. `_cell_size_for()` derives the cell from the width and the 192:208
+  ratio, then divides the height by it. A hard-coded 9 made the divisibility
+  check reject every v2 pack outright — with the pet silently falling back to the
+  procedural blob, which reads as "the download didn't work".
 - Frame counts are detected by scanning each row for its first blank cell.
 - Row meanings are a built-in guess in `PetVisual.DEFAULT_STATE_ROWS`, read off a
   real sheet rather than any spec, overridable per pet via a `[pet_rows]`
