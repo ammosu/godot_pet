@@ -119,7 +119,9 @@ func _ready() -> void:
 >   解法：`pet.gd` 的 `_refresh_mask()` 在 `WindowController.passthrough_clips_rendering()` 為真時改用 `ChatPanel.get_chrome_rect()`（泡泡 + 尾巴 + 陰影 + 輸入框），其他平台維持原本只含輸入框的行為——那邊泡泡是純顯示的，放大遮罩只會白白吃掉本該穿透到桌面的點擊。
 >   泡泡會隨著文字打字而長大，遮罩得跟著更新，所以 `_refresh_mask()` 從 `_refresh_hit_region()` 拆出來由 `_process` 驅動；後者還要重建泡泡樣式與重排輸入框，不能每幀跑。
 >   `set_hit_region()` 會擋掉沒變動的 region——`SetWindowRgn` 每次呼叫都強制重繪，而泡泡出現時 brain 進入 `TALK`、寵物站著不動，region 多半是不變的。
-> - `screen_get_scale()` **只有 macOS 有實作**，Windows 一律回 1.0，所以上面 Retina 那套 DPI 縮放在 Windows 完全沒作用（125% 螢幕上寵物與右鍵選單都偏小）。要修得改用 `screen_get_dpi() / 96.0`。
+> - `screen_get_scale()` **只有 macOS 有實作**，Windows 一律回 1.0，所以上面 Retina 那套 DPI 縮放在 Windows 完全沒作用——125% 螢幕上寵物與右鍵選單都偏小，而且 `_scale_menu_theme()` 因為 `is_equal_approx(s, 1.0)` 直接 early-return，選單根本沒縮放過。
+>   解法是 `WindowController.display_scale()`：`screen_get_scale()` 大於 1 就用它（macOS），否則退回 `screen_get_dpi() / 96`（Windows／Linux 回報的是 DPI 不是倍率）。
+>   **不要把結果取整**。像素美術偏好整數倍率，但 125% 就是 125%——取整回 1.0 正是原本的 bug，取整到 2.0 則會讓寵物大到誇張。實測 1.25 倍下 pixel art 沒有破圖。
 > - 沒有 Windows 憑證庫後端，`SecretStore` 落到 `Backend.NONE`，API key 會明文存進 `config.cfg`。
 > - 顯卡驅動若不支援 Vulkan，Godot 會自動退到 Direct3D 12，透明與 passthrough 都照常運作。
 

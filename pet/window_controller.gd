@@ -20,6 +20,10 @@ const BASE_SIZE := Vector2i(440, 760)
 ## that nearly all of it is bubble space.
 const ANCHOR_RATIO := Vector2(0.5, 0.80)
 
+## Dots per inch at 100%. Windows and Linux report a DPI rather than a factor,
+## and 96 is the unscaled baseline on both.
+const BASE_DPI := 96.0
+
 var _win: Window
 var _hit_region := PackedVector2Array()
 ## Where the visible pet sits inside the window, in viewport pixels. The window
@@ -47,9 +51,28 @@ func _ready() -> void:
 ## coordinates 1:1 with window pixels — the mouse passthrough region depends on
 ## that, since DisplayServer expects window pixels.
 func _apply_dpi_scale() -> void:
-	_ui_scale = maxf(1.0, DisplayServer.screen_get_scale(DisplayServer.get_primary_screen()))
+	_ui_scale = display_scale(DisplayServer.get_primary_screen())
 	_win.size = Vector2i(Vector2(BASE_SIZE) * _ui_scale)
 	_content_rect = Rect2i(Vector2i.ZERO, _win.size)
+
+
+## How much bigger than its design size everything has to be drawn.
+##
+## `screen_get_scale()` is implemented on **macOS only**. Everywhere else it
+## returns 1.0 no matter what the desktop is set to, which left the pet and the
+## right-click menu drawn at design size on a 125% Windows display — correct in
+## pixels, and visibly too small. Windows and Linux report a DPI instead, so fall
+## back to that.
+##
+## The result is deliberately not rounded to a whole number. Pixel art prefers
+## integer scales, but 125% means 125%: snapping to 1.0 is the bug this replaces,
+## and snapping to 2.0 would make the pet enormous.
+static func display_scale(screen: int) -> float:
+	var scale := DisplayServer.screen_get_scale(screen)
+	if scale > 1.0:
+		return scale
+	var dpi := DisplayServer.screen_get_dpi(screen)
+	return maxf(1.0, float(dpi) / BASE_DPI) if dpi > 0 else 1.0
 
 
 func get_ui_scale() -> float:

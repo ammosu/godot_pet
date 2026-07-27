@@ -85,16 +85,24 @@ holds no behaviour itself.
 `Window.size` / `screen_get_usable_rect()` / `screen_get_position()` are all
 *physical* pixels (a 2940-wide Retina screen reports 2940).
 
-So the window is sized as `BASE_SIZE * screen_get_scale()` and the visual node
-is scaled to match. Do **not** introduce `Window.content_scale_factor` or
-`content_scale_mode`: they decouple viewport coordinates from window pixels and
-silently misplace the click-through mask.
+So the window is sized as `BASE_SIZE * WindowController.display_scale()` and the
+visual node is scaled to match. Do **not** introduce `Window.content_scale_factor`
+or `content_scale_mode`: they decouple viewport coordinates from window pixels
+and silently misplace the click-through mask.
+
+`display_scale()` cannot just call `screen_get_scale()` — **that one is
+implemented on macOS only**, and returns 1.0 everywhere else no matter what the
+desktop is set to. On a 125% Windows display it left the pet and the right-click
+menu drawn at design size: correct in pixels, visibly too small. Windows and
+Linux report a DPI instead, so the fallback is `screen_get_dpi() / 96`. The
+result is not rounded to an integer — 125% means 125%.
 
 Anything measured in design units gets multiplied by
 `WindowController.get_ui_scale()` at the point of use. That includes UI theme
-constants — popups and controls are laid out in physical pixels, so on Retina
-the default theme renders at half size unless its font sizes and spacings are
-scaled (see `_scale_menu_theme` in `pet/pet.gd`).
+constants — popups and controls are laid out in physical pixels, so the default
+theme renders undersized unless its font sizes and spacings are scaled too (see
+`_scale_menu_theme` in `pet/pet.gd`, which early-returns at 1.0 and so did
+nothing at all on Windows until the above was fixed).
 
 ### The window deliberately hangs off the screen
 
