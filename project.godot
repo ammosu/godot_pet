@@ -21,6 +21,7 @@ MemoryStore="*res://autoload/memory_store.gd"
 LLMService="*res://autoload/llm_service.gd"
 Nudger="*res://autoload/nudger.gd"
 TTSService="*res://autoload/tts_service.gd"
+VisionService="*res://autoload/vision_service.gd"
 
 [audio]
 

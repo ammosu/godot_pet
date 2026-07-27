@@ -40,7 +40,7 @@ const PET_GALLERY_URL := "https://codex-pets.net/"
 
 enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, SPEAK, ROAM, CALIBRATE, RECENTRE,
-	SET_KEY, RECALL, FORGET, QUIT,
+	SET_KEY, RECALL, FORGET, LOOK, QUIT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -349,6 +349,8 @@ func _build_menu() -> void:
 		_menu.set_item_checked(_menu.get_item_index(PROVIDER_BASE + i),
 			provider == LLMService.get_provider_name())
 	_menu.add_item(_api_key_label(), MenuId.SET_KEY)
+	_menu.add_item("看一下我的螢幕", MenuId.LOOK)
+	_menu.set_item_disabled(_menu.get_item_index(MenuId.LOOK), not VisionService.is_supported())
 	_menu.add_item("你記得我什麼？", MenuId.RECALL)
 	_menu.add_item("全部忘掉", MenuId.FORGET)
 	_menu.set_item_disabled(_menu.get_item_index(MenuId.FORGET), not MemoryStore.has_memories())
@@ -414,6 +416,8 @@ func _on_menu_pressed(id: int) -> void:
 			_brain.set_home_here()
 		MenuId.SET_KEY:
 			_ask_for_api_key()
+		MenuId.LOOK:
+			VisionService.look()
 		MenuId.RECALL:
 			_recall()
 		MenuId.FORGET:

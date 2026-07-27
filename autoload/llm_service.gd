@@ -36,6 +36,9 @@ var _tag_buffer := ""
 ## What the bubble actually showed, which is what goes into the history — the
 ## model shouldn't have to re-read its own tags.
 var _clean_reply := ""
+## Set for replies that describe something transient, like the screen, so they
+## stay out of the summary, the facts and the save file.
+var _reply_is_ephemeral := false
 
 
 func _ready() -> void:
@@ -146,6 +149,32 @@ func note_pet_said(text: String) -> void:
 	MemoryStore.append("assistant", text)
 
 
+## Ask about a screenshot. Same streaming path as any reply, so it types into
+## the bubble and drives the animation the usual way — but the answer is marked
+## ephemeral, because it describes whatever happened to be on screen and has no
+## business becoming a permanent fact about the user.
+func ask_about_image(question: String, data_url: String) -> void:
+	if _provider == null:
+		return
+	if _provider.is_busy():
+		_provider.cancel()
+
+	MemoryStore.append("user", question)
+	var messages := MemoryStore.recent_messages()
+	# The image rides on the newest turn only; earlier turns stay plain text so
+	# the pet isn't re-billed for every screenshot it has ever seen.
+	messages[-1]["content"] = [
+		{"type": "text", "text": question},
+		{"type": "image_url", "image_url": {"url": data_url, "detail": VisionService.DETAIL}},
+	]
+
+	_tag_resolved = false
+	_tag_buffer = ""
+	_clean_reply = ""
+	_reply_is_ephemeral = true
+	_provider.send(messages, build_system_prompt())
+
+
 func _on_user_said(text: String) -> void:
 	var trimmed := text.strip_edges()
 	if trimmed.is_empty() or _provider == null:
@@ -158,6 +187,7 @@ func _on_user_said(text: String) -> void:
 	_tag_resolved = false
 	_tag_buffer = ""
 	_clean_reply = ""
+	_reply_is_ephemeral = false
 	_provider.send(MemoryStore.recent_messages(), build_system_prompt())
 
 
@@ -166,8 +196,11 @@ func _on_finished(full_text: String) -> void:
 	if not _tag_resolved:
 		_release_tag_buffer(_tag_buffer.lstrip(" \n\t"))
 	var reply := _clean_reply if not _clean_reply.is_empty() else full_text
-	MemoryStore.append("assistant", reply)
-	MemoryStore.maybe_condense()
+	MemoryStore.append("assistant", reply, _reply_is_ephemeral)
+	# Don't pay to summarise on the back of a turn that can't be summarised.
+	if not _reply_is_ephemeral:
+		MemoryStore.maybe_condense()
+	_reply_is_ephemeral = false
 	EventBus.reply_finished.emit(reply)
 
 

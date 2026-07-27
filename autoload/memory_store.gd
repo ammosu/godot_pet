@@ -57,11 +57,14 @@ func _exit_tree() -> void:
 
 # --- Conversation -------------------------------------------------------------
 
-func append(role: String, content: String) -> void:
+## `ephemeral` turns describe something that was only true for a moment — what
+## was on screen, say. They stay in the recent window so follow-up questions
+## still make sense, but never reach the summary, the facts, or the save file.
+func append(role: String, content: String, ephemeral := false) -> void:
 	var text := content.strip_edges()
 	if text.is_empty():
 		return
-	_history.append({"role": role, "content": text})
+	_history.append({"role": role, "content": text, "ephemeral": ephemeral})
 	_dirty = true
 
 
@@ -73,9 +76,13 @@ func drop_trailing_user_turn() -> void:
 		_dirty = true
 
 
+## Wire format only: the bookkeeping flag must not reach the API.
 func recent_messages() -> Array:
 	var start := maxi(0, _history.size() - RECENT_MESSAGES)
-	return _history.slice(start).duplicate(true)
+	var out := []
+	for message in _history.slice(start):
+		out.append({"role": message["role"], "content": message["content"]})
+	return out
 
 
 # --- Prompt -------------------------------------------------------------------
@@ -138,6 +145,8 @@ func maybe_condense() -> void:
 func _condense_prompt(aged: Array) -> String:
 	var lines := PackedStringArray()
 	for message in aged:
+		if message.get("ephemeral", false):
+			continue
 		var who := "使用者" if message.get("role") == "user" else "寵物"
 		lines.append("%s：%s" % [who, message.get("content", "")])
 	return "既有摘要：\n%s\n\n新對話：\n%s" % [
@@ -206,12 +215,17 @@ func _save_if_dirty() -> void:
 		push_warning("MemoryStore: cannot write %s" % PATH)
 		return
 	# Cap what reaches disk so a long-running session can't grow the file
-	# without bound between folds.
+	# without bound between folds, and drop ephemeral turns entirely — quitting
+	# should take whatever the pet saw on screen with it.
 	var start := maxi(0, _history.size() - HARD_MAX_MESSAGES)
+	var durable := []
+	for message in _history.slice(start):
+		if not message.get("ephemeral", false):
+			durable.append({"role": message["role"], "content": message["content"]})
 	file.store_string(JSON.stringify({
 		"summary": _summary,
 		"facts": Array(_facts),
-		"history": _history.slice(start),
+		"history": durable,
 	}))
 
 
@@ -228,4 +242,8 @@ func _load() -> void:
 	_merge_facts(data.get("facts", []))
 	for entry in data.get("history", []):
 		if typeof(entry) == TYPE_DICTIONARY and entry.has("role") and entry.has("content"):
-			_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+			_history.append({
+				"role": str(entry["role"]),
+				"content": str(entry["content"]),
+				"ephemeral": false,
+			})

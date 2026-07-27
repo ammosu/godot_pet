@@ -245,3 +245,31 @@ it.
 `prompts/persona.md` (character and reply format), `prompts/nudges.json`
 (unprompted lines), and the `DECAY` / `STARTING` constants in
 `autoload/pet_state.gd`. Prompt files take effect on restart.
+
+### Screen vision
+
+`autoload/vision_service.gd` captures the screen with
+`DisplayServer.screen_get_image()` and sends it as an `image_url` content part.
+It runs **only from an explicit user action** — never on a timer, never from a
+nudge. An always-on pet that photographs the desktop in the background is a
+different product from one that looks when asked, and only the second is
+intended here.
+
+macOS needs Screen Recording permission, and **the failure is silent**: without
+it the capture contains just the wallpaper and the app's own windows, with no
+error, so the model happily discusses the desktop picture. The service checks
+mean local contrast and asks about permission rather than asserting, since a
+genuinely bare desktop trips the same test. Each exported build is a separate
+binary and needs its own grant.
+
+The pet's own window sets `FLAG_EXCLUDE_FROM_CAPTURE` so it doesn't spend the
+screenshot describing its own speech bubble.
+
+Replies about the screen are appended to history as **ephemeral**: they stay in
+the recent window so follow-up questions work, but are skipped when condensing,
+never extracted as facts, and never written to `memory.json`. Otherwise one
+glimpse of something private becomes a permanent fact re-sent with every request.
+
+The persona has to grant an explicit exception for this — it tells the pet it
+can't see the screen, and the model will refuse to describe a screenshot it is
+plainly being shown unless the exception is spelled out.
