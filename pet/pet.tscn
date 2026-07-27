@@ -1,0 +1,36 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://pet/pet.gd" id="1_pet"]
+[ext_resource type="Script" path="res://pet/window_controller.gd" id="2_window"]
+[ext_resource type="Script" path="res://pet/pet_brain.gd" id="3_brain"]
+[ext_resource type="Script" path="res://pet/pet_visual.gd" id="4_visual"]
+[ext_resource type="Script" path="res://pet/fallback_blob.gd" id="5_blob"]
+
+[node name="Pet" type="Node2D"]
+script = ExtResource("1_pet")
+
+[node name="WindowController" type="Node" parent="."]
+script = ExtResource("2_window")
+
+[node name="Brain" type="Node" parent="."]
+script = ExtResource("3_brain")
+
+[node name="Visual" type="Node2D" parent="."]
+position = Vector2(160, 160)
+script = ExtResource("4_visual")
+
+[node name="Sprite" type="AnimatedSprite2D" parent="Visual"]
+visible = false
+
+[node name="Fallback" type="Node2D" parent="Visual"]
+script = ExtResource("5_blob")
+
+[node name="CalibrationLabel" type="Label" parent="Visual"]
+visible = false
+offset_left = -90.0
+offset_top = -140.0
+offset_right = 90.0
+offset_bottom = -114.0
+horizontal_alignment = 1
+
+[node name="Menu" type="PopupMenu" parent="."]
