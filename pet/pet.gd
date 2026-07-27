@@ -34,7 +34,11 @@ const EMOTION_STATES := {
 
 const OPENAI_KEY := "OPENAI_API_KEY"
 
-enum MenuId { FALLBACK, FEED, NUDGES, ROAM, CALIBRATE, RECENTRE, SET_KEY, QUIT }
+## Where the sprite packs come from. No artwork ships with this project — see
+## pets/pet_pack.gd for why.
+const PET_GALLERY_URL := "https://codex-pets.net/"
+
+enum MenuId { FALLBACK, GET_PETS, FEED, NUDGES, ROAM, CALIBRATE, RECENTRE, SET_KEY, QUIT }
 
 @onready var _window_ctl: WindowController = $WindowController
 @onready var _brain: PetBrain = $Brain
@@ -312,9 +316,9 @@ func _build_menu() -> void:
 		_menu.set_item_checked(_menu.get_item_index(PET_ID_BASE + i), pet_id == current_id)
 	_menu.add_radio_check_item("預設造型", MenuId.FALLBACK)
 	_menu.set_item_checked(_menu.get_item_index(MenuId.FALLBACK), current_id.is_empty())
-
+	_menu.add_item("找更多造型…", MenuId.GET_PETS)
 	if _installed_pets.is_empty():
-		_menu.add_separator("用 npx codex-pets add <id> 安裝寵物")
+		_menu.add_separator("裝好後直接再開這個選單就會出現")
 
 	_menu.add_separator("大小")
 	for i in SIZE_CHOICES.size():
@@ -349,6 +353,12 @@ func _build_menu() -> void:
 
 
 func _open_menu() -> void:
+	# Packs are installed by an external CLI while the app is running, so rescan
+	# on every open rather than making the user restart to see a new pet.
+	var found := PetPack.list_installed()
+	if found != _installed_pets:
+		_installed_pets = found
+		_build_menu()
 	_menu.reset_size()
 	_menu.popup(Rect2i(DisplayServer.mouse_get_position(), _menu.size))
 
@@ -367,6 +377,8 @@ func _on_menu_pressed(id: int) -> void:
 	match id:
 		MenuId.FALLBACK:
 			_switch_pack("")
+		MenuId.GET_PETS:
+			OS.shell_open(PET_GALLERY_URL)
 		MenuId.FEED:
 			_feed()
 		MenuId.NUDGES:
