@@ -47,4 +47,6 @@ theme/custom="res://ui/theme.tres"
 
 ; Pixel art: never interpolate.
 textures/canvas_textures/default_texture_filter=0
+; Required to export arm64 / universal macOS builds.
+textures/vram_compression/import_etc2_astc=true
 anti_aliasing/quality/msaa_2d=2

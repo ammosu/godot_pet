@@ -273,10 +273,25 @@ DisplayServer.tts_set_utterance_callback(DisplayServer.TTS_UTTERANCE_ENDED, _on_
 **驗收**：關掉重開，寵物還記得你上次講的事。
 
 ### Phase 10 — 打包（1 天）
-- macOS export preset：勾 per-pixel transparency、填麥克風權限說明
-- 自簽 codesign（自己用就夠）；要給別人用得 Apple Developer 帳號做 notarization，不然對方會看到「已損毀」
-- 設定面板要能填 API key（不能要求使用者去改環境變數）
-- 開機自動啟動：加到 macOS 登入項目
+
+```sh
+# 一次性：裝 export template（只需要 macos.zip，其他平台的不用）
+curl -L -o /tmp/tpl.tpz https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_export_templates.tpz
+unzip -q /tmp/tpl.tpz -d /tmp/tplx
+mkdir -p ~/Library/Application\ Support/Godot/export_templates/4.7.1.stable
+cp /tmp/tplx/templates/{macos.zip,version.txt} ~/Library/Application\ Support/Godot/export_templates/4.7.1.stable/
+
+# 每次
+godot --headless --path . --export-release "macOS" "build/Godot Pet.app"
+```
+
+- **`rendering/textures/vram_compression/import_etc2_astc` 必須開**，否則 arm64／universal 匯出直接被擋
+- `export_presets.cfg` **有進版控**：它帶著透明視窗和隱私權說明等設定，而 Godot 的簽章／公證機密是放在另一個 `export_credentials.cfg`（那個才要 ignore）
+- codesign 用內建 ad-hoc 就能自己用。要給別人下載才需要 Apple Developer 帳號做 notarization，否則對方會看到「已損毀」
+- **`.env` 不會進 .app**（`exclude_filter` 有擋，而且執行檔旁邊也沒有）。所以從原始碼跑得好好的機器，打包後會**默默降級成 mock**。啟動時偵測到「沒有 key 且正在用 mock」就讓寵物直接講出來，不要讓它看起來像壞掉
+- 開機自動啟動：把 `.app` 拖到 `/Applications`，然後系統設定 → 一般 → 登入項目 → `+`
+
+**驗收**：`.app` 雙擊就能跑、透明正常、Dock 有圖示、不需要終端機。
 
 ---
 

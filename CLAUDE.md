@@ -20,7 +20,20 @@ and the prompt files are Traditional Chinese.
 godot --path .                       # run the app
 godot --headless --import --path .   # import assets + parse all scripts
 pkill -f "godot --path"              # stop a running instance
+
+godot --headless --path . --export-release "macOS" "build/Godot Pet.app"
 ```
+
+Exporting needs the macOS template in
+`~/Library/Application Support/Godot/export_templates/4.7.1.stable/` (see
+PLAN.md Phase 10), and `rendering/textures/vram_compression/import_etc2_astc`
+must stay enabled or arm64/universal builds are refused outright.
+`export_presets.cfg` is committed — it carries the transparency and privacy
+settings; Godot keeps signing secrets in `export_credentials.cfg`, which is not.
+
+An exported build cannot see `res://.env`, so a machine that works from source
+drops to the mock provider once packaged. The key has to be set through the
+menu, which puts it in the credential store where both can reach it.
 
 Always `--import` after editing scripts and grep the output for
 `SCRIPT ERROR|Parse Error|Failed to load`. It is the only static check

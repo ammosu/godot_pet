@@ -89,6 +89,17 @@ func _ready() -> void:
 	# the chat UI to learn how much of the window ended up on screen.
 	_window_ctl.park_at_default_spot()
 	_brain.setup(_window_ctl)
+	_warn_if_keyless()
+
+
+## An exported build can't see the project's .env, so a machine that works fine
+## from source silently drops to canned replies once packaged. Say so rather
+## than letting it look broken.
+func _warn_if_keyless() -> void:
+	if LLMService.get_provider_name() != "mock" or Config.has_secret(OPENAI_KEY):
+		return
+	await get_tree().create_timer(2.0).timeout
+	_on_pet_nudged("neutral", "我還沒有 API key，現在只會講罐頭台詞。右鍵選單可以設定。")
 
 
 ## Centre the pet in the window and match the display's DPI scale, so it looks
