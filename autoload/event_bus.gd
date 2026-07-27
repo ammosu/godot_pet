@@ -32,3 +32,8 @@ signal state_tick(state: Dictionary)
 signal pet_activity_changed(activity: StringName)
 ## The pet started a conversation on its own. Not an LLM reply — see nudger.gd.
 signal pet_nudged(emotion: String, text: String)
+
+# --- Screen ---
+## The pet wants to look at the screen. Nothing is captured until the user says
+## yes; pet.gd owns that decision.
+signal screen_look_requested(question: String, record_question: bool)

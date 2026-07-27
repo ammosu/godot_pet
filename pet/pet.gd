@@ -48,6 +48,7 @@ enum MenuId {
 @onready var _visual: PetVisual = $Visual
 @onready var _chat: ChatPanel = $Chat
 @onready var _menu: PopupMenu = $Menu
+@onready var _consent: ConfirmationDialog = $Consent
 
 var _installed_pets := PackedStringArray()
 var _size_factor := DEFAULT_SIZE_FACTOR
@@ -84,6 +85,8 @@ func _ready() -> void:
 	EventBus.reply_failed.connect(_on_reply_failed)
 	EventBus.emotion_changed.connect(_on_emotion_changed)
 	EventBus.pet_nudged.connect(_on_pet_nudged)
+	EventBus.screen_look_requested.connect(_on_screen_look_requested)
+	_setup_consent_dialog()
 
 	# Park last: it moves the window, and _on_pet_moved has to be listening for
 	# the chat UI to learn how much of the window ended up on screen.
@@ -417,7 +420,7 @@ func _on_menu_pressed(id: int) -> void:
 		MenuId.SET_KEY:
 			_ask_for_api_key()
 		MenuId.LOOK:
-			VisionService.look()
+			EventBus.screen_look_requested.emit(VisionService.DEFAULT_QUESTION, true)
 		MenuId.RECALL:
 			_recall()
 		MenuId.FORGET:
@@ -455,6 +458,58 @@ func _on_secret_submitted(value: String) -> void:
 	if not secured:
 		note = "存好了，不過這台機器沒有安全儲存，我只能放在設定檔裡。"
 	_on_pet_nudged("happy", note)
+
+
+# --- Looking at the screen ----------------------------------------------------
+
+## Screenshots are the one thing here that can hand something private to a
+## third party, so nothing is captured until the user says so. "每次都可以"
+## exists because being asked every time is how people learn to click through
+## the prompt without reading it.
+const CONSENT_ALWAYS := "always"
+
+var _pending_look := {}
+
+
+func _setup_consent_dialog() -> void:
+	_consent.dialog_text = ""
+	_consent.exclusive = false
+	# Native window, laid out in physical pixels, so the stock theme comes out
+	# half size on Retina. A Theme on the dialog reaches the label and the
+	# buttons alike; per-node font overrides only reach the node they're on.
+	var scaled := Theme.new()
+	scaled.default_font_size = roundi(15.0 * _window_ctl.get_ui_scale())
+	_consent.theme = scaled
+	_consent.add_button("每次都可以", false, "always")
+	_consent.confirmed.connect(func() -> void: _resolve_look(true, false))
+	_consent.canceled.connect(func() -> void: _resolve_look(false, false))
+	_consent.custom_action.connect(func(action: StringName) -> void:
+		if action == &"always":
+			_consent.hide()
+			_resolve_look(true, true))
+
+
+func _on_screen_look_requested(question: String, record_question: bool) -> void:
+	_pending_look = {"question": question, "record": record_question}
+	if Config.get_value("vision", "consent", "") == CONSENT_ALWAYS:
+		_resolve_look(true, false)
+		return
+	_consent.dialog_text = "要讓我看一下你現在的螢幕嗎？\n畫面會傳給語言模型，我不會把看到的內容記起來。"
+	_consent.reset_size()
+	_consent.popup_centered()
+
+
+func _resolve_look(allowed: bool, remember: bool) -> void:
+	var pending := _pending_look
+	_pending_look = {}
+	if pending.is_empty():
+		return
+	if remember:
+		Config.set_value("vision", "consent", CONSENT_ALWAYS)
+	if allowed:
+		VisionService.look(str(pending["question"]), bool(pending["record"]))
+	else:
+		_on_pet_nudged("neutral", "好啦，那我不看。")
 
 
 ## Memory that can't be inspected is memory you can't trust, and a pet quietly

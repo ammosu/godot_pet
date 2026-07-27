@@ -38,9 +38,6 @@ func _ready() -> void:
 	_win.transparent = true
 	_win.borderless = true
 	_win.always_on_top = true
-	# Keep the pet out of its own screenshots, or it spends them describing its
-	# own speech bubble back to you.
-	_win.set_flag(Window.FLAG_EXCLUDE_FROM_CAPTURE, true)
 	_apply_dpi_scale()
 
 

@@ -22,6 +22,13 @@ const PROVIDERS := {
 ## reacts before it has finished the sentence.
 const EMOTIONS := ["neutral", "happy", "excited", "sad", "greeting", "sleepy"]
 
+## In the same slot as the mood tag, the model can instead ask to see the screen.
+## Asking in words — "看一下我在幹嘛" — is the obvious way to want this, and a
+## menu item alone leaves the pet insisting it has no eyes. Letting the model
+## decide beats keyword-matching the request, because it also covers "這個錯誤
+## 是什麼意思" typed with the error still on screen.
+const LOOK_TAG := "look"
+
 ## Give up on finding a tag after this many characters — the model skipped it.
 const TAG_SCAN_LIMIT := 24
 
@@ -39,6 +46,11 @@ var _clean_reply := ""
 ## Set for replies that describe something transient, like the screen, so they
 ## stay out of the summary, the facts and the save file.
 var _reply_is_ephemeral := false
+## True while answering with an image attached, so a second [look] can't send it
+## round again.
+var _in_vision_pass := false
+## Kept so a [look] can re-ask the same thing with a screenshot attached.
+var _last_question := ""
 
 
 func _ready() -> void:
@@ -153,13 +165,16 @@ func note_pet_said(text: String) -> void:
 ## the bubble and drives the animation the usual way — but the answer is marked
 ## ephemeral, because it describes whatever happened to be on screen and has no
 ## business becoming a permanent fact about the user.
-func ask_about_image(question: String, data_url: String) -> void:
+func ask_about_image(question: String, data_url: String, record_question := true) -> void:
 	if _provider == null:
 		return
 	if _provider.is_busy():
 		_provider.cancel()
 
-	MemoryStore.append("user", question)
+	# Skipped when the model asked to look mid-reply: the question is already the
+	# newest turn, and appending it again would leave the pet talking to itself.
+	if record_question:
+		MemoryStore.append("user", question)
 	var messages := MemoryStore.recent_messages()
 	# The image rides on the newest turn only; earlier turns stay plain text so
 	# the pet isn't re-billed for every screenshot it has ever seen.
@@ -172,6 +187,7 @@ func ask_about_image(question: String, data_url: String) -> void:
 	_tag_buffer = ""
 	_clean_reply = ""
 	_reply_is_ephemeral = true
+	_in_vision_pass = true
 	_provider.send(messages, build_system_prompt())
 
 
@@ -184,10 +200,12 @@ func _on_user_said(text: String) -> void:
 		_provider.cancel()
 
 	MemoryStore.append("user", trimmed)
+	_last_question = trimmed
 	_tag_resolved = false
 	_tag_buffer = ""
 	_clean_reply = ""
 	_reply_is_ephemeral = false
+	_in_vision_pass = false
 	_provider.send(MemoryStore.recent_messages(), build_system_prompt())
 
 
@@ -201,6 +219,7 @@ func _on_finished(full_text: String) -> void:
 	if not _reply_is_ephemeral:
 		MemoryStore.maybe_condense()
 	_reply_is_ephemeral = false
+	_in_vision_pass = false
 	EventBus.reply_finished.emit(reply)
 
 
@@ -230,10 +249,31 @@ func _on_chunk(text: String) -> void:
 			_release_tag_buffer(head)
 		return
 
-	var emotion := head.substr(1, close - 1).strip_edges().to_lower()
-	if EMOTIONS.has(emotion):
-		EventBus.emotion_changed.emit(emotion)
+	var tag := head.substr(1, close - 1).strip_edges().to_lower()
+	if tag == LOOK_TAG and not _in_vision_pass:
+		_take_a_look()
+		return
+	if EMOTIONS.has(tag):
+		EventBus.emotion_changed.emit(tag)
 	_release_tag_buffer(head.substr(close + 1).lstrip(" \n"))
+
+
+## The model asked to see the screen. Throw away the half-formed reply and put
+## the request to the user; if they allow it, the same question comes back with
+## a screenshot attached. The question is already the last turn in history, so
+## it isn't recorded twice.
+##
+## Deferred because this runs inside the provider's own chunk signal, and tearing
+## its HTTP client down mid-poll leaves it reading from a client that's gone.
+func _take_a_look() -> void:
+	_tag_resolved = true
+	_tag_buffer = ""
+	_request_look.call_deferred()
+
+
+func _request_look() -> void:
+	_provider.cancel()
+	EventBus.screen_look_requested.emit(_last_question, false)
 
 
 func _release_tag_buffer(text: String) -> void:
@@ -251,6 +291,7 @@ func _emit_text(text: String) -> void:
 func _on_failed(message: String) -> void:
 	# Drop the unanswered user turn so a retry doesn't stack duplicates.
 	MemoryStore.drop_trailing_user_turn()
+	_in_vision_pass = false
 	push_warning("LLMService: %s" % message)
 	EventBus.reply_failed.emit(message)
 

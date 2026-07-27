@@ -33,12 +33,12 @@ func is_supported() -> bool:
 
 ## Capture, downscale, and hand it to the model. The reply streams into the
 ## bubble like any other.
-func look(question := DEFAULT_QUESTION) -> void:
+func look(question := DEFAULT_QUESTION, record_question := true) -> void:
 	if not is_supported():
 		EventBus.reply_failed.emit("這個系統不支援截圖")
 		return
 
-	var shot := DisplayServer.screen_get_image(DisplayServer.window_get_current_screen())
+	var shot := await _capture()
 	if shot == null or shot.is_empty():
 		EventBus.reply_failed.emit("截不到螢幕畫面")
 		return
@@ -51,7 +51,23 @@ func look(question := DEFAULT_QUESTION) -> void:
 			"我只看到桌布欸……是不是還沒給我螢幕錄製權限？系統設定 → 隱私權與安全性 → 螢幕錄製。")
 		return
 
-	LLMService.ask_about_image(question, _to_data_url(shot))
+	LLMService.ask_about_image(question, _to_data_url(shot), record_question)
+
+
+## Hide the pet for the length of one capture, so it doesn't spend the
+## screenshot describing its own speech bubble — and so it's still visible in
+## screenshots the user takes themselves. Leaving the flag on permanently makes
+## the pet impossible to photograph at all, which is a worse trade.
+func _capture() -> Image:
+	var window := get_window()
+	window.set_flag(Window.FLAG_EXCLUDE_FROM_CAPTURE, true)
+	# The window server needs a beat to apply the new sharing type; capturing in
+	# the same frame still catches the pet.
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var shot := DisplayServer.screen_get_image(DisplayServer.window_get_current_screen())
+	window.set_flag(Window.FLAG_EXCLUDE_FROM_CAPTURE, false)
+	return shot
 
 
 func _to_data_url(shot: Image) -> String:

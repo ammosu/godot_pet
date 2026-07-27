@@ -134,6 +134,11 @@ func _poll_body() -> void:
 		_buffer.append_array(_strip_cr(chunk))
 		if _http_code == 200:
 			_drain_events()
+			# A chunk handler is free to cancel us — the pet does exactly that
+			# when the model asks to see the screen — and _client is gone by the
+			# time the emit returns.
+			if _stage != Stage.READING:
+				return
 
 	if _client.get_status() == HTTPClient.STATUS_BODY:
 		return

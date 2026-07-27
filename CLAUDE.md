@@ -250,10 +250,20 @@ it.
 
 `autoload/vision_service.gd` captures the screen with
 `DisplayServer.screen_get_image()` and sends it as an `image_url` content part.
-It runs **only from an explicit user action** — never on a timer, never from a
-nudge. An always-on pet that photographs the desktop in the background is a
-different product from one that looks when asked, and only the second is
-intended here.
+Nothing is captured until the user agrees. A request — from the menu, or from
+the model itself — goes out as `EventBus.screen_look_requested`, and `pet.gd`
+puts a confirmation dialog up; "每次都可以" stores consent in config. It never
+runs on a timer or from a nudge.
+
+Typing "看一下我在幹嘛" is the obvious way to ask, so the model can request a
+look by emitting `[look]` in the mood-tag slot, at which point the same question
+is re-sent with a screenshot attached. Letting the model decide beats
+keyword-matching, since it also covers "這個錯誤是什麼意思" typed with the error
+on screen. `_in_vision_pass` stops a second `[look]` looping.
+
+The `[look]` handler must defer before cancelling the provider: it runs inside
+the provider's own chunk signal, and tearing down the HTTP client mid-poll
+leaves `_poll_body` reading from a client that's gone.
 
 macOS needs Screen Recording permission, and **the failure is silent**: without
 it the capture contains just the wallpaper and the app's own windows, with no
@@ -262,8 +272,10 @@ mean local contrast and asks about permission rather than asserting, since a
 genuinely bare desktop trips the same test. Each exported build is a separate
 binary and needs its own grant.
 
-The pet's own window sets `FLAG_EXCLUDE_FROM_CAPTURE` so it doesn't spend the
-screenshot describing its own speech bubble.
+`FLAG_EXCLUDE_FROM_CAPTURE` is toggled on for the duration of one capture, not
+left on: permanently excluded, the pet can't be photographed at all — not by the
+user, and not by the screenshot-based verification this project relies on. The
+window server needs a frame or two to apply it before the capture.
 
 Replies about the screen are appended to history as **ephemeral**: they stay in
 the recent window so follow-up questions work, but are skipped when condensing,

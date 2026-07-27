@@ -51,3 +51,8 @@ autowrap_mode = 2
 visible = false
 
 [node name="Menu" type="PopupMenu" parent="."]
+
+[node name="Consent" type="ConfirmationDialog" parent="."]
+title = "看螢幕"
+ok_button_text = "好"
+cancel_button_text = "不要"
