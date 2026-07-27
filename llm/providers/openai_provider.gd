@@ -220,10 +220,10 @@ func _build_payload(messages: Array, system: String) -> String:
 	return JSON.stringify({
 		"model": str(Config.get_value("llm", "openai_model", DEFAULT_MODEL)),
 		"stream": true,
-		# A speech bubble can't show an essay, and the prompt alone doesn't
-		# reliably keep replies short. Verified against gpt-5.4-nano, which spends
-		# no reasoning tokens here, so a small cap won't swallow the whole reply.
-		"max_completion_tokens": int(Config.get_value("llm", "max_reply_tokens", 220)),
+		# A backstop against a runaway reply, not a style control — the persona
+		# handles length. Verified against gpt-5.4-nano, which spends no reasoning
+		# tokens here, so the cap won't quietly swallow the answer.
+		"max_completion_tokens": int(Config.get_value("llm", "max_reply_tokens", 320)),
 		"messages": wire,
 	})
 
