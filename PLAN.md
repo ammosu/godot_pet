@@ -253,10 +253,22 @@ DisplayServer.tts_set_utterance_callback(DisplayServer.TTS_UTTERANCE_ENDED, _on_
 > ⚠️ macOS export 時必須在 preset 填 microphone usage description，不然打包後拿不到麥克風權限且不會報錯。
 
 ### Phase 9 — 記憶（1 天）
-- 短期：最近 N 輪對話原文（N 依 token 預算，約 10–20 輪）
-- 長期：每累積 M 輪就叫一次 LLM 產生摘要 + 抽取事實（「使用者養貓叫小咪」「使用者是工程師」），存 `user://memory.json`
-- 組 system prompt = 人設 + 長期事實 + 摘要 + 當前狀態 + 短期對話
-- 加個「忘記這件事」的指令與設定面板的記憶檢視／清除
+三層，由便宜到貴：
+
+| 層 | 內容 | 成本 |
+|---|---|---|
+| history | 最近 16 則原文，**會存檔**，重開接續 | 每次請求都送 |
+| summary | 更舊的對話摺疊成一段敘述 | 每 12 則一次 API |
+| facts | 關於使用者的長期事實 | 同上，一起抽出 |
+
+- 全部存 `user://memory.json`
+- **對話歷史的所有權移到 `MemoryStore`**，`LLMService` 不再自己留一份 —— 兩邊各存一份、其中一份要持久化，遲早不同步
+- 摺疊用**另開一個 provider instance** 跑，它的 signal 根本沒接上 EventBus，所以摘要的 chunk 不可能漏進泡泡或被 TTS 念出來。比在主 provider 上加旗標安全
+- 摺疊要**批次**（累積 12 則才做），每輪都摘要等於 API 呼叫翻倍
+- mock provider 摘要不出東西，所以 `request_background()` 回 false，此時只在歷史真的爆掉（60 則）才丟棄最舊的
+- 右鍵選單「你記得我什麼？」列出所有 facts、「全部忘掉」清空。**記憶不能被檢視就不能被信任** —— 一隻默默記著錯誤資訊的寵物比會忘記的更糟
+
+抽事實的 prompt 要明確擋掉兩種東西，不然會塞滿垃圾：**推測**（「可能還有併發風險」）和**很快過期的事**（「今天開了四個會」）。後者留在 summary 就好。
 
 **驗收**：關掉重開，寵物還記得你上次講的事。
 

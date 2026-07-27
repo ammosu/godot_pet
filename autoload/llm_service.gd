@@ -1,17 +1,13 @@
 extends Node
 
-## Turns "the user said something" into "the pet replied", and owns everything
-## in between: which backend is active, the conversation history, and the system
-## prompt. Everyone else talks to it through EventBus.
+## Turns "the user said something" into "the pet replied": picks the backend,
+## assembles the system prompt, and parses the mood tag out of the stream.
+## Everyone else talks to it through EventBus.
 ##
-## Phase 6 folds the needs system into the system prompt; Phase 9 adds long-term
-## memory. Both plug in at `build_system_prompt()`.
+## Conversation history belongs to MemoryStore, not here — keeping a second copy
+## alongside the one being persisted is how the two drift apart.
 
 const PERSONA_PATH := "res://prompts/persona.md"
-
-## Turns of conversation kept verbatim. Older turns get dropped; Phase 9
-## replaces this with summarise-and-drop.
-const HISTORY_TURNS := 20
 
 const PROVIDERS := {
 	"mock": "res://llm/providers/mock_provider.gd",
@@ -31,7 +27,6 @@ const TAG_SCAN_LIMIT := 24
 
 var _provider: LLMProvider = null
 var _provider_name := ""
-var _history: Array[Dictionary] = []
 var _persona := ""
 
 ## Leading-tag parser state. Text is held back until the tag resolves one way or
@@ -111,22 +106,44 @@ func interrupt() -> void:
 		_provider.cancel()
 
 
-func clear_history() -> void:
-	_history.clear()
+## A one-off request whose output must never reach the bubble — summarising, and
+## anything else the pet does behind its own back.
+##
+## Runs on a second provider instance rather than a flag on the main one: its
+## signals simply aren't wired to EventBus, so there's no path by which a stray
+## chunk could be spoken aloud or typed out. Returns false when the active
+## backend can't do useful work, so callers can degrade instead of waiting.
+func request_background(system: String, prompt: String, on_done: Callable) -> bool:
+	if _provider_name == "mock" or not PROVIDERS.has(_provider_name):
+		return false
+	var script: GDScript = load(PROVIDERS[_provider_name])
+	var worker: LLMProvider = script.new()
+	worker.name = "BackgroundProvider"
+	add_child(worker)
+	worker.finished.connect(func(text: String) -> void:
+		on_done.call(text)
+		worker.queue_free())
+	worker.failed.connect(func(message: String) -> void:
+		push_warning("LLMService: background request failed — %s" % message)
+		worker.queue_free())
+	worker.send([{"role": "user", "content": prompt}], system)
+	return true
 
 
 func build_system_prompt() -> String:
-	return "%s\n\n## 你現在的狀態\n%s\n\n讓這些狀態影響你的語氣，但**不要直接把它們念出來**，也不要說「我的心情是普通」這種話。" \
-		% [_persona, PetState.describe()]
+	var sections := PackedStringArray([_persona])
+	var memories := MemoryStore.context_block()
+	if not memories.is_empty():
+		sections.append(memories)
+	sections.append("## 你現在的狀態\n%s\n\n讓這些狀態影響你的語氣，但**不要直接把它們念出來**，也不要說「我的心情是普通」這種話。"
+		% PetState.describe())
+	return "\n\n".join(sections)
 
 
 ## Record something the pet said without the model's involvement — an unprompted
 ## line — so its next reply doesn't contradict it.
 func note_pet_said(text: String) -> void:
-	if text.strip_edges().is_empty():
-		return
-	_history.append({"role": "assistant", "content": text})
-	_trim_history()
+	MemoryStore.append("assistant", text)
 
 
 func _on_user_said(text: String) -> void:
@@ -137,12 +154,11 @@ func _on_user_said(text: String) -> void:
 	if _provider.is_busy():
 		_provider.cancel()
 
-	_history.append({"role": "user", "content": trimmed})
-	_trim_history()
+	MemoryStore.append("user", trimmed)
 	_tag_resolved = false
 	_tag_buffer = ""
 	_clean_reply = ""
-	_provider.send(_history.duplicate(true), build_system_prompt())
+	_provider.send(MemoryStore.recent_messages(), build_system_prompt())
 
 
 func _on_finished(full_text: String) -> void:
@@ -150,8 +166,8 @@ func _on_finished(full_text: String) -> void:
 	if not _tag_resolved:
 		_release_tag_buffer(_tag_buffer.lstrip(" \n\t"))
 	var reply := _clean_reply if not _clean_reply.is_empty() else full_text
-	_history.append({"role": "assistant", "content": reply})
-	_trim_history()
+	MemoryStore.append("assistant", reply)
+	MemoryStore.maybe_condense()
 	EventBus.reply_finished.emit(reply)
 
 
@@ -201,16 +217,9 @@ func _emit_text(text: String) -> void:
 
 func _on_failed(message: String) -> void:
 	# Drop the unanswered user turn so a retry doesn't stack duplicates.
-	if not _history.is_empty() and _history[-1].get("role") == "user":
-		_history.pop_back()
+	MemoryStore.drop_trailing_user_turn()
 	push_warning("LLMService: %s" % message)
 	EventBus.reply_failed.emit(message)
-
-
-func _trim_history() -> void:
-	var excess := _history.size() - HISTORY_TURNS * 2
-	if excess > 0:
-		_history = _history.slice(excess)
 
 
 func _load_persona() -> String:

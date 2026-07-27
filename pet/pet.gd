@@ -38,7 +38,10 @@ const OPENAI_KEY := "OPENAI_API_KEY"
 ## pets/pet_pack.gd for why.
 const PET_GALLERY_URL := "https://codex-pets.net/"
 
-enum MenuId { FALLBACK, GET_PETS, FEED, NUDGES, SPEAK, ROAM, CALIBRATE, RECENTRE, SET_KEY, QUIT }
+enum MenuId {
+	FALLBACK, GET_PETS, FEED, NUDGES, SPEAK, ROAM, CALIBRATE, RECENTRE,
+	SET_KEY, RECALL, FORGET, QUIT,
+}
 
 @onready var _window_ctl: WindowController = $WindowController
 @onready var _brain: PetBrain = $Brain
@@ -335,6 +338,9 @@ func _build_menu() -> void:
 		_menu.set_item_checked(_menu.get_item_index(PROVIDER_BASE + i),
 			provider == LLMService.get_provider_name())
 	_menu.add_item(_api_key_label(), MenuId.SET_KEY)
+	_menu.add_item("你記得我什麼？", MenuId.RECALL)
+	_menu.add_item("全部忘掉", MenuId.FORGET)
+	_menu.set_item_disabled(_menu.get_item_index(MenuId.FORGET), not MemoryStore.has_memories())
 
 	_menu.add_separator()
 	_menu.add_item("餵食", MenuId.FEED)
@@ -397,6 +403,10 @@ func _on_menu_pressed(id: int) -> void:
 			_brain.set_home_here()
 		MenuId.SET_KEY:
 			_ask_for_api_key()
+		MenuId.RECALL:
+			_recall()
+		MenuId.FORGET:
+			_forget()
 		MenuId.QUIT:
 			get_tree().quit()
 
@@ -430,6 +440,25 @@ func _on_secret_submitted(value: String) -> void:
 	if not secured:
 		note = "存好了，不過這台機器沒有安全儲存，我只能放在設定檔裡。"
 	_on_pet_nudged("happy", note)
+
+
+## Memory that can't be inspected is memory you can't trust, and a pet quietly
+## carrying a wrong fact about you is worse than one that forgets.
+func _recall() -> void:
+	var facts := MemoryStore.facts()
+	if facts.is_empty():
+		_on_pet_nudged("neutral", "還沒記住什麼欸，多跟我講講話嘛。")
+		return
+	var lines := PackedStringArray()
+	for fact in facts:
+		lines.append("· %s" % fact)
+	_on_pet_nudged("happy", "我記得這些：\n%s" % "\n".join(lines))
+
+
+func _forget() -> void:
+	MemoryStore.forget_all()
+	_build_menu()
+	_on_pet_nudged("sad", "好……全部清空了，我們重新認識吧。")
 
 
 func _feed() -> void:

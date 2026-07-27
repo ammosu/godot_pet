@@ -165,6 +165,26 @@ announced in 2025 but still ships only inside Codex tooling; the workarounds in
 circulation impersonate the Codex CLI's OAuth client to spend ChatGPT
 subscription entitlement, which this project does not do.
 
+### Memory
+
+`autoload/memory_store.gd` owns the conversation history outright — LLMService
+asks it for the messages to send rather than keeping a copy, because a second
+copy alongside the persisted one is how the two drift apart. Three layers, all
+in `user://memory.json`: recent turns verbatim, older turns folded into a
+summary, and durable facts about the user.
+
+Folding costs an API call, so it runs in batches once enough messages have aged
+out of the verbatim window, and goes through
+`LLMService.request_background()` — a **second provider instance** whose signals
+are not wired to EventBus, so a summary chunk has no path to the speech bubble
+or the TTS queue. It returns false when the active backend can't do the work
+(mock, or no key), and the store then only discards history once it is genuinely
+unwieldy.
+
+The fact-extraction prompt has to explicitly exclude speculation and
+soon-stale details, or facts fill up with "probably still has concurrency risk"
+and "had four meetings today".
+
 ### Speech
 
 `autoload/tts_service.gd` uses `DisplayServer.tts_speak()` — the OS voices, so
