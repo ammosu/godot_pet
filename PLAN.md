@@ -284,7 +284,12 @@ cp /tmp/tplx/templates/{macos.zip,version.txt} ~/Library/Application\ Support/Go
 
 # 每次
 godot --headless --path . --export-release "macOS" "build/Godot Pet.app"
+tools/make_app_icon.sh   # 選用：Dock 圖示換成目前那隻寵物
 ```
+
+`make_app_icon.sh` 從目前選用的 pack 抽出 idle 第一格做成 `.icns` 塞回 bundle 再重簽。
+**素材不會進 repo**，產生出來的圖示只屬於你本機這份 build —— 別把帶著角色臉的 `.app` 給別人。
+不跑這個腳本的話就維持專案自己的 `icon.svg`。
 
 - **`rendering/textures/vram_compression/import_etc2_astc` 必須開**，否則 arm64／universal 匯出直接被擋
 - `export_presets.cfg` **有進版控**：它帶著透明視窗和隱私權說明等設定，而 Godot 的簽章／公證機密是放在另一個 `export_credentials.cfg`（那個才要 ignore）
