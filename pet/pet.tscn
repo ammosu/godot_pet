@@ -49,6 +49,5 @@ autowrap_mode = 2
 
 [node name="Input" type="LineEdit" parent="Chat"]
 visible = false
-placeholder_text = "跟我說說話…"
 
 [node name="Menu" type="PopupMenu" parent="."]

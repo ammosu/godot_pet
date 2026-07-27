@@ -32,7 +32,9 @@ const EMOTION_STATES := {
 	&"sleepy": &"sleep",
 }
 
-enum MenuId { FALLBACK, FEED, NUDGES, ROAM, CALIBRATE, RECENTRE, QUIT }
+const OPENAI_KEY := "OPENAI_API_KEY"
+
+enum MenuId { FALLBACK, FEED, NUDGES, ROAM, CALIBRATE, RECENTRE, SET_KEY, QUIT }
 
 @onready var _window_ctl: WindowController = $WindowController
 @onready var _brain: PetBrain = $Brain
@@ -67,6 +69,7 @@ func _ready() -> void:
 	EventBus.pet_moved.connect(_on_pet_moved)
 
 	_chat.submitted.connect(_on_chat_submitted)
+	_chat.secret_submitted.connect(_on_secret_submitted)
 	_chat.input_toggled.connect(_on_input_toggled)
 	_chat.bubble_hidden.connect(_on_bubble_hidden)
 	EventBus.reply_chunk.connect(_on_reply_chunk)
@@ -327,6 +330,7 @@ func _build_menu() -> void:
 		_menu.add_radio_check_item(LLMService.provider_label(provider), PROVIDER_BASE + i)
 		_menu.set_item_checked(_menu.get_item_index(PROVIDER_BASE + i),
 			provider == LLMService.get_provider_name())
+	_menu.add_item(_api_key_label(), MenuId.SET_KEY)
 
 	_menu.add_separator()
 	_menu.add_item("餵食", MenuId.FEED)
@@ -374,8 +378,41 @@ func _on_menu_pressed(id: int) -> void:
 		MenuId.RECENTRE:
 			_window_ctl.park_at_default_spot()
 			_brain.set_home_here()
+		MenuId.SET_KEY:
+			_ask_for_api_key()
 		MenuId.QUIT:
 			get_tree().quit()
+
+
+func _api_key_label() -> String:
+	var where := Config.secret_backend_name()
+	var suffix := "存進 %s" % where if not where.is_empty() else "無安全儲存，會存成明文"
+	return "%s OpenAI API key（%s）" \
+		% ["更換" if Config.has_secret(OPENAI_KEY) else "設定", suffix]
+
+
+func _ask_for_api_key() -> void:
+	_chat.ask_for_secret("貼上 OpenAI API key，Enter 儲存")
+
+
+func _on_secret_submitted(value: String) -> void:
+	# Almost always a stray character from a bad paste — API keys are ASCII, and
+	# the Keychain can't round-trip anything else. See SecretStore.write().
+	if not SecretStore.is_ascii(value):
+		_on_pet_nudged("sad", "這個 key 有奇怪的字元，是不是貼到多餘的東西了？")
+		return
+
+	var secured := Config.set_secret(OPENAI_KEY, value)
+	# A key is the only thing standing between mock and the real model, so adopt
+	# it right away rather than making the user go back to the menu.
+	if LLMService.get_provider_name() != "openai":
+		LLMService.select_provider("openai")
+	_build_menu()
+
+	var note := "收到！鑰匙我幫你收在 %s 了。" % Config.secret_backend_name()
+	if not secured:
+		note = "存好了，不過這台機器沒有安全儲存，我只能放在設定檔裡。"
+	_on_pet_nudged("happy", note)
 
 
 func _feed() -> void:

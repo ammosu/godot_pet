@@ -142,8 +142,28 @@ reaches the bubble and before it enters the history.
 does not persist; only `select_provider()` does. Persisting a default pins
 whichever one applied on first run and permanently defeats later auto-detection.
 
-Secrets come from `Config.get_secret()`: process environment, then `.env` beside
-the project or executable, then `config.cfg`. Never logged.
+### Secrets
+
+`Config.get_secret()` looks in the process environment, then the OS credential
+store (`secrets/secret_store.gd`), then `.env` beside the project or executable,
+then `config.cfg`. Anything the user types in goes to the credential store —
+`security` on macOS, `secret-tool` on Linux, and plaintext config elsewhere, with
+`set_secret()` returning false so the UI can say so.
+
+Secrets are passed to those tools over **stdin via `OS.execute_with_pipe()`,
+never in argv**, which `ps` exposes to anything running as the same user. On
+macOS that means `security add-generic-password -U -w` with the value piped
+twice, since `-w` with no argument prompts and asks for confirmation.
+
+Stored values must be ASCII. `security find-generic-password -w` prints a
+non-ASCII password as an unmarked hex dump, and a literal `deadbeef` comes back
+as `deadbeef`, so hex output can't be distinguished from a real value on read.
+`SecretStore.write()` refuses non-ASCII rather than guessing.
+
+There is no OAuth path. OpenAI's "Sign in with ChatGPT" for third-party apps was
+announced in 2025 but still ships only inside Codex tooling; the workarounds in
+circulation impersonate the Codex CLI's OAuth client to spend ChatGPT
+subscription entitlement, which this project does not do.
 
 ### Needs and unprompted speech
 

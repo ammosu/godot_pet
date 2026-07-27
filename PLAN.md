@@ -151,7 +151,14 @@ func cancel() -> void: pass
 ```
 - 先做 `mock_provider.gd`（固定延遲 + 假逐字回應）→ 整條 UI 流程用 Mock 跑通再接真 API
 - `claude_provider.gd`：`POST https://api.anthropic.com/v1/messages`，headers 需 `x-api-key`、`anthropic-version`
-- API key **絕不寫進程式碼**：`Config.get_secret()` 依序讀取 環境變數 → 專案／執行檔旁的 `.env` → `user://config.cfg`（`user://` 在 macOS 是 `~/Library/Application Support/Godot/app_userdata/<專案>/`，不在 repo 裡）
+- API key **絕不寫進程式碼**：`Config.get_secret()` 依序讀取 環境變數 → **OS 憑證庫** → 專案／執行檔旁的 `.env` → `user://config.cfg`
+  - 憑證庫：macOS 用 `security`（Keychain）、Linux 用 `secret-tool`（libsecret，需 `apt install libsecret-tools`）、其他平台退回明文設定檔並讓 UI 說清楚
+  - 右鍵選單「設定 OpenAI API key」→ 遮蔽輸入框貼上 → 存進 Keychain，`.env` 就不需要了
+  - **不做 OAuth**：OpenAI 的第三方 "Sign in with ChatGPT" 2025 年announce 過但至今只在 Codex 自家工具出貨；外面流通的做法是冒用 Codex CLI 的 client_id 去花訂閱額度，這個專案不做
+
+實作時踩到的兩個坑：
+- 密鑰要走 **stdin 不能走 argv**（`ps` 對同使用者的行程是可見的）。用 `OS.execute_with_pipe()` 拿到 stdio 再寫入。macOS 的 `security -w` 不帶值時會互動式詢問**兩次**，所以要送兩遍
+- **存進去的值必須是 ASCII**。`security find-generic-password -w` 遇到非 ASCII 會印出沒有任何標記的 hex，而字面值 `deadbeef` 讀回來也是 `deadbeef` —— 兩者無法區分。所以寫入時就擋掉，不要在讀取時猜
 - 對話泡泡：`RichTextLabel` + `visible_characters` 做打字效果
 
 實作時踩到的坑：

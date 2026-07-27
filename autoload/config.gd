@@ -20,10 +20,15 @@ func _ready() -> void:
 
 ## API keys and the like. Never log the result.
 ##
-## Order: the real environment first (so a key exported in the shell always
-## wins), then a .env file, then the saved config.
+## Order: the real environment first, so a key exported in the shell always wins
+## for a one-off run; then the OS credential store, which is where the app puts
+## anything the user types in; then .env and the saved config, which are both
+## plaintext and exist mainly for development.
 func get_secret(key: String) -> String:
 	var value := OS.get_environment(key)
+	if not value.is_empty():
+		return value
+	value = SecretStore.read(key)
 	if not value.is_empty():
 		return value
 	if _dotenv.has(key):
@@ -35,8 +40,21 @@ func has_secret(key: String) -> bool:
 	return not get_secret(key).is_empty()
 
 
-func set_secret(key: String, value: String) -> void:
+## Returns false when it had to fall back to plaintext because the platform has
+## no credential store, so callers can say so.
+func set_secret(key: String, value: String) -> bool:
+	if SecretStore.is_available() and SecretStore.write(key, value):
+		# Drop any older plaintext copy now that the real store has it.
+		if _file.has_section_key("secrets", key):
+			_file.erase_section_key("secrets", key)
+			_file.save(PATH)
+		return true
 	set_value("secrets", key, value)
+	return false
+
+
+func secret_backend_name() -> String:
+	return SecretStore.backend_name()
 
 
 ## `.env` beside the project while developing, or beside the executable once

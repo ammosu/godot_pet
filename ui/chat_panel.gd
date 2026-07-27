@@ -9,9 +9,15 @@ class_name ChatPanel
 ## editor knows.
 
 signal submitted(text: String)
+## A value typed into the masked input — a key, not something to say.
+signal secret_submitted(text: String)
 signal input_toggled(open: bool)
 ## The line finished being read and faded away.
 signal bubble_hidden
+
+const CHAT_PLACEHOLDER := "跟我說說話…"
+
+enum InputMode { CHAT, SECRET }
 
 ## Design-unit sizes; everything is multiplied by the display scale.
 const BUBBLE_MAX_WIDTH := 260.0
@@ -45,6 +51,7 @@ var _pet_rect := Rect2()
 ## corner, which would otherwise push the bubble and the input out of sight.
 var _safe_area := Rect2()
 
+var _input_mode := InputMode.CHAT
 var _full_text := ""
 var _shown := 0.0
 var _streaming := false
@@ -59,6 +66,7 @@ func _ready() -> void:
 	_bubble.visible = false
 	_input.visible = false
 	_input.text_submitted.connect(_on_submitted)
+	_set_input_mode(InputMode.CHAT)
 
 
 ## Call once the display scale is known, and again whenever the pet resizes.
@@ -284,7 +292,26 @@ func set_input_open(open: bool) -> void:
 	else:
 		_input.release_focus()
 		_input.text = ""
+		_set_input_mode(InputMode.CHAT)
 	input_toggled.emit(open)
+
+
+## Open the input masked, for a key rather than a sentence. Reverts to chat as
+## soon as it's submitted or dismissed, so the pet can't end up quietly
+## swallowing conversation into a settings field.
+func ask_for_secret(placeholder: String) -> void:
+	_set_input_mode(InputMode.SECRET, placeholder)
+	if _input.visible:
+		_input.grab_focus()
+	else:
+		set_input_open(true)
+
+
+func _set_input_mode(mode: InputMode, placeholder := CHAT_PLACEHOLDER) -> void:
+	_input_mode = mode
+	_input.secret = mode == InputMode.SECRET
+	_input.placeholder_text = placeholder
+	_input.text = ""
 
 
 func is_input_open() -> bool:
@@ -302,7 +329,12 @@ func get_input_rect() -> Rect2:
 func _on_submitted(text: String) -> void:
 	var trimmed := text.strip_edges()
 	_input.text = ""
-	if not trimmed.is_empty():
+	if trimmed.is_empty():
+		return
+	if _input_mode == InputMode.SECRET:
+		_set_input_mode(InputMode.CHAT)
+		secret_submitted.emit(trimmed)
+	else:
 		submitted.emit(trimmed)
 
 
