@@ -40,7 +40,7 @@ const PET_GALLERY_URL := "https://codex-pets.net/"
 
 enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, SPEAK, ROAM, CALIBRATE, RECENTRE,
-	SET_KEY, RECALL, FORGET, LOOK, QUIT,
+	SET_KEY, MEMORY, LOOK, QUIT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -49,8 +49,15 @@ enum MenuId {
 @onready var _chat: ChatPanel = $Chat
 @onready var _menu: PopupMenu = $Menu
 @onready var _consent: ConfirmationDialog = $Consent
+@onready var _memory: MemoryPanel = $Memory
 
 var _installed_pets := PackedStringArray()
+## Submenus, kept between rebuilds — PopupMenu.clear() empties the items but
+## leaves child nodes alone, so these are created once and refilled.
+var _submenus := {}
+## Which menu each item id ended up in, so a checkbox can be ticked in place
+## without hunting through the tree for it.
+var _item_menus := {}
 var _size_factor := DEFAULT_SIZE_FACTOR
 ## The pet's silhouette in viewport pixels, and its bounding box. Recomputed only
 ## when the pet itself changes, so re-pushing the mask stays cheap.
@@ -66,8 +73,9 @@ func _ready() -> void:
 	_size_factor = float(Config.get_value("pet", "size_factor", DEFAULT_SIZE_FACTOR))
 	_layout_visual()
 	_load_selected_pack()
-	_scale_menu_theme()
+	_style_menu()
 	_build_menu()
+	_memory.memories_changed.connect(_on_memories_changed)
 
 	_brain.state_changed.connect(_on_brain_state)
 	_brain.facing_changed.connect(_visual.set_facing)
@@ -361,75 +369,135 @@ func _on_bubble_hidden() -> void:
 # --- Menu ---------------------------------------------------------------------
 
 ## The menu is a native OS window (subwindow embedding is off), and Godot sizes
-## native windows in physical pixels — so on a Retina display the default theme
-## renders at half the apparent size. Scale the theme rather than the window, so
-## reset_size() still computes a min size that fits.
-func _scale_menu_theme() -> void:
-	var s := _window_ctl.get_ui_scale()
-	if is_equal_approx(s, 1.0):
-		return
-	_menu.add_theme_font_size_override("font_size", roundi(16.0 * s))
-	_menu.add_theme_constant_override("v_separation", roundi(4.0 * s))
-	_menu.add_theme_constant_override("h_separation", roundi(4.0 * s))
-	_menu.add_theme_constant_override("indent", roundi(10.0 * s))
-	_menu.add_theme_constant_override("item_start_padding", roundi(2.0 * s))
-	_menu.add_theme_constant_override("item_end_padding", roundi(2.0 * s))
-	_menu.add_theme_constant_override("icon_max_width", roundi(16.0 * s))
+## native windows in physical pixels — so the stock theme renders undersized on
+## anything above 100%. Scale the theme rather than the window, so reset_size()
+## still computes a min size that fits.
+func _style_menu() -> void:
+	_menu.theme = PetStyle.menu_theme(_window_ctl.get_ui_scale())
 
 
+## Reused between rebuilds. Submenus have to exist as child nodes before
+## add_submenu_node_item() can point at them, and the theme doesn't reach a
+## popup that isn't parented yet, so it's set here.
+func _submenu(key: String) -> PopupMenu:
+	if _submenus.has(key):
+		var existing: PopupMenu = _submenus[key]
+		existing.clear()
+		return existing
+	var menu := PopupMenu.new()
+	menu.name = key
+	menu.theme = _menu.theme
+	menu.id_pressed.connect(_on_menu_pressed)
+	_menu.add_child(menu)
+	_submenus[key] = menu
+	return menu
+
+
+## Four groups behind submenus, then the handful of things worth reaching in one
+## click. Flat, the menu ran to twenty rows — every setting the app has, at the
+## same weight as "餵食", which is the one people actually came for.
 func _build_menu() -> void:
 	_menu.clear()
+	_item_menus.clear()
 	var current: PetPack = _visual.get_pack()
-	var current_id := current.id if current != null else ""
 
-	for i in _installed_pets.size():
-		var pet_id := _installed_pets[i]
-		_menu.add_radio_check_item(pet_id, PET_ID_BASE + i)
-		_menu.set_item_checked(_menu.get_item_index(PET_ID_BASE + i), pet_id == current_id)
-	_menu.add_radio_check_item("預設造型", MenuId.FALLBACK)
-	_menu.set_item_checked(_menu.get_item_index(MenuId.FALLBACK), current_id.is_empty())
-	_menu.add_item("找更多造型…", MenuId.GET_PETS)
-	if _installed_pets.is_empty():
-		_menu.add_separator("裝好後直接再開這個選單就會出現")
-
-	_menu.add_separator("大小")
-	for i in SIZE_CHOICES.size():
-		var choice := SIZE_CHOICES[i]
-		_menu.add_radio_check_item(choice["label"], SIZE_BASE + i)
-		_menu.set_item_checked(_menu.get_item_index(SIZE_BASE + i),
-			is_equal_approx(float(choice["factor"]), _size_factor))
-
-	_menu.add_separator("語言模型")
-	var providers := LLMService.list_providers()
-	for i in providers.size():
-		var provider := providers[i]
-		_menu.add_radio_check_item(LLMService.provider_label(provider), PROVIDER_BASE + i)
-		_menu.set_item_checked(_menu.get_item_index(PROVIDER_BASE + i),
-			provider == LLMService.get_provider_name())
-	_menu.add_item(_api_key_label(), MenuId.SET_KEY)
-	_menu.add_item("看一下我的螢幕", MenuId.LOOK)
-	_menu.set_item_disabled(_menu.get_item_index(MenuId.LOOK), not VisionService.is_supported())
-	_menu.add_item("你記得我什麼？", MenuId.RECALL)
-	_menu.add_item("全部忘掉", MenuId.FORGET)
-	_menu.set_item_disabled(_menu.get_item_index(MenuId.FORGET), not MemoryStore.has_memories())
+	_menu.add_submenu_node_item("造型", _build_looks_menu(current))
+	_menu.add_submenu_node_item("大小", _build_size_menu())
+	_menu.add_submenu_node_item("語言模型", _build_model_menu())
+	_menu.add_submenu_node_item("行為", _build_behaviour_menu(current))
 
 	_menu.add_separator()
 	_menu.add_item("餵食", MenuId.FEED)
-	_menu.add_check_item("主動說話", MenuId.NUDGES)
-	_menu.set_item_checked(_menu.get_item_index(MenuId.NUDGES), Nudger.is_enabled())
-	_menu.add_check_item(_voice_label(), MenuId.SPEAK)
-	_menu.set_item_checked(_menu.get_item_index(MenuId.SPEAK), TTSService.is_enabled())
-	_menu.set_item_disabled(_menu.get_item_index(MenuId.SPEAK), not TTSService.is_available())
-	_menu.add_check_item("自由走動", MenuId.ROAM)
-	_menu.set_item_checked(_menu.get_item_index(MenuId.ROAM), _brain.is_roaming())
-	_menu.add_check_item("校準動畫列", MenuId.CALIBRATE)
-	_menu.set_item_disabled(_menu.get_item_index(MenuId.CALIBRATE), current == null)
+	_menu.add_item("看一下我的螢幕…", MenuId.LOOK)
+	_menu.set_item_disabled(_menu.get_item_index(MenuId.LOOK), not VisionService.is_supported())
 	_menu.add_item("回到角落", MenuId.RECENTRE)
+	_menu.add_item("記憶與資料…", MenuId.MEMORY)
+
 	_menu.add_separator()
 	_menu.add_item("結束", MenuId.QUIT)
 
+	_index_items(_menu)
 	if not _menu.id_pressed.is_connected(_on_menu_pressed):
 		_menu.id_pressed.connect(_on_menu_pressed)
+
+
+func _build_looks_menu(current: PetPack) -> PopupMenu:
+	var menu := _submenu("Looks")
+	var current_id := current.id if current != null else ""
+	for i in _installed_pets.size():
+		var pet_id := _installed_pets[i]
+		menu.add_radio_check_item(pet_id, PET_ID_BASE + i)
+		menu.set_item_checked(menu.get_item_index(PET_ID_BASE + i), pet_id == current_id)
+	menu.add_radio_check_item("預設造型", MenuId.FALLBACK)
+	menu.set_item_checked(menu.get_item_index(MenuId.FALLBACK), current_id.is_empty())
+	menu.add_separator()
+	menu.add_item("找更多造型…", MenuId.GET_PETS)
+	if _installed_pets.is_empty():
+		menu.add_separator("裝好後再開一次選單就會出現")
+	_index_items(menu)
+	return menu
+
+
+func _build_size_menu() -> PopupMenu:
+	var menu := _submenu("Size")
+	for i in SIZE_CHOICES.size():
+		var choice := SIZE_CHOICES[i]
+		menu.add_radio_check_item(choice["label"], SIZE_BASE + i)
+		menu.set_item_checked(menu.get_item_index(SIZE_BASE + i),
+			is_equal_approx(float(choice["factor"]), _size_factor))
+	_index_items(menu)
+	return menu
+
+
+func _build_model_menu() -> PopupMenu:
+	var menu := _submenu("Model")
+	var providers := LLMService.list_providers()
+	for i in providers.size():
+		var provider := providers[i]
+		menu.add_radio_check_item(LLMService.provider_label(provider), PROVIDER_BASE + i)
+		menu.set_item_checked(menu.get_item_index(PROVIDER_BASE + i),
+			provider == LLMService.get_provider_name())
+	menu.add_separator()
+	menu.add_item(_api_key_label(), MenuId.SET_KEY)
+	_index_items(menu)
+	return menu
+
+
+func _build_behaviour_menu(current: PetPack) -> PopupMenu:
+	var menu := _submenu("Behaviour")
+	# Four switches people flip together — closing the menu after each one turns
+	# a ten-second job into four trips.
+	menu.hide_on_checkable_item_selection = false
+	menu.add_check_item("主動說話", MenuId.NUDGES)
+	menu.set_item_checked(menu.get_item_index(MenuId.NUDGES), Nudger.is_enabled())
+	menu.add_check_item(_voice_label(), MenuId.SPEAK)
+	menu.set_item_checked(menu.get_item_index(MenuId.SPEAK), TTSService.is_enabled())
+	menu.set_item_disabled(menu.get_item_index(MenuId.SPEAK), not TTSService.is_available())
+	menu.add_check_item("自由走動", MenuId.ROAM)
+	menu.set_item_checked(menu.get_item_index(MenuId.ROAM), _brain.is_roaming())
+	menu.add_separator()
+	menu.add_check_item("校準動畫列", MenuId.CALIBRATE)
+	menu.set_item_disabled(menu.get_item_index(MenuId.CALIBRATE), current == null)
+	menu.set_item_checked(menu.get_item_index(MenuId.CALIBRATE), _visual.is_calibrating())
+	_index_items(menu)
+	return menu
+
+
+func _index_items(menu: PopupMenu) -> void:
+	for i in menu.item_count:
+		var id := menu.get_item_id(i)
+		if id >= 0:
+			_item_menus[id] = menu
+
+
+## Tick a checkbox wherever it ended up living.
+func _set_checked(id: int, on: bool) -> void:
+	var menu: PopupMenu = _item_menus.get(id)
+	if menu == null:
+		return
+	var index := menu.get_item_index(id)
+	if index >= 0:
+		menu.set_item_checked(index, on)
 
 
 func _open_menu() -> void:
@@ -476,10 +544,8 @@ func _on_menu_pressed(id: int) -> void:
 			_ask_for_api_key()
 		MenuId.LOOK:
 			EventBus.screen_look_requested.emit(VisionService.DEFAULT_QUESTION, true)
-		MenuId.RECALL:
-			_recall()
-		MenuId.FORGET:
-			_forget()
+		MenuId.MEMORY:
+			_memory.open(_window_ctl.get_ui_scale())
 		MenuId.QUIT:
 			get_tree().quit()
 
@@ -527,15 +593,34 @@ var _pending_look := {}
 
 
 func _setup_consent_dialog() -> void:
+	var scale := _window_ctl.get_ui_scale()
+	_consent.title = "看一下你的螢幕"
 	_consent.dialog_text = ""
 	_consent.exclusive = false
 	# Native window, laid out in physical pixels, so the stock theme comes out
-	# half size on Retina. A Theme on the dialog reaches the label and the
-	# buttons alike; per-node font overrides only reach the node they're on.
-	var scaled := Theme.new()
-	scaled.default_font_size = roundi(15.0 * _window_ctl.get_ui_scale())
-	_consent.theme = scaled
-	_consent.add_button("每次都可以", false, "always")
+	# undersized. A Theme on the dialog reaches the label and the buttons alike;
+	# per-node font overrides only reach the node they're on.
+	_consent.theme = PetStyle.dialog_theme(scale)
+	_consent.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+
+	# "好" and "不要" said nothing about what was about to happen. Name the action
+	# in the button, so the dialog is still readable to someone who skipped the
+	# paragraph — which is most people, most of the time.
+	_consent.ok_button_text = "好，看這一次"
+	_consent.cancel_button_text = "不要"
+	var ok := _consent.get_ok_button()
+	var primary := PetStyle.primary_button_styles(scale)
+	for state in primary:
+		ok.add_theme_stylebox_override(state, primary[state])
+	ok.add_theme_color_override("font_color", PetStyle.INK)
+	ok.add_theme_color_override("font_hover_color", PetStyle.INK)
+	ok.add_theme_color_override("font_pressed_color", PetStyle.INK)
+
+	# Standing consent is the one answer here that can't be taken back by simply
+	# not clicking it again, so it's the quietest thing in the window.
+	var always := _consent.add_button("以後都不用問我", false, "always")
+	PetStyle.make_ghost_button(always, scale)
+
 	_consent.confirmed.connect(func() -> void: _resolve_look(true, false))
 	_consent.canceled.connect(func() -> void: _resolve_look(false, false))
 	_consent.custom_action.connect(func(action: StringName) -> void:
@@ -544,12 +629,26 @@ func _setup_consent_dialog() -> void:
 			_resolve_look(true, true))
 
 
+## The old wording — "畫面會傳給語言模型" — left the three things people actually
+## want to know unanswered: how much of the screen, to whom, and for how long.
 func _on_screen_look_requested(question: String, record_question: bool) -> void:
 	_pending_look = {"question": question, "record": record_question}
 	if Config.get_value("vision", "consent", "") == CONSENT_ALWAYS:
 		_resolve_look(true, false)
 		return
-	_consent.dialog_text = "要讓我看一下你現在的螢幕嗎？\n畫面會傳給語言模型，我不會把看到的內容記起來。"
+
+	var lines := PackedStringArray()
+	# A look the user asked for by typing: show them which question triggered it,
+	# because a dialog appearing out of a normal sentence is startling otherwise.
+	if not record_question:
+		lines.append("你剛剛問：「%s」\n" % question.strip_edges())
+	lines.append("要回答這個，我得把整個螢幕拍成一張圖，傳給 %s 讀。"
+		% LLMService.provider_label(LLMService.get_provider_name()))
+	lines.append("")
+	lines.append("・只有這一次，我不會在背景一直看")
+	lines.append("・看到的內容不會寫進我的長期記憶")
+	lines.append("・拍的那一瞬間，我會先把自己藏起來")
+	_consent.dialog_text = "\n".join(lines)
 	_consent.reset_size()
 	_consent.popup_centered()
 
@@ -573,22 +672,12 @@ func _resolve_look(allowed: bool, remember: bool) -> void:
 
 
 ## Memory that can't be inspected is memory you can't trust, and a pet quietly
-## carrying a wrong fact about you is worse than one that forgets.
-func _recall() -> void:
-	var facts := MemoryStore.facts()
-	if facts.is_empty():
-		_on_pet_nudged("neutral", "還沒記住什麼欸，多跟我講講話嘛。")
-		return
-	var lines := PackedStringArray()
-	for fact in facts:
-		lines.append("· %s" % fact)
-	_on_pet_nudged("happy", "我記得這些：\n%s" % "\n".join(lines))
-
-
-func _forget() -> void:
-	MemoryStore.forget_all()
-	_build_menu()
-	_on_pet_nudged("sad", "好……全部清空了，我們重新認識吧。")
+## carrying a wrong fact about you is worse than one that forgets. The list lives
+## in its own window (ui/memory_panel.gd) rather than in the bubble, which fades
+## on a timer, or in the menu, which can't scroll.
+func _on_memories_changed() -> void:
+	if not MemoryStore.has_memories():
+		_on_pet_nudged("sad", "好……全部清空了，我們重新認識吧。")
 
 
 func _feed() -> void:
@@ -605,20 +694,20 @@ func _voice_label() -> String:
 
 func _toggle_speech() -> void:
 	TTSService.set_enabled(not TTSService.is_enabled())
-	_menu.set_item_checked(_menu.get_item_index(MenuId.SPEAK), TTSService.is_enabled())
+	_set_checked(MenuId.SPEAK, TTSService.is_enabled())
 
 
 func _toggle_nudges() -> void:
 	var enabled := not Nudger.is_enabled()
 	Nudger.set_enabled(enabled)
-	_menu.set_item_checked(_menu.get_item_index(MenuId.NUDGES), enabled)
+	_set_checked(MenuId.NUDGES, enabled)
 
 
 func _toggle_roaming() -> void:
 	var roaming := not _brain.is_roaming()
 	_brain.set_roaming(roaming)
 	Config.set_value("pet", "roaming", roaming)
-	_menu.set_item_checked(_menu.get_item_index(MenuId.ROAM), roaming)
+	_set_checked(MenuId.ROAM, roaming)
 
 
 func _set_size_factor(factor: float) -> void:
@@ -642,4 +731,4 @@ func _toggle_calibration() -> void:
 	var on := not _visual.is_calibrating()
 	_visual.set_calibrating(on)
 	_brain.set_paused(on)
-	_menu.set_item_checked(_menu.get_item_index(MenuId.CALIBRATE), _visual.is_calibrating())
+	_set_checked(MenuId.CALIBRATE, _visual.is_calibrating())

@@ -77,6 +77,30 @@ holds no behaviour itself.
 - `autoload/llm_service.gd` — conversation orchestration and the emotion-tag
   parser; `llm/llm_provider.gd` is the backend interface.
 - `autoload/pet_state.gd` — needs; `autoload/nudger.gd` — unprompted lines.
+- `ui/style.gd` (`PetStyle`) — every colour and edge, and the builders for the
+  themes. See below.
+- `ui/chat_panel.gd` — speech bubble and chat input;
+  `ui/memory_panel.gd` — the window listing what the pet remembers.
+
+### PetStyle
+
+Two surfaces, deliberately opposed: what the *pet* says is paper (warm, light,
+soft-cornered, with a tail), and what the *app* asks is ink (a dark slab that
+reads as system chrome, so a menu never looks like the character talking). One
+persimmon accent is the only saturated colour in either.
+
+The dark chrome is not only a taste call. `PopupMenu`'s check and radio marks
+come from the engine's default theme and are near-white; on a light panel they
+disappear, and there is no per-item icon modulate to fix that with.
+
+Two Godot specifics worth knowing before editing it:
+
+- A `StyleBoxFlat`'s shadow is a **solid expanded copy of its own shape drawn
+  behind it**, including behind the part the box covers — there is no blur. A
+  box with a see-through fill therefore doesn't glow, it takes on the shadow's
+  colour. The input's focus style repeats the fill opaquely for this reason.
+- Missing theme items fall through to the engine default, so a theme built by
+  duplicating `ui/theme.tres` keeps the CJK font and inherits the stock icons.
 
 ### Coordinates and DPI
 
@@ -101,8 +125,15 @@ Anything measured in design units gets multiplied by
 `WindowController.get_ui_scale()` at the point of use. That includes UI theme
 constants — popups and controls are laid out in physical pixels, so the default
 theme renders undersized unless its font sizes and spacings are scaled too (see
-`_scale_menu_theme` in `pet/pet.gd`, which early-returns at 1.0 and so did
-nothing at all on Windows until the above was fixed).
+`PetStyle`, below).
+
+Two traps this keeps springing:
+
+- A stylebox's **content margins set the control's minimum size**, so padding a
+  field evenly overrides the height its layout code asked for. The chat input's
+  vertical padding is deliberately a third of its horizontal one.
+- Anything built in a node's `_ready()` is built before the scale is known.
+  `MemoryPanel` therefore constructs itself on first open, not on load.
 
 ### The window deliberately hangs off the screen
 
@@ -251,6 +282,12 @@ or the TTS queue. It returns false when the active backend can't do the work
 (mock, or no key), and the store then only discards history once it is genuinely
 unwieldy.
 
+What it holds is shown in `ui/memory_panel.gd`, reached from one menu entry, and
+each line can be dropped on its own. It used to be a menu item that emptied the
+whole list into the speech bubble, which was the wrong shape twice over: the
+bubble fades on a timer, so the answer timed out while being read, and a list you
+can only read is a list you can only wipe.
+
 The fact-extraction prompt has to explicitly exclude speculation and
 soon-stale details, or facts fill up with "probably still has concurrency risk"
 and "had four meetings today".
@@ -296,8 +333,15 @@ it.
 `DisplayServer.screen_get_image()` and sends it as an `image_url` content part.
 Nothing is captured until the user agrees. A request — from the menu, or from
 the model itself — goes out as `EventBus.screen_look_requested`, and `pet.gd`
-puts a confirmation dialog up; "每次都可以" stores consent in config. It never
-runs on a timer or from a nudge.
+puts a confirmation dialog up; the standing-consent button stores it in config.
+It never runs on a timer or from a nudge.
+
+That dialog has to answer the three questions a screenshot prompt actually
+raises — how much is captured, who receives it, and how long it is kept — and
+name the action in the buttons, since "好 / 不要" is unreadable to anyone who
+skipped the paragraph, which is most people. The standing-consent button is
+styled as the quietest thing in the window: it is the one answer here that can't
+be taken back by simply not clicking it again.
 
 Typing "看一下我在幹嘛" is the obvious way to ask, so there are two triggers, and
 both are needed:

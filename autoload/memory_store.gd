@@ -105,6 +105,32 @@ func facts() -> PackedStringArray:
 	return _facts.duplicate()
 
 
+func summary() -> String:
+	return _summary
+
+
+## Drop one remembered line. Memory you can't correct is memory you have to wipe
+## wholesale, and a single wrong fact is a bad reason to lose the rest.
+func forget_fact(fact: String) -> bool:
+	var index := Array(_facts).find(fact)
+	if index < 0:
+		return false
+	_facts.remove_at(index)
+	_dirty = true
+	_save_if_dirty()
+	return true
+
+
+## The summary is written by the model and can't be edited line by line, so
+## clearing it is all or nothing.
+func forget_summary() -> void:
+	if _summary.is_empty():
+		return
+	_summary = ""
+	_dirty = true
+	_save_if_dirty()
+
+
 func has_memories() -> bool:
 	return not _facts.is_empty() or not _summary.is_empty()
 
