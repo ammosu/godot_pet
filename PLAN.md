@@ -113,6 +113,16 @@ func _ready() -> void:
 >   **不要**用 `content_scale_factor`——那會讓 viewport 座標與視窗像素脫鉤，而 `window_set_mouse_passthrough()` 要的是視窗像素，會導致點擊區域錯位。
 >   Phase 2 的 sprite 素材要用 2x 解析度。
 
+> ⚠️ Windows 注意
+> - `window_set_mouse_passthrough()` 在 macOS / Linux 只塑形**輸入**，在 Windows 卻是用 `SetWindowRgn()` 實作的——**遮罩以外的區域連畫都不會畫**。
+>   所以貼著寵物輪廓的遮罩會讓對話泡泡整塊消失，而且**無聲失敗**：沒有錯誤、log 裡什麼都沒有，寵物就是安靜地不講話。
+>   解法：`pet.gd` 的 `_refresh_mask()` 在 `WindowController.passthrough_clips_rendering()` 為真時改用 `ChatPanel.get_chrome_rect()`（泡泡 + 尾巴 + 陰影 + 輸入框），其他平台維持原本只含輸入框的行為——那邊泡泡是純顯示的，放大遮罩只會白白吃掉本該穿透到桌面的點擊。
+>   泡泡會隨著文字打字而長大，遮罩得跟著更新，所以 `_refresh_mask()` 從 `_refresh_hit_region()` 拆出來由 `_process` 驅動；後者還要重建泡泡樣式與重排輸入框，不能每幀跑。
+>   `set_hit_region()` 會擋掉沒變動的 region——`SetWindowRgn` 每次呼叫都強制重繪，而泡泡出現時 brain 進入 `TALK`、寵物站著不動，region 多半是不變的。
+> - `screen_get_scale()` **只有 macOS 有實作**，Windows 一律回 1.0，所以上面 Retina 那套 DPI 縮放在 Windows 完全沒作用（125% 螢幕上寵物與右鍵選單都偏小）。要修得改用 `screen_get_dpi() / 96.0`。
+> - 沒有 Windows 憑證庫後端，`SecretStore` 落到 `Backend.NONE`，API key 會明文存進 `config.cfg`。
+> - 顯卡驅動若不支援 Vulkan，Godot 會自動退到 Direct3D 12，透明與 passthrough 都照常運作。
+
 ### Phase 2 — 動畫狀態機（1–2 天）
 **改用 Codex Pets 的素材生態**，不自己畫也不在 repo 放任何美術：
 

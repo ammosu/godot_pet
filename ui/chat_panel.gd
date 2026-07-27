@@ -26,6 +26,9 @@ const BUBBLE_PADDING := 12.0
 const BUBBLE_CORNER := 14.0
 const TAIL_WIDTH := 18.0
 const TAIL_HEIGHT := 11.0
+## The bubble's drop shadow spreads this far past the panel, and this far down.
+const BUBBLE_SHADOW := 6.0
+const BUBBLE_SHADOW_DROP := 2.0
 const GAP_ABOVE_PET := 10.0
 const SIDE_MARGIN := 12.0
 const INPUT_HEIGHT := 34.0
@@ -133,8 +136,8 @@ func _make_bubble_style() -> StyleBoxFlat:
 	box.set_corner_radius_all(roundi(BUBBLE_CORNER * _scale))
 	box.set_content_margin_all(BUBBLE_PADDING * _scale)
 	box.shadow_color = Color(0.0, 0.0, 0.0, 0.18)
-	box.shadow_size = roundi(6.0 * _scale)
-	box.shadow_offset = Vector2(0.0, 2.0 * _scale)
+	box.shadow_size = roundi(BUBBLE_SHADOW * _scale)
+	box.shadow_offset = Vector2(0.0, BUBBLE_SHADOW_DROP * _scale)
 	return box
 
 
@@ -325,6 +328,26 @@ func get_input_rect() -> Rect2:
 	if not _input.visible:
 		return Rect2()
 	return Rect2(_input.position, _input.size)
+
+
+## Viewport-space rect covering everything this panel currently *draws* — the
+## bubble with its tail and shadow, plus the input when it's open. Empty when
+## nothing is showing.
+##
+## Deliberately separate from get_input_rect(): that one answers "what has to
+## catch clicks", this one answers "what has to stay visible". They only differ
+## where the passthrough mask also clips rendering — see
+## WindowController.passthrough_clips_rendering().
+func get_chrome_rect() -> Rect2:
+	var box := get_input_rect()
+	if not _bubble.visible:
+		return box
+	# The tail is drawn by this node rather than the panel, hanging below it, so
+	# the panel's own rect isn't enough.
+	var bubble := Rect2(_bubble.position,
+		_bubble.size + Vector2(0.0, TAIL_HEIGHT * _scale)) \
+		.grow((BUBBLE_SHADOW + BUBBLE_SHADOW_DROP) * _scale)
+	return bubble if not box.has_area() else box.merge(bubble)
 
 
 func _on_submitted(text: String) -> void:

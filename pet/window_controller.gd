@@ -135,9 +135,29 @@ func park_at_default_spot() -> void:
 
 # --- Click-through ------------------------------------------------------------
 
+## Does the passthrough mask clip what the window *draws*, as well as what it
+## catches?
+##
+## Windows implements window_set_mouse_passthrough() with SetWindowRgn(), which
+## sets the window region outright — anything outside it is neither clickable nor
+## drawn. macOS and Linux shape input alone, so there the mask can stay tight to
+## the pet and let the rest of the window still render.
+##
+## Callers that draw outside the pet's silhouette — the speech bubble — have to
+## widen the mask when this is true, or they are silently invisible.
+static func passthrough_clips_rendering() -> bool:
+	return OS.get_name() == "Windows"
+
+
 ## `points` are in viewport coordinates. Clicks inside reach us; clicks outside
 ## go to whatever is behind the window.
+##
+## Re-pushing an unchanged region is skipped: where the mask clips rendering it
+## has to track the bubble frame by frame, and SetWindowRgn() forces a redraw
+## every time it is called.
 func set_hit_region(points: PackedVector2Array) -> void:
+	if points == _hit_region:
+		return
 	_hit_region = points
 	if not _passthrough_suspended:
 		DisplayServer.window_set_mouse_passthrough(_hit_region)

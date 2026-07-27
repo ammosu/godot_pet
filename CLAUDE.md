@@ -117,6 +117,30 @@ Three consequences of overhanging:
 - `get_visible_area()` changes as the pet walks, so `EventBus.pet_moved` must be
   connected **before** `park_at_default_spot()` runs in `_ready()`.
 
+### The passthrough mask clips rendering on Windows
+
+`window_set_mouse_passthrough()` shapes input alone on macOS and Linux, but
+Windows implements it with `SetWindowRgn()`, which sets the window region
+outright — **anything outside the mask is not drawn**. A mask tight to the pet
+therefore erases the speech bubble, with no error and nothing in the log: the
+pet simply talks in silence.
+
+So `_refresh_mask()` in `pet/pet.gd` widens the mask to
+`ChatPanel.get_chrome_rect()` — everything the panel draws, tail and drop shadow
+included — but only where `WindowController.passthrough_clips_rendering()` is
+true. Elsewhere it keeps using `get_input_rect()`, because there the bubble is
+display-only and a wider mask would needlessly eat clicks meant for the desktop.
+
+The two consequences:
+
+- The mask has to track the bubble as it grows and moves, so `_refresh_mask()`
+  is split from `_refresh_hit_region()` and driven from `_process`. The rest of
+  that function restyles the bubble and relays out the input, and must **not**
+  run every frame.
+- `set_hit_region()` drops a region identical to the current one. `SetWindowRgn`
+  forces a redraw on every call, and the brain enters `TALK` while a bubble is
+  up, so the pet stands still and the region is usually unchanged.
+
 ### Sprite packs
 
 Art is the Codex Pets / petdex format, loaded at runtime from

@@ -52,6 +52,10 @@ enum MenuId {
 
 var _installed_pets := PackedStringArray()
 var _size_factor := DEFAULT_SIZE_FACTOR
+## The pet's silhouette in viewport pixels, and its bounding box. Recomputed only
+## when the pet itself changes, so re-pushing the mask stays cheap.
+var _pet_polygon := PackedVector2Array()
+var _pet_box := Rect2()
 var _pressed := false
 var _dragging := false
 var _press_pos := Vector2i.ZERO
@@ -88,11 +92,23 @@ func _ready() -> void:
 	EventBus.screen_look_requested.connect(_on_screen_look_requested)
 	_setup_consent_dialog()
 
+	# Only worth ticking where the mask clips rendering; elsewhere the bubble is
+	# outside it by design and moving is free.
+	set_process(WindowController.passthrough_clips_rendering())
+
 	# Park last: it moves the window, and _on_pet_moved has to be listening for
 	# the chat UI to learn how much of the window ended up on screen.
 	_window_ctl.park_at_default_spot()
 	_brain.setup(_window_ctl)
 	_warn_if_keyless()
+
+
+## The bubble grows as the reply types itself out and shifts as the pet walks, so
+## a mask that clips rendering has to follow it. set_hit_region() drops a region
+## that hasn't actually changed, so a still bubble costs nothing.
+func _process(_delta: float) -> void:
+	if _chat.is_showing():
+		_refresh_mask()
 
 
 ## An exported build can't see the project's .env, so a machine that works fine
@@ -113,24 +129,37 @@ func _layout_visual() -> void:
 	_visual.position = _window_ctl.get_window_anchor()
 
 
-## Push the visual's silhouette to the window as the click-through mask, and
-## point the bubble at the top of the pet's head. The visual's transform maps its
-## local space to viewport pixels, which is what DisplayServer expects.
+## Measure the visual's silhouette, hand it to the window and the chat panel, and
+## push the click-through mask. The visual's transform maps its local space to
+## viewport pixels, which is what DisplayServer expects.
 func _refresh_hit_region() -> void:
-	var points := PackedVector2Array()
+	_pet_polygon = PackedVector2Array()
 	for p in _visual.get_hit_polygon():
-		points.append(_visual.transform * p)
+		_pet_polygon.append(_visual.transform * p)
 
-	var pet_box := _bounding_box(points)
-	_window_ctl.set_content_bounds(pet_box)
-	_chat.configure(_window_ctl.get_ui_scale(), _window_ctl.get_window_size(), pet_box)
+	_pet_box = _bounding_box(_pet_polygon)
+	_window_ctl.set_content_bounds(_pet_box)
+	_chat.configure(_window_ctl.get_ui_scale(), _window_ctl.get_window_size(), _pet_box)
 	_chat.set_safe_area(_window_ctl.get_visible_area())
+	_refresh_mask()
 
-	# Passthrough takes a single polygon, so a disjoint pet-plus-input region
-	# isn't expressible: fall back to one box around both while typing.
-	var input_box := _chat.get_input_rect()
-	if input_box.has_area():
-		points = _rect_points(pet_box.merge(input_box))
+
+## Just the mask. Split out because where it clips rendering it has to keep up
+## with the bubble frame by frame, and the rest of the work above — restyling the
+## bubble, relaying out the input — must not run every frame.
+func _refresh_mask() -> void:
+	# Where the mask only shapes input, the bubble is display-only and can stay
+	# click-through; only the input has to be reachable. Where it also clips
+	# rendering, everything the panel draws has to be inside it or the pet talks
+	# in an invisible bubble.
+	var extra := _chat.get_chrome_rect() if WindowController.passthrough_clips_rendering() \
+		else _chat.get_input_rect()
+
+	# Passthrough takes a single polygon, so a disjoint pet-plus-UI region isn't
+	# expressible: fall back to one box around both.
+	var points := _pet_polygon
+	if extra.has_area():
+		points = _rect_points(_pet_box.merge(extra))
 	_window_ctl.set_hit_region(points)
 
 
@@ -299,6 +328,9 @@ func _on_pet_nudged(emotion: String, text: String) -> void:
 ## Wait for the bubble to clear rather than for the stream to end — the text is
 ## still typing itself out for a while after the last token lands.
 func _on_bubble_hidden() -> void:
+	# _process stops tracking the bubble the moment it's gone, so the mask it
+	# left behind has to be shrunk back here.
+	_refresh_mask()
 	if not _chat.is_input_open():
 		_brain.on_talk_ended()
 
