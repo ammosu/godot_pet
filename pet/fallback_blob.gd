@@ -1,7 +1,12 @@
 extends Node2D
+class_name FallbackBlob
 
 ## Default face, drawn procedurally so the app works with no assets installed.
 ## Used whenever no Codex pet pack is selected — see pet_visual.gd.
+##
+## Named so the mini-game can build one at runtime: with no pack installed there
+## is no sprite to play with, and a game starring a different character from the
+## one on the desktop would be a stranger.
 
 @export var radius: float = 56.0
 @export var body_color: Color = Color("7ec8f0")

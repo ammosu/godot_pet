@@ -37,6 +37,11 @@ const MOOD_BASELINE := 60.0
 const EXHAUSTED_BELOW := 20.0
 const RESTED_ABOVE := 55.0
 
+## What a mini-game run is worth in fullness — see play_session(). Deliberately
+## less than a third of a feed even after a very good run.
+const PLAY_FULLNESS_PER_CATCH := 0.6
+const PLAY_FULLNESS_CAP := 10.0
+
 ## Come back after a fortnight and the pet should be hungry, not a corpse.
 const MAX_OFFLINE_MINUTES := 24.0 * 60.0
 
@@ -131,6 +136,22 @@ func _describe_gap() -> String:
 func feed() -> void:
 	_add(&"fullness", 35.0)
 	_add(&"mood", 4.0)
+
+
+## A run of the mini-game, played out to the end.
+##
+## Mood and affection are the point: this is time spent together, which is what
+## those two measure, and they move whether or not the run went well — losing
+## badly at something with someone is still doing it with them.
+##
+## Fullness moves too, since the pet did swallow what it caught, but it is
+## capped hard. A catch game that also refills the pet would quietly make 餵食
+## pointless, and "play until it isn't hungry" is a worse loop than either half
+## on its own.
+func play_session(caught: int, score: int) -> void:
+	_add(&"mood", clampf(3.0 + float(score) * 0.25, 3.0, 12.0))
+	_add(&"affection", 2.0)
+	_add(&"fullness", minf(float(caught) * PLAY_FULLNESS_PER_CATCH, PLAY_FULLNESS_CAP))
 
 
 func _on_tapped() -> void:

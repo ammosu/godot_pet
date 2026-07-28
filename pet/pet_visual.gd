@@ -240,6 +240,24 @@ func get_pack_scale() -> float:
 	return _pack_scale
 
 
+## The logical-state -> row map this pack ended up with, per-pet overrides and
+## missing-row fallbacks already applied.
+##
+## Exists for the mini-game, which draws the *same* character from the *same*
+## pack in a window of its own. It takes the resolved map rather than the pack
+## because the two things this file knows and the pack doesn't — the user's
+## `[pet_rows]` corrections, and which row to borrow when a pack simply has no
+## art for a state — are exactly the two the game would otherwise get wrong,
+## and getting them wrong there means the pet grinning when it drops something.
+func state_rows() -> Dictionary:
+	var resolved := {}
+	if _pack == null:
+		return resolved
+	for state in _state_rows:
+		resolved[state] = _resolve_row(state)
+	return resolved
+
+
 static func _normalised_scale(pack: PetPack, rest: Rect2i) -> float:
 	if rest.size.y <= 0 or pack.cell_size.y <= 0:
 		return 1.0

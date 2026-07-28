@@ -91,7 +91,8 @@ holds no behaviour itself.
   themes. See below.
 - `ui/chat_panel.gd` — speech bubble and chat input;
   `ui/memory_panel.gd` — the window listing what the pet remembers;
-  `ui/chat_log_panel.gd` — the window listing what was actually said.
+  `ui/chat_log_panel.gd` — the window listing what was actually said;
+  `ui/game_panel.gd` + `ui/games/` — the mini-game window and the games in it.
 
 ### PetStyle
 
@@ -480,6 +481,76 @@ still 全部忘掉, one window along. Two things this forces:
 The fact-extraction prompt has to explicitly exclude speculation and
 soon-stale details, or facts fill up with "probably still has concurrency risk"
 and "had four meetings today".
+
+### The mini-games
+
+One window, three games. `ui/game_panel.gd` is the window — score, record,
+difficulty, banner — and `ui/games/mini_game.gd` is what every game is, so the
+panel never knows which one it has. Another real OS window, for the same three
+reasons the memory and transcript panels are, including the useful one: nothing
+in it touches the passthrough mask.
+
+- `catch_game.gd` (接東西) — where, continuously. Steer the pet into what falls.
+- `jump_game.gd` (跳過去) — when, once. One button, no double jump.
+- `memory_game.gd` (翻翻看) — what you remember. The only one that ends by being
+  *finished* rather than by running out of lives, so `uses_lives()` is false and
+  its score is a count of how few mistakes you made.
+
+Three verbs on purpose. Three reflex games would be one game with three coats of
+paint, and a desk pet is something you look at while thinking.
+
+`GamePanel.GAMES` is the whole registry — id, label, script. Ids key the saved
+record and difficulty (`[game] best_<id>_<level>`), so they must not change once
+anyone has a score. `pet.gd` builds the 遊戲 submenu straight off it with ids at
+`GAME_BASE`, so a fourth game touches no code there. Note that every base test in
+`_on_menu_pressed` is "at or above", so `GAME_BASE` (400) must be checked before
+`PROVIDER_BASE` (300).
+
+Shared parts worth knowing before adding a fourth game:
+
+- `ui/games/game_pet.gd` draws the pet, and it takes `PetVisual.state_rows()` —
+  the **resolved** state→row map, not the pack. The per-pet `[pet_rows]`
+  corrections and the fallback for a state a pack has no art for are exactly the
+  two things a game would otherwise get wrong, and getting them wrong means the
+  pet grinning as it drops something. Sizing follows PetVisual's rule too:
+  measure the idle row's character height, never the cell.
+- `ui/games/game_art.gd` draws everything that isn't the pet. Every shape is
+  **background-independent** — the donut is a `draw_arc` ring rather than a
+  filled circle with a hole punched in the field colour, because the same shape
+  is drawn on the dark field in one game and on a paper card in another.
+- Games are built once and kept (`GamePanel._swap_field`), so reopening one does
+  not rebuild its sprite from the pack.
+
+Four things that look like taste and are not:
+
+- **Every button in that window must be `FOCUS_NONE`.** A focused `Button` eats
+  the arrows as focus navigation, and the arrows are how two of the three games
+  are played — clicking a difficulty once and then being unable to move is the
+  symptom. Held keys are polled (`MiniGame._held_axis`) rather than event-driven,
+  and gated on `Window.has_focus()`: a key held as focus leaves never sends its
+  release, and without the guard the arrow keys in whatever app you switched to
+  would still be steering a game you can't see.
+- **The only red anywhere in these games is the thing you must not touch.** Food
+  needs several saturated colours at once, which contradicts PetStyle's
+  one-accent rule, so this surface swaps in a different rule rather than
+  abandoning the idea. Mistaking the good thing for the bad thing is the one
+  failure a catch game cannot have.
+- Catching food raises `fullness`, capped hard (`PetState.PLAY_FULLNESS_CAP`) at
+  well under one feed. Uncapped, "play until it isn't hungry" quietly replaces
+  餵食 with a worse loop than either. The other two games pass `treats = 0`, so
+  only 接東西 feeds at all.
+- The line the pet says afterwards comes from `pet.gd`, not the panel. The
+  window knows the score and the record; only the composition root knows how the
+  pet reacts to anything.
+
+Two Godot specifics:
+
+- A `CenterContainer` and an autowrapping `Label` collapse into each other — the
+  container takes its width from the content, and an autowrapping label insists
+  on none. Every banner hint line is broken by hand for this reason.
+- A `class_name` is **not a constant expression**, so the registry preloads
+  scripts by path. Putting `CatchGame` in that const array is a parse error that
+  takes `pet.gd` down with it.
 
 ### Speech
 

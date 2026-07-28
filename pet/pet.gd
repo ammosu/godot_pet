@@ -18,10 +18,11 @@ const DRAG_IMPACT_DURATION := 0.06
 const DRAG_LANDING_DURATION := 0.28
 
 ## Menu ids above these offsets select an installed pet pack / a body size /
-## an LLM backend.
+## an LLM backend / a mini-game.
 const PET_ID_BASE := 100
 const SIZE_BASE := 200
 const PROVIDER_BASE := 300
+const GAME_BASE := 400
 
 ## Multipliers on the display scale. Pixel art prefers integers, but on a 2x
 ## display the odd ones land on a whole physical pixel often enough to look fine.
@@ -50,8 +51,8 @@ const OPENAI_KEY := "OPENAI_API_KEY"
 const PET_GALLERY_URL := "https://codex-pets.net/"
 
 enum MenuId {
-	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, SPEAK, ROAM, CALIBRATE, RECENTRE,
-	SET_KEY, CHAT_LOG, MEMORY, LOOK, QUIT,
+	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, SPEAK, ROAM, CALIBRATE,
+	RECENTRE, SET_KEY, CHAT_LOG, MEMORY, LOOK, QUIT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -63,6 +64,7 @@ enum MenuId {
 @onready var _presence_consent: ConfirmationDialog = $PresenceConsent
 @onready var _memory: MemoryPanel = $Memory
 @onready var _chat_log: ChatLogPanel = $ChatLog
+@onready var _game: GamePanel = $Game
 
 var _installed_pets := PackedStringArray()
 ## Submenus, kept between rebuilds — PopupMenu.clear() empties the items but
@@ -99,6 +101,7 @@ func _ready() -> void:
 	_build_menu()
 	_memory.memories_changed.connect(_on_memories_changed)
 	_chat_log.conversation_cleared.connect(_on_conversation_cleared)
+	_game.played.connect(_on_game_played)
 
 	_brain.state_changed.connect(_on_brain_state)
 	_brain.facing_changed.connect(_visual.set_facing)
@@ -510,6 +513,9 @@ func _build_menu() -> void:
 
 	_menu.add_separator()
 	_menu.add_item("餵食", MenuId.FEED)
+	# Down here with 餵食 rather than up with the four setting groups: these are
+	# things you do *with* the pet, not things you do to the app.
+	_menu.add_submenu_node_item("遊戲", _build_games_menu())
 	_menu.add_item("看一下我的螢幕…", MenuId.LOOK)
 	_menu.set_item_disabled(_menu.get_item_index(MenuId.LOOK), not VisionService.is_supported())
 	_menu.add_item("回到角落", MenuId.RECENTRE)
@@ -591,6 +597,16 @@ func _build_behaviour_menu(current: PetPack) -> PopupMenu:
 	return menu
 
 
+## Ids come off GAME_BASE rather than the enum, so the list is whatever
+## GamePanel says it is — adding a fourth game touches no code here at all.
+func _build_games_menu() -> PopupMenu:
+	var menu := _submenu("Games")
+	for i in GamePanel.game_count():
+		menu.add_item("%s…" % GamePanel.game_title(i), GAME_BASE + i)
+	_index_items(menu)
+	return menu
+
+
 func _index_items(menu: PopupMenu) -> void:
 	for i in menu.item_count:
 		var id := menu.get_item_id(i)
@@ -620,6 +636,12 @@ func _open_menu() -> void:
 
 
 func _on_menu_pressed(id: int) -> void:
+	# Highest base first: every one of these tests is "at or above", so a game id
+	# at 400 also satisfies the provider test at 300.
+	if id >= GAME_BASE:
+		_game.open(_window_ctl.get_ui_scale(), _visual.get_pack(),
+			_visual.state_rows(), id - GAME_BASE)
+		return
 	if id >= PROVIDER_BASE:
 		LLMService.select_provider(LLMService.list_providers()[id - PROVIDER_BASE])
 		_build_menu()
@@ -851,6 +873,29 @@ func _on_conversation_cleared() -> void:
 func _feed() -> void:
 	PetState.feed()
 	_on_pet_nudged("happy", "謝謝！這個好吃。")
+
+
+## The pet's side of a finished run. The game window knows the score and the
+## record; only this file knows how the pet reacts to anything, which is why the
+## panel emits rather than reaching for PetState or the bubble itself.
+##
+## Recorded like any other line the pet says: unlike the acknowledgement of a
+## *clear*, a game the two of them just played is genuine shared history, and
+## the pet referring back to it later is the point of having played.
+func _on_game_played(game: String, score: int, treats: int, record: bool) -> void:
+	PetState.play_session(treats, score)
+	var emotion := "happy"
+	var line := "%s %d 分！好玩欸，再來一場？" % [game, score]
+	if record:
+		emotion = "excited"
+		line = "%s %d 分，這是我們最好的一次！" % [game, score]
+	elif score == 0:
+		emotion = "sad"
+		line = "零分…下次我認真一點啦。"
+	elif score < 5:
+		emotion = "sad"
+		line = "才 %d 分，今天手有點鈍。" % score
+	_on_pet_nudged(emotion, line)
 
 
 ## Naming the voice saves adding a whole picker just to see which one is in use.

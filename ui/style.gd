@@ -434,6 +434,152 @@ static func chat_log_text_color(mine: bool) -> Color:
 	return NIGHT_TEXT if mine else INK
 
 
+# --- Mini-game ----------------------------------------------------------------
+
+## The play field is a screen set into the panel: a shade darker than the chrome
+## around it, so it reads as somewhere else rather than as more panel.
+const GAME_FIELD := Color("17110f")
+const GAME_GROUND := Color("f1e7da", 0.16)
+## The three dots that count what got past you. Spent ones stay visible, so the
+## row always says how many there were as well as how many are left.
+const GAME_LIFE := Color("f1e7da", 0.55)
+const GAME_LIFE_SPENT := Color("f1e7da", 0.12)
+
+## The food. This is the one surface in the app that needs several saturated
+## colours at once — three treats have to be told apart while falling — so the
+## rule that keeps it from turning into confetti is a different one: **the only
+## red on the field is the thing you must not catch.** Everything edible is
+## cream, green or teal, and the miss is unambiguous at a glance and at speed.
+const GAME_RICE := Color("f4ecdd")
+const GAME_NORI := Color("39463f")
+const GAME_APPLE := Color("9ec46a")
+const GAME_STEM := Color("6d5136")
+const GAME_FISH := Color("5fb0ad")
+## Gold rather than the persimmon accent: the accent means "the live control" in
+## every other window, and a bonus that looks like the chilli would undo the
+## whole point of the rule above.
+const GAME_STAR := Color("f0c05a")
+const GAME_CHILLI := Color("c8383f")
+const GAME_CHILLI_STEM := Color("6f8f4e")
+## The three that exist only so 翻翻看 has eight faces to tell apart. Shape does
+## most of that work — a ring and a stem read differently from a circle at any
+## size — but colour has to carry the rest.
+const GAME_DONUT := Color("d9a06b")
+const GAME_MUSHROOM := Color("a98cc9")
+const GAME_MUSHROOM_STEM := Color("efe4d2")
+const GAME_HEART := Color("e08a9a")
+## The last two exist because 翻翻看's hardest board is ten pairs, and nine
+## faces would mean two of them repeating — which sounds harder and is in fact
+## easier, since any two of four identical cards match. Both were picked to fill
+## the hues the other eight left empty: there was no blue and no dark green.
+const GAME_CLOUD := Color("9fb8d0")
+const GAME_LEAF := Color("4f8f5a")
+const GAME_LEAF_VEIN := Color("2f5f39")
+## Eyes and other holes. A named ink rather than the field colour, because the
+## same shapes are drawn on the dark field in one game and on a paper card in
+## another — punching a hole the colour of one background leaves a smudge on the
+## other.
+const GAME_ITEM_INK := Color("2b2018")
+
+
+## A card in 翻翻看. Face down it is chrome; face up it is paper, which is the
+## same two surfaces the rest of the app already uses and puts the thing you are
+## being asked to remember on the brighter one.
+static func game_card_style(scale: float, face_up: bool) -> StyleBoxFlat:
+	var box := StyleBoxFlat.new()
+	box.bg_color = PAPER if face_up else Color("241d1a")
+	box.border_color = Color(0, 0, 0, 0) if face_up else NIGHT_EDGE
+	box.set_border_width_all(maxi(1, roundi(1.0 * scale)))
+	box.set_corner_radius_all(roundi(9.0 * scale))
+	box.corner_detail = 8
+	return box
+
+
+## A pair already found. Still legible — the board you have solved so far is
+## half of what you are remembering — but plainly out of play.
+static func game_card_done_style(scale: float) -> StyleBoxFlat:
+	var box := game_card_style(scale, true)
+	box.bg_color = Color(PAPER, 0.22)
+	return box
+
+
+## The ring around whichever card the keyboard is on. Drawn over the card rather
+## than replacing it, so it says "here" without saying anything about what state
+## the card underneath is in.
+static func game_card_cursor_style(scale: float) -> StyleBoxFlat:
+	var box := StyleBoxFlat.new()
+	box.bg_color = Color(0, 0, 0, 0)
+	box.border_color = ACCENT
+	box.set_border_width_all(maxi(2, roundi(2.0 * scale)))
+	box.set_corner_radius_all(roundi(9.0 * scale))
+	box.corner_detail = 8
+	return box
+
+
+## The field itself. Rounded and inset, because a square hole in the panel reads
+## as a rendering mistake rather than as a screen.
+static func game_field_style(scale: float) -> StyleBoxFlat:
+	var box := StyleBoxFlat.new()
+	box.bg_color = GAME_FIELD
+	box.border_color = NIGHT_EDGE
+	box.set_border_width_all(maxi(1, roundi(1.0 * scale)))
+	box.set_corner_radius_all(roundi(12.0 * scale))
+	box.corner_detail = 10
+	return box
+
+
+## What the field says when nothing is falling — before a run, and after one.
+## Sits over the field rather than replacing it, so the pet stays on screen
+## holding the score instead of the whole game blinking out.
+static func game_banner_style(scale: float) -> StyleBoxFlat:
+	var box := StyleBoxFlat.new()
+	box.bg_color = Color("17110f", 0.88)
+	box.border_color = NIGHT_EDGE
+	box.set_border_width_all(maxi(1, roundi(1.0 * scale)))
+	box.set_corner_radius_all(roundi(14.0 * scale))
+	box.corner_detail = 10
+	box.content_margin_left = roundi(26.0 * scale)
+	box.content_margin_right = roundi(26.0 * scale)
+	box.content_margin_top = roundi(18.0 * scale)
+	box.content_margin_bottom = roundi(18.0 * scale)
+	return box
+
+
+## One segment of a picker where exactly one option is on at a time.
+##
+## The chosen one is filled with the accent and the others carry nothing at all.
+## A row of three outlined buttons reads as three separate things you could
+## press; one filled and two bare reads as a single setting with a current
+## value, which is what it is.
+static func make_choice_button(button: Button, scale: float, chosen: bool) -> void:
+	var box := func(fill: Color, border: Color) -> StyleBoxFlat:
+		var style := StyleBoxFlat.new()
+		style.bg_color = fill
+		style.border_color = border
+		style.set_border_width_all(maxi(1, roundi(1.0 * scale)))
+		style.set_corner_radius_all(roundi(8.0 * scale))
+		style.corner_detail = 8
+		style.content_margin_left = roundi(13.0 * scale)
+		style.content_margin_right = roundi(13.0 * scale)
+		style.content_margin_top = roundi(6.0 * scale)
+		style.content_margin_bottom = roundi(6.0 * scale)
+		return style
+
+	var idle: StyleBoxFlat = box.call(ACCENT, Color(0, 0, 0, 0)) if chosen \
+		else box.call(Color(0, 0, 0, 0), Color(0, 0, 0, 0))
+	var lit: StyleBoxFlat = box.call(ACCENT.lightened(0.10), Color(0, 0, 0, 0)) if chosen \
+		else box.call(NIGHT_WASH, NIGHT_EDGE)
+	button.add_theme_stylebox_override("normal", idle)
+	button.add_theme_stylebox_override("focus", idle)
+	button.add_theme_stylebox_override("hover", lit)
+	button.add_theme_stylebox_override("pressed", lit)
+	button.add_theme_color_override("font_color",
+		Color("fffaf3") if chosen else NIGHT_MUTED)
+	button.add_theme_color_override("font_hover_color", Color("fffaf3"))
+	button.add_theme_color_override("font_pressed_color", Color("fffaf3"))
+	button.add_theme_font_size_override("font_size", roundi(13.0 * scale))
+
+
 # --- Consent dialog buttons ---------------------------------------------------
 
 ## The one action that sends a picture of the screen somewhere. It should not
