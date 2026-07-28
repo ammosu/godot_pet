@@ -378,13 +378,34 @@ CLI」。連帶把 `SecretStore.read()` 加了 per-process 快取 —— 它是*
 
 - **Ubuntu 的 Wayland 是最大風險，而且可能是擋死的**。Wayland 協定不讓 client 自己
   決定視窗位置，而「走到右下角」「拖著牠移動」正是這隻寵物的核心行為。
-  `screen_get_image()` 在 Wayland 下要走 portal，未必接得到。X11 應該沒這些問題 ——
-  短期只承諾 X11（`--display-driver x11`，或登入時選 Ubuntu on Xorg）
+  `screen_get_image()` 在 Wayland 下要走 portal，未必接得到。短期只承諾 X11
+  （`--display-driver x11`，或登入時選 Ubuntu on Xorg）—— 但 X11 也不是沒事，見下
 - Windows 的 DPAPI 那條路完全沒跑過。設計上失敗會被 `write()` 的讀回驗證擋下來，
   `Config.set_secret()` 回 false，UI 會照實說「這台機器沒有安全儲存」—— 是安全地降級，
   不是掉 key，但「能用」還是要有人真的按一次
-- Linux 的 TTS 要對方裝 `speech-dispatcher`，沒裝是無聲失敗
 - 三個平台的螢幕擷取權限模型都不一樣
+
+### 2026-07-28 —— Ubuntu 24.04 / GNOME on X11 實機跑過了（從原始碼，不是 export）
+
+Godot 4.7.1 官方 Linux build，`--headless --import` 全過，執行走 Vulkan Forward+。
+透明、無邊框、置頂、passthrough 都正常。**匯出的 build 仍然沒跑過**，這次驗的是原始碼。
+
+上面「X11 應該沒這些問題」是錯的：
+
+- **mutter 會把整個視窗壓回 `_NET_WORKAREA` 裡面**，於是「視窗刻意 overhang 出螢幕
+  邊緣、讓寵物走到角落」整段失效 —— 寵物拖得動，但差 220px 到不了右下角。細節與最後
+  的作法（`ANCHOR_RATIO` 降級成預設值，`_anchor` 改成可動，並在啟動 park 時順便量這個
+  WM 會不會夾）寫在 CLAUDE.md「GNOME won't let it hang off」。
+  `FLAG_POPUP` 想繞過 WM —— Godot 對主視窗直接拒絕；把視窗放大到塞不進 work area 更慘，
+  會被釘死在 work area 原點完全不能動
+- `screen_get_scale()` 回 1.0，如預期走 `screen_get_dpi() / 96` 的退路。這台 DPI 81，
+  算出來 `maxf(1.0, 0.84)` = 1.0，所以 DPI 那條路在這台機器上其實沒被真的考驗到
+- 憑證儲存要 `libsecret-tools`（`secret-tool`），Ubuntu 桌面預設**沒裝**。gnome-keyring
+  本身有在跑，所以只差那支 CLI。沒裝的話 `SecretStore.is_available()` 回 false、
+  `Config.set_secret()` 回 false，UI 會照實說是明文 —— 降級是對的，但第一次用的人
+  會直接撞到
+- TTS 的 `speech-dispatcher` 這台預設就有（`speech-dispatcher-espeak-ng`）。原本那條
+  「沒裝是無聲失敗」的風險仍然成立，只是 Ubuntu 桌面預設不會踩到
 
 ## 3. 時程估計
 

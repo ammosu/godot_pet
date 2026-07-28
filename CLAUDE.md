@@ -152,6 +152,8 @@ upward from the pet's head and is clipped by the window, so a window sized close
 to the pet makes long replies scroll away while most of the display sits empty.
 The extra area is transparent and click-through, costing only fill rate.
 
+Note "allowed to" — see the next section, because GNOME isn't.
+
 Three consequences of overhanging:
 
 - Screen-edge clamping uses `set_content_bounds()` — the *visible pet* — not the
@@ -168,6 +170,42 @@ Three consequences of overhanging:
   seemingly at random — the mask still described where the UI used to be. The
   reliable repro is dragging the pet with the input open: a drag also knocks the
   brain out of `TALK`, so the pet then walks off with the field still up.
+
+### GNOME won't let it hang off, so the pet moves inside the window
+
+Mutter, on X11, forces the whole window inside `_NET_WORKAREA`. Measured on a
+1920x1080 desktop whose work area is `66, 32, 1854, 1048`: a 440x760 window asked
+to sit at `(1700, 600)` lands at `(1480, 320)`, and one asked for `(-300, -400)`
+lands at `(66, 32)` — both work-area corners exactly. Godot reports the requested
+value for a frame or two before the WM's `ConfigureNotify` overwrites it, so a
+readback taken immediately looks like it worked.
+
+That defeats the overhang outright. With the pet anchored 220px inside a 440-wide
+window, it stopped 220px short of the screen edge and no clamping on our side
+could move it further — the symptom being a pet that can be dragged, but not into
+the corner. Neither obvious escape works: `FLAG_POPUP` (override-redirect, which
+would leave the WM out of it) is refused by Godot for the main window — *"Main
+window can't be popup"* — and making the window **larger** than the work area is
+worse, not better: mutter then pins it at `(66, 32)`, completely immovable.
+
+So `ANCHOR_RATIO` is only a default now, and `_anchor` is a variable: the window
+goes as far as it is allowed, and the pet covers the rest of the distance by
+moving *within* the window. Points worth keeping in mind:
+
+- Whether the WM does this is **measured, not assumed** — macOS and the lighter
+  X11 window managers place the window where they are told, and hard-coding the
+  restriction by platform would needlessly forfeit the overhang on those.
+  `park_at_default_spot()` already asks for an overhanging position, so
+  `_probe_wm()` reads the answer off that and costs no extra movement. A request
+  that was inside the work area anyway proves nothing and is ignored.
+- Where the window *is* free to move, `_clamp_anchor()` provably returns the
+  default: the window stops travelling exactly when the pet reaches the desktop
+  edge. macOS behaviour is unchanged by any of this.
+- `set_content_bounds()` takes the silhouette **relative to the pet**, not in
+  viewport pixels. An absolute rect goes stale the moment the anchor moves.
+- `_on_pet_moved` has to re-run `_layout_visual()` and re-place the silhouette,
+  since the pet can now move without the window moving. It compares the anchor
+  first, so an ordinary walk step still costs what it did.
 
 ### The passthrough mask clips rendering on Windows
 
@@ -221,6 +259,16 @@ The manifest declares neither the grid, nor frame counts, nor row semantics:
 - Anything positioning the pet against a screen edge, or sizing its click box,
   must measure the **idle row** (`rect_for_row`), not the whole-sheet union —
   action frames fling limbs and props far outside the resting silhouette.
+- **How much of the cell the character fills is not a constant**, so drawing
+  every pack at one shared scale makes some pets visibly bigger than others. Of
+  four packs to hand the idle silhouette ran 76% of the cell height (`cute-rem`,
+  118x159) to 95% (`yoshi`, 136x198). `PetVisual.get_pack_scale()` corrects each
+  pack to `NOMINAL_HEIGHT_RATIO` of its cell and the user's size choice
+  multiplies that. Height, not width or area — these characters stand on the
+  ground, so height is what reads as size, and a genuinely wide one
+  (`pikachu-local`, 182x180) should look wide rather than be shrunk to fit. The
+  correction is clamped, since a mis-detected idle row would otherwise scale the
+  pet by whatever a blank or prop-only row happens to measure.
 
 ### LLM layer
 

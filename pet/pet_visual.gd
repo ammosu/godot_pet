@@ -34,11 +34,31 @@ const DEFAULT_STATE_ROWS := {
 const HIT_MARGIN := 8.0
 const CALIBRATION_STEP := 2.5
 
+## How tall the resting character should be drawn, as a fraction of its cell.
+##
+## Packs fill their cell to wildly different degrees — of the four to hand, the
+## idle silhouette runs from 76% of the cell height (cute-rem) to 95% (yoshi) —
+## so one shared size factor leaves one pet visibly bigger than the next. Each
+## pack is scaled to put the *character* at a consistent height instead, and the
+## user's size choice multiplies that.
+##
+## Height rather than width or area: these characters stand on the ground, so
+## height is what reads as size, and a genuinely wide one (Pikachu, 182x180)
+## should look wide rather than be shrunk to fit.
+const NOMINAL_HEIGHT_RATIO := 0.9
+
+## Bounds on that correction, so a mis-detected idle row — a blank one, or one
+## holding a prop rather than the character — can't produce an enormous pet.
+const PACK_SCALE_RANGE := Vector2(0.6, 1.6)
+
 @onready var _sprite: AnimatedSprite2D = $Sprite
 @onready var _fallback: Node2D = $Fallback
 @onready var _label: Label = $CalibrationLabel
 
 var _pack: PetPack = null
+## Per-pack correction that evens out how big the character looks. Applied by the
+## composition root along with the display scale and the user's size choice.
+var _pack_scale := 1.0
 var _state_rows := DEFAULT_STATE_ROWS.duplicate()
 var _state := &"idle"
 var _base_offset := Vector2.ZERO
@@ -72,6 +92,8 @@ func load_pack(pack: PetPack) -> void:
 		_sprite.sprite_frames = null
 		_fallback.visible = true
 		_hit_polygon = _fallback.get_hit_polygon()
+		# The blob is drawn to the size it wants to be; nothing to even out.
+		_pack_scale = 1.0
 		return
 
 	_state_rows = DEFAULT_STATE_ROWS.duplicate()
@@ -84,6 +106,7 @@ func load_pack(pack: PetPack) -> void:
 	# props well outside the idle silhouette, and sizing off those would leave the
 	# pet hovering a long way from any screen edge with an oversized click box.
 	var rest := pack.rect_for_row(int(_state_rows.get(&"idle", 0)))
+	_pack_scale = _normalised_scale(pack, rest)
 	# Centre the *character* in the window rather than the cell, since packs pad
 	# their cells unevenly.
 	_base_offset = Vector2(pack.cell_size) * 0.5 - Vector2(rest.get_center())
@@ -103,6 +126,19 @@ func load_pack(pack: PetPack) -> void:
 
 func get_pack() -> PetPack:
 	return _pack
+
+
+## Multiplier that brings this pack's resting character to the same height as
+## every other pack's, so switching pets doesn't change how big the pet looks.
+func get_pack_scale() -> float:
+	return _pack_scale
+
+
+static func _normalised_scale(pack: PetPack, rest: Rect2i) -> float:
+	if rest.size.y <= 0 or pack.cell_size.y <= 0:
+		return 1.0
+	return clampf(NOMINAL_HEIGHT_RATIO * float(pack.cell_size.y) / float(rest.size.y),
+		PACK_SCALE_RANGE.x, PACK_SCALE_RANGE.y)
 
 
 # --- Playback -----------------------------------------------------------------

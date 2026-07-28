@@ -17,21 +17,52 @@ class_name WindowController
 const BASE_SIZE := Vector2i(440, 760)
 
 ## Where the pet stands inside the window: centred horizontally, and low enough
-## that nearly all of it is bubble space.
+## that nearly all of it is bubble space. Only a default — see `_anchor`.
 const ANCHOR_RATIO := Vector2(0.5, 0.80)
 
 ## Dots per inch at 100%. Windows and Linux report a DPI rather than a factor,
 ## and 96 is the unscaled baseline on both.
 const BASE_DPI := 96.0
 
+## How long to wait for the window manager to have its say about a position we
+## just asked for. The correction rides in on a ConfigureNotify, so it is not
+## visible in the same frame.
+const WM_PROBE_FRAMES := 3
+
 var _win: Window
 var _hit_region := PackedVector2Array()
-## Where the visible pet sits inside the window, in viewport pixels. The window
-## is mostly transparent padding, so all screen-edge maths uses this instead —
-## otherwise the pet stops well short of the corner.
-var _content_rect := Rect2i()
+## The visible pet's extent, *relative to where the pet stands*. The window is
+## mostly transparent padding, so every screen-edge calculation uses this rather
+## than the window rect — otherwise the pet stops well short of the corner.
+## Relative rather than in viewport pixels because the anchor below moves.
+var _content_rel := Rect2i()
+## Where the pet stands inside the window, in viewport pixels. ANCHOR_RATIO of
+## the window size, except where the window could not travel as far as the pet
+## needed it to and the pet had to make up the difference on its own.
+var _anchor := Vector2i.ZERO
+## Where the pet was last asked to stand on the desktop, before any clamping.
+## Kept so the move can be redone once the WM's real limits are known.
+var _pet_pos := Vector2i.ZERO
 var _passthrough_suspended := false
 var _ui_scale := 1.0
+
+## Does the window manager force the whole window inside the work area?
+##
+## GNOME's mutter does, on X11. A 440x760 window asked to sit at (1700, 600)
+## lands at (1480, 320), and one asked for (-300, -400) lands at (66, 32) — the
+## two corners of _NET_WORKAREA. That defeats the deliberately oversized,
+## overhanging window outright: with the pet anchored 220px inside it, the pet
+## then stops 220px short of the screen edge and no clamping on our side can move
+## it further. The anchor is what gets it the rest of the way.
+##
+## macOS, and the lighter X11 window managers, put the window where they are
+## told. So this is measured rather than assumed — the one clean way to opt out
+## of WM management, FLAG_POPUP (override-redirect on X11), is refused for the
+## main window by Godot itself: "Main window can't be popup."
+var _wm_confines_window := false
+var _wm_probed := false
+var _wm_probe_frames := 0
+var _wm_probe_want := Vector2i.ZERO
 
 
 func _ready() -> void:
@@ -43,6 +74,8 @@ func _ready() -> void:
 	_win.borderless = true
 	_win.always_on_top = true
 	_apply_dpi_scale()
+	# Only ticks while a probe is in flight, which is once per run at most.
+	set_process(false)
 
 
 ## Godot reports window size and screen rects in physical pixels, so on a 2x
@@ -53,7 +86,8 @@ func _ready() -> void:
 func _apply_dpi_scale() -> void:
 	_ui_scale = display_scale(DisplayServer.get_primary_screen())
 	_win.size = Vector2i(Vector2(BASE_SIZE) * _ui_scale)
-	_content_rect = Rect2i(Vector2i.ZERO, _win.size)
+	_anchor = _default_anchor()
+	_content_rel = Rect2i(-_anchor, _win.size)
 
 
 ## How much bigger than its design size everything has to be drawn.
@@ -83,18 +117,23 @@ func get_ui_scale() -> float:
 
 ## Absolute desktop position of the pet.
 func get_pet_screen_position() -> Vector2i:
-	return _win.position + _anchor_offset()
+	return _win.position + _anchor
 
 
-## Move the window so the pet lands on `screen_pos`.
+## Move the window so the pet lands on `screen_pos` — and where the window can't
+## go that far, move the pet within the window to cover the rest.
 func set_pet_screen_position(screen_pos: Vector2i) -> void:
-	_win.position = _clamp_to_desktop(screen_pos - _anchor_offset())
+	_pet_pos = screen_pos
+	var window_pos := _clamp_window(screen_pos - _default_anchor())
+	_anchor = _clamp_anchor(screen_pos - window_pos, window_pos)
+	_win.position = window_pos
+	_probe_wm(window_pos)
 	EventBus.pet_moved.emit(get_pet_screen_position())
 
 
 ## Where the pet stands *inside* the window, in viewport pixels.
 func get_window_anchor() -> Vector2:
-	return Vector2(_win.size) * ANCHOR_RATIO
+	return Vector2(_anchor)
 
 
 func get_window_size() -> Vector2i:
@@ -109,8 +148,8 @@ func get_visible_area() -> Rect2:
 	return Rect2(Vector2(screen.position - _win.position), Vector2(screen.size))
 
 
-func _anchor_offset() -> Vector2i:
-	return Vector2i(get_window_anchor())
+func _default_anchor() -> Vector2i:
+	return Vector2i(Vector2(_win.size) * ANCHOR_RATIO)
 
 
 ## Union of every screen, including the menu bar and Dock strips. Dragging is
@@ -126,25 +165,88 @@ func _screen_rect(screen: int) -> Rect2i:
 	return Rect2i(DisplayServer.screen_get_position(screen), DisplayServer.screen_get_size(screen))
 
 
-## Keep the *visible pet* on the desktop; the transparent window is free to hang
-## off the edge, which is what lets the pet reach the very corner.
-func _clamp_to_desktop(top_left: Vector2i) -> Vector2i:
-	var bounds := _desktop_bounds()
-	var min_pos := bounds.position - _content_rect.position
-	var max_pos := bounds.position + bounds.size - _content_rect.size - _content_rect.position
+func _work_area() -> Rect2i:
+	return DisplayServer.screen_get_usable_rect(DisplayServer.window_get_current_screen())
+
+
+## Where the window itself may sit.
+##
+## Normally the physical desktop, measured on the *visible pet* rather than the
+## window rect, which is what lets the transparent padding hang off the edge and
+## the pet reach the very corner. Where the WM won't allow that, the window has
+## to fit inside the work area instead and the anchor takes over.
+func _clamp_window(top_left: Vector2i) -> Vector2i:
+	var lo: Vector2i
+	var hi: Vector2i
+	if _wm_confines_window:
+		var area := _work_area()
+		lo = area.position
+		hi = area.position + area.size - _win.size
+	else:
+		var bounds := _desktop_bounds()
+		var content := _default_anchor() + _content_rel.position
+		lo = bounds.position - content
+		hi = bounds.position + bounds.size - content - _content_rel.size
 	return Vector2i(
-		clampi(top_left.x, min_pos.x, maxi(min_pos.x, max_pos.x)),
-		clampi(top_left.y, min_pos.y, maxi(min_pos.y, max_pos.y)))
+		clampi(top_left.x, lo.x, maxi(lo.x, hi.x)),
+		clampi(top_left.y, lo.y, maxi(lo.y, hi.y)))
+
+
+## How far the pet may stand from the window's own origin: far enough to reach
+## the desktop edge, but not so far that its silhouette leaves the window, where
+## it would simply not be drawn.
+##
+## Where the window was free to travel this always lands back on the default,
+## because the window stopped exactly when the pet hit the desktop edge.
+func _clamp_anchor(anchor: Vector2i, window_pos: Vector2i) -> Vector2i:
+	var in_window_lo := -_content_rel.position
+	var in_window_hi := _win.size - _content_rel.size - _content_rel.position
+	var desktop := _desktop_bounds()
+	var on_screen_lo := desktop.position - window_pos - _content_rel.position
+	var on_screen_hi := desktop.position + desktop.size - window_pos \
+		- _content_rel.size - _content_rel.position
+	var lo := Vector2i(maxi(in_window_lo.x, on_screen_lo.x), maxi(in_window_lo.y, on_screen_lo.y))
+	var hi := Vector2i(mini(in_window_hi.x, on_screen_hi.x), mini(in_window_hi.y, on_screen_hi.y))
+	return Vector2i(
+		clampi(anchor.x, lo.x, maxi(lo.x, hi.x)),
+		clampi(anchor.y, lo.y, maxi(lo.y, hi.y)))
+
+
+## Ask, once, whether this window manager honours a window that hangs off the
+## work area — by watching what becomes of one that does.
+##
+## Parking at the corner already requests such a position, so the answer arrives
+## during startup at no extra cost in movement. A request that was inside the
+## work area all along proves nothing, so those are ignored and the question is
+## simply asked again on the next move that does overhang.
+func _probe_wm(window_pos: Vector2i) -> void:
+	if _wm_probed or _work_area().encloses(Rect2i(window_pos, _win.size)):
+		return
+	_wm_probe_want = window_pos
+	_wm_probe_frames = 0
+	set_process(true)
+
+
+func _process(_delta: float) -> void:
+	_wm_probe_frames += 1
+	if _wm_probe_frames < WM_PROBE_FRAMES:
+		return
+	set_process(false)
+	_wm_probed = true
+	if _win.position == _wm_probe_want:
+		return
+	_wm_confines_window = true
+	# Redo the move now that the real limits are known.
+	set_pet_screen_position(_pet_pos)
 
 
 ## Min/max pet centre x for wandering. Uses the *usable* rect so the pet doesn't
 ## stroll behind the Dock on its own — you can still drag it there.
 func get_walk_bounds() -> Vector2:
 	var rect := DisplayServer.screen_get_usable_rect(DisplayServer.get_primary_screen())
-	var anchor_x := float(_anchor_offset().x)
 	return Vector2(
-		rect.position.x + anchor_x - float(_content_rect.position.x),
-		rect.position.x + rect.size.x + anchor_x - float(_content_rect.end.x))
+		float(rect.position.x - _content_rel.position.x),
+		float(rect.position.x + rect.size.x - _content_rel.position.x - _content_rel.size.x))
 
 
 ## Bottom-right of the primary screen, with a small margin — the classic
@@ -152,8 +254,8 @@ func get_walk_bounds() -> Vector2:
 func park_at_default_spot() -> void:
 	var rect := DisplayServer.screen_get_usable_rect(DisplayServer.get_primary_screen())
 	var margin := roundi(16.0 * _ui_scale)
-	var content_pos := rect.position + rect.size - Vector2i(margin, margin) - _content_rect.size
-	set_pet_screen_position(content_pos - _content_rect.position + _anchor_offset())
+	set_pet_screen_position(rect.position + rect.size - Vector2i(margin, margin)
+		- _content_rel.size - _content_rel.position)
 
 
 # --- Click-through ------------------------------------------------------------
@@ -186,11 +288,14 @@ func set_hit_region(points: PackedVector2Array) -> void:
 		DisplayServer.window_set_mouse_passthrough(_hit_region)
 
 
-## The pet's visible extent inside the window, used for every screen-edge
-## calculation. Kept separate from the hit region, which grows to cover chat UI
-## and would otherwise drag the pet away from the screen edge.
+## The pet's visible extent, measured relative to where the pet itself stands.
+## Used for every screen-edge calculation. Relative because the anchor moves near
+## an edge, which would leave a rect in viewport pixels stale the moment it did.
+##
+## Kept separate from the hit region, which grows to cover chat UI and would
+## otherwise drag the pet away from the screen edge.
 func set_content_bounds(rect: Rect2) -> void:
-	_content_rect = Rect2i(rect.abs()) if rect.has_area() else Rect2i(Vector2i.ZERO, _win.size)
+	_content_rel = Rect2i(rect.abs()) if rect.has_area() else Rect2i(-_anchor, _win.size)
 
 
 ## Make the whole window catch input. Used while dragging: a fast mouse move can

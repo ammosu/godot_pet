@@ -59,8 +59,11 @@ var _submenus := {}
 ## without hunting through the tree for it.
 var _item_menus := {}
 var _size_factor := DEFAULT_SIZE_FACTOR
-## The pet's silhouette in viewport pixels, and its bounding box. Recomputed only
-## when the pet itself changes, so re-pushing the mask stays cheap.
+## The pet's silhouette relative to where it stands. Measured only when the pet
+## itself changes, so re-pushing the mask stays cheap.
+var _pet_shape := PackedVector2Array()
+## The same silhouette in viewport pixels, and its bounding box — what the mask
+## and the chat panel work in.
 var _pet_polygon := PackedVector2Array()
 var _pet_box := Rect2()
 var _pressed := false
@@ -134,26 +137,42 @@ func _warn_if_keyless() -> void:
 
 
 ## Centre the pet in the window and match the display's DPI scale, so it looks
-## the same physical size on a Retina and a non-Retina screen, then apply the
-## user's chosen body size on top.
+## the same physical size on a Retina and a non-Retina screen, then even out how
+## much of its cell this particular pack's character fills, then apply the user's
+## chosen body size on top.
 func _layout_visual() -> void:
-	_visual.scale = Vector2.ONE * _window_ctl.get_ui_scale() * _size_factor
+	_visual.scale = Vector2.ONE * _window_ctl.get_ui_scale() \
+		* _visual.get_pack_scale() * _size_factor
 	_visual.position = _window_ctl.get_window_anchor()
 
 
 ## Measure the visual's silhouette, hand it to the window and the chat panel, and
-## push the click-through mask. The visual's transform maps its local space to
-## viewport pixels, which is what DisplayServer expects.
+## push the click-through mask. Measured relative to the pet rather than through
+## the visual's full transform, because where the pet stands in the window is no
+## longer fixed; _place_pet_shape() converts to the viewport pixels DisplayServer
+## expects.
 func _refresh_hit_region() -> void:
-	_pet_polygon = PackedVector2Array()
+	_pet_shape = PackedVector2Array()
 	for p in _visual.get_hit_polygon():
-		_pet_polygon.append(_visual.transform * p)
+		_pet_shape.append(p * _visual.scale)
+	_window_ctl.set_content_bounds(_bounding_box(_pet_shape))
 
-	_pet_box = _bounding_box(_pet_polygon)
-	_window_ctl.set_content_bounds(_pet_box)
+	_place_pet_shape()
 	_chat.configure(_window_ctl.get_ui_scale(), _window_ctl.get_window_size(), _pet_box)
 	_chat.set_safe_area(_window_ctl.get_visible_area())
 	_refresh_mask()
+
+
+## Put the measured silhouette where the pet is currently standing. Split from
+## measuring it because the pet can move without changing: where the window
+## manager won't let the window hang off the desktop edge, the last stretch into
+## the corner is the pet sliding across the window instead.
+func _place_pet_shape() -> void:
+	var anchor := _window_ctl.get_window_anchor()
+	_pet_polygon = PackedVector2Array()
+	for p in _pet_shape:
+		_pet_polygon.append(p + anchor)
+	_pet_box = _bounding_box(_pet_polygon)
 
 
 ## Just the mask. Split out because where it clips rendering it has to keep up
@@ -211,6 +230,9 @@ func _apply_pack(pet_id: String) -> void:
 		if pack == null:
 			push_warning("Pet: '%s' failed to load, falling back to default art" % pet_id)
 	_visual.load_pack(pack)
+	# The pack carries its own size correction, so the scale has to be reapplied
+	# before anything is measured off the visual.
+	_layout_visual()
 	_refresh_hit_region()
 	Config.set_value("pet", "id", pack.id if pack != null else "")
 
@@ -306,6 +328,13 @@ func _on_tapped() -> void:
 ## Cheap to call on every walk step: set_hit_region() drops a region identical to
 ## the one already pushed, which is the common case.
 func _on_pet_moved(_screen_position: Vector2i) -> void:
+	# Where the window has run out of room to travel, the pet carries on *inside*
+	# it, so the sprite and everything measured off it move too. An ordinary walk
+	# step leaves the anchor alone, which keeps this as cheap as it was.
+	if _visual.position != _window_ctl.get_window_anchor():
+		_layout_visual()
+		_place_pet_shape()
+		_chat.configure(_window_ctl.get_ui_scale(), _window_ctl.get_window_size(), _pet_box)
 	_chat.set_safe_area(_window_ctl.get_visible_area())
 	_refresh_mask()
 
