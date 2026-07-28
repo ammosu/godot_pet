@@ -21,15 +21,22 @@ godot --path .                       # run the app
 godot --headless --import --path .   # import assets + parse all scripts
 pkill -f "godot --path"              # stop a running instance
 
-godot --headless --path . --export-release "macOS" "build/Godot Pet.app"
+godot --headless --path . --export-release "macOS"   "build/Godot Pet.app"
+godot --headless --path . --export-release "Windows" "build/windows/Godot Pet.exe"
+godot --headless --path . --export-release "Linux"   "build/linux/GodotPet.x86_64"
 ```
 
-Exporting needs the macOS template in
+Exporting needs the templates in
 `~/Library/Application Support/Godot/export_templates/4.7.1.stable/` (see
 PLAN.md Phase 10), and `rendering/textures/vram_compression/import_etc2_astc`
 must stay enabled or arm64/universal builds are refused outright.
 `export_presets.cfg` is committed — it carries the transparency and privacy
 settings; Godot keeps signing secrets in `export_credentials.cfg`, which is not.
+
+All three presets cross-export from any host, so the Windows and Linux builds are
+produced on macOS and **have never been run**. Treat a clean export as evidence
+of nothing beyond the packaging step. What actually needs a real machine is in
+PLAN.md under "跨平台".
 
 An exported build cannot see `res://.env`, so a machine that works from source
 drops to the mock provider once packaged. The key has to be set through the
@@ -241,13 +248,52 @@ whichever one applied on first run and permanently defeats later auto-detection.
 `Config.get_secret()` looks in the process environment, then the OS credential
 store (`secrets/secret_store.gd`), then `.env` beside the project or executable,
 then `config.cfg`. Anything the user types in goes to the credential store —
-`security` on macOS, `secret-tool` on Linux, and plaintext config elsewhere, with
-`set_secret()` returning false so the UI can say so.
+`security` on macOS, `secret-tool` on Linux, DPAPI through `powershell` on
+Windows, and plaintext config elsewhere, with `set_secret()` returning false so
+the UI can say so.
 
 Secrets are passed over stdin via `OS.execute_with_pipe()` where possible, since
-`ps` exposes argv to anything running as the same user. On macOS that means
+`ps` exposes argv to anything running as the same user — and
+`Win32_Process.CommandLine` does the same on Windows. On macOS that means
 `security add-generic-password -U -w` with the value piped twice, because `-w`
 with no argument prompts and asks for confirmation.
+
+`read()` is cached per process. It runs on **every** LLM request
+(`OpenAIProvider.send()`), and where `security` costs milliseconds a PowerShell
+start costs most of a second on the main thread, which would stall the pet
+before every reply. The cache is dropped by `write()` and `erase()`, so the only
+thing it can go stale against is an edit made outside the app.
+
+The catch, and the reason `_read_uncached()` exists: `write()` verifies itself by
+reading back, and a cached answer there would turn that check into a no-op —
+silently disarming the truncation guard below.
+
+### Windows has no usable credential-store CLI
+
+`cmdkey` writes to Credential Manager but **cannot read a password back**, and
+reaching `CredRead` from PowerShell means `Add-Type`-compiling C# at runtime:
+seconds on first call, and blocked outright under constrained language mode.
+
+So Windows uses **DPAPI** instead — `ConvertFrom-SecureString`, built in since
+PowerShell 2.0 — with the ciphertext in `user://secrets/<KEY>.dpapi`. Protection
+is equivalent to Credential Manager either way: both are scoped to the Windows
+account, and both are readable by anything already running as that user. A blob
+copied to another machine or account simply fails to decrypt, which `read()`
+reports as "no key".
+
+Two shapes this forces:
+
+- The write hands the key to PowerShell on **stdin** and has PowerShell write the
+  ciphertext file itself; the read passes only a **path** in argv and takes the
+  plaintext off stdout. Both use the APIs the other two backends already rely on
+  — no bidirectional pipe, and the plaintext is never in argv or on disk.
+- PowerShell reads **one line** rather than to EOF, because closing the pipe is
+  what would end the process, and the ciphertext still has to be written after
+  that.
+
+Scripts are built with PowerShell **single quotes** (`_ps_literal` doubles any
+quote inside), so a Windows path's backslashes stay literal, and the script goes
+across as a single argv entry that never reaches a shell.
 
 **Every write is read back before being reported as successful.** macOS
 `security` truncates a prompt-read password at 128 characters, exits 0 and says

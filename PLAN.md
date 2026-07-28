@@ -349,6 +349,43 @@ tools/make_app_icon.sh   # 選用：Dock 圖示換成目前那隻寵物
 - 節點 `_ready()` 裡建好的東西是在知道螢幕縮放之前建的，所以 `MemoryPanel` 改成第一次開啟時才建
 - **`_on_pet_moved` 沒有重推遮罩**：視窗掛在螢幕外，可見範圍一變，泡泡與輸入框會在視窗內橫移，而 Windows 的遮罩會裁掉繪製 —— 症狀是泡泡或輸入框某一側被切掉，看起來時有時無。最好重現的方式是開著輸入框拖動寵物（拖曳也會把 brain 踢出 `TALK`，放開後牠就帶著輸入框走掉）
 
+### 計畫外 — 跨平台（打包完成，實機未驗）
+
+原本只有 macOS 一個 preset。現在 `export_presets.cfg` 有三個，`Windows`（x86_64）
+和 `Linux`（x86_64）都能從 macOS 交叉匯出，template 一樣放在
+`export_templates/4.7.1.stable/`（從同一包 `.tpz` 挑 `windows_*.exe` 與
+`linux_*.x86_64` 複製過去即可，不用重載）。
+
+**匯出成功不代表跑得起來。** 這兩個 build 從來沒有在真的 Windows／Ubuntu 上執行過，
+下面「還沒驗」的部分就是字面意思。
+
+程式碼裡本來就已經處理掉的（不是這次才做的）：
+
+- `WindowController.display_scale()` —— `screen_get_scale()` **只有 macOS 有實作**，
+  其他平台一律回 1.0。Windows／Linux 走 `screen_get_dpi() / 96`，而且不取整數
+- `passthrough_clips_rendering()` —— Windows 用 `SetWindowRgn()` 實作 passthrough，
+  遮罩外**連畫都不畫**，所以遮罩要放大到 `ChatPanel.get_chrome_rect()`
+- `PetPack` 找不到 `HOME` 會退 `USERPROFILE`
+- 透明／置頂／無邊框都在 `project.godot`，不是平台專屬設定
+
+這次補的：**Windows 的憑證儲存**（原本只有 macOS 與 Linux，Windows 會直接掉回明文
+`config.cfg`）。做法與取捨寫在 CLAUDE.md「Windows has no usable credential-store
+CLI」。連帶把 `SecretStore.read()` 加了 per-process 快取 —— 它是**每次對話都會呼叫**
+的，PowerShell 冷啟動要接近一秒而且卡主執行緒。快取要小心的地方：`write()` 靠讀回來
+比對驗證自己，那條路徑必須繞過快取，否則 macOS 的 128 字元截斷防護會變成空轉。
+
+還沒驗，而且需要真的機器：
+
+- **Ubuntu 的 Wayland 是最大風險，而且可能是擋死的**。Wayland 協定不讓 client 自己
+  決定視窗位置，而「走到右下角」「拖著牠移動」正是這隻寵物的核心行為。
+  `screen_get_image()` 在 Wayland 下要走 portal，未必接得到。X11 應該沒這些問題 ——
+  短期只承諾 X11（`--display-driver x11`，或登入時選 Ubuntu on Xorg）
+- Windows 的 DPAPI 那條路完全沒跑過。設計上失敗會被 `write()` 的讀回驗證擋下來，
+  `Config.set_secret()` 回 false，UI 會照實說「這台機器沒有安全儲存」—— 是安全地降級，
+  不是掉 key，但「能用」還是要有人真的按一次
+- Linux 的 TTS 要對方裝 `speech-dispatcher`，沒裝是無聲失敗
+- 三個平台的螢幕擷取權限模型都不一樣
+
 ## 3. 時程估計
 
 | 階段 | 時間 | 備註 |
