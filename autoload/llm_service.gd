@@ -100,6 +100,28 @@ func select_provider(name: String) -> void:
 	Config.set_value("llm", "provider", _provider_name)
 
 
+## Which models the active backend can be pointed at. Empty when that isn't a
+## choice the backend has — mock streams canned text and doesn't care — so the
+## menu can leave the section out rather than showing a list that does nothing.
+func list_models() -> Array[Dictionary]:
+	if _provider_name != "openai":
+		return []
+	var openai: GDScript = load(PROVIDERS["openai"])
+	return openai.MODELS
+
+
+func get_model() -> String:
+	var openai: GDScript = load(PROVIDERS["openai"])
+	return str(Config.get_value("llm", "openai_model", openai.DEFAULT_MODEL))
+
+
+## Persisted, unlike the startup provider default and for the opposite reason:
+## this one *is* a choice the user made. OpenAIProvider re-reads the config on
+## every request, so there is nothing to restart.
+func select_model(id: String) -> void:
+	Config.set_value("llm", "openai_model", id)
+
+
 func set_provider(name: String) -> void:
 	if not PROVIDERS.has(name):
 		push_warning("LLMService: unknown provider '%s', using mock" % name)

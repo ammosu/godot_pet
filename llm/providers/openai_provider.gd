@@ -18,6 +18,23 @@ const ENDPOINT := "/v1/chat/completions"
 ## one is attached — it just never asks for one, so the feature is dead on it.
 ## Override with `openai_model` under `[llm]` in config.cfg.
 const DEFAULT_MODEL := "gpt-5.4-mini"
+
+## What the menu offers, cheapest first. Ids were read off `/v1/models` rather
+## than written from memory — the family is not guessable (there is no plain
+## `gpt-5.6`; that generation is `-sol` / `-luna` / `-terra`).
+##
+## A note is attached only where the caveat is *measured*, which is why nano
+## carries one and the rest don't. Listing nano at all is deliberate: it is the
+## cheapest way to chat, and someone who never asks the pet about the screen
+## should be able to choose it knowingly.
+const MODELS: Array[Dictionary] = [
+	{"id": "gpt-5.4-nano", "note": "最省，但看不懂螢幕"},
+	{"id": "gpt-5.4-mini", "note": "預設"},
+	{"id": "gpt-5.4", "note": ""},
+	{"id": "gpt-5.5", "note": ""},
+	{"id": "gpt-5.6-sol", "note": "最新"},
+]
+
 const KEY_NAME := "OPENAI_API_KEY"
 
 ## Abandon the request if nothing arrives for this long.

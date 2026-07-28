@@ -87,11 +87,14 @@ holds no behaviour itself.
   `autoload/presence_service.gd` — which app you're in, which is what decides
   when one of those lines is worth saying.
 - `autoload/file_drop_service.gd` — turns a file dropped on the pet into a turn.
+- `autoload/outbox_service.gd` — the one folder the pet is allowed to write to;
+  `autoload/maker_service.gd` — the Codex CLI run that fills it.
 - `ui/style.gd` (`PetStyle`) — every colour and edge, and the builders for the
   themes. See below.
 - `ui/chat_panel.gd` — speech bubble and chat input;
   `ui/memory_panel.gd` — the window listing what the pet remembers;
   `ui/chat_log_panel.gd` — the window listing what was actually said;
+  `ui/outbox_panel.gd` — the window listing what the pet has made;
   `ui/game_panel.gd` + `ui/games/` — the mini-game window and the games in it.
 
 ### PetStyle
@@ -366,6 +369,16 @@ reaches the bubble and before it enters the history.
 **Startup defaults must never be written back to config.** `set_provider()`
 does not persist; only `select_provider()` does. Persisting a default pins
 whichever one applied on first run and permanently defeats later auto-detection.
+
+The 語言模型 submenu picks the model as well as the backend.
+`OpenAIProvider.MODELS` is the list; ids were read off `/v1/models` rather than
+written from memory, because the family is not guessable. A model carries a note
+in the menu only where the caveat is *measured*, which is why `gpt-5.4-nano` says
+「看不懂螢幕」 and the rest say nothing — see the `[look]` measurements below.
+Listing nano at all is deliberate: it is the cheapest way to chat, and someone
+who never asks about the screen should be able to choose it knowingly.
+`select_model()` persists (it is a choice, not a default), and the provider
+re-reads the config on every request, so there is nothing to restart.
 
 ### Secrets
 
@@ -768,3 +781,177 @@ and belongs in history like any other turn.
 `persona.md` needs the same kind of explicit exception the screen look does — it
 states flatly that the pet cannot see files, and the model will refuse to discuss
 one it is plainly being handed unless told otherwise.
+
+### Files the pet makes
+
+`autoload/outbox_service.gd` owns one folder — under the user's documents
+directory, so `~/文件/GodotPet` on a localised Linux desktop — and everything the
+pet produces lands there. Deliberately not `user://`: buried under
+`~/.local/share`, it defeats the whole point, which is that the thing the pet
+made is something you can find and open.
+
+**Names arriving there are not trusted.** The pet's own exports compose them, but
+the maker path takes the name from model output, and the model's input already
+includes text dropped on the pet and whatever was legible in a screenshot — both
+places where a sentence can be planted. So:
+
+- `sanitise_name()` reduces anything to a leaf. Verified against the obvious
+  attempts: `../../../etc/passwd` → `passwd.md`, `/etc/shadow` → `shadow.md`,
+  `a/b/c.txt` → `c.txt`, and a leading dot is stripped so `.bashrc` → `bashrc.md`
+  rather than a hidden file the panel would never list.
+- The extension is a **whitelist** with nothing runnable on it. An extension not
+  on it is folded into the stem instead of being dropped, so `run.sh` becomes
+  `run.sh.md` — inert, but still recognisably what was asked for.
+- `_free_name()` never overwrites: `note.md` twice gives `note.md` and
+  `note-2.md`. A model reaching for the same obvious name twice must not eat the
+  first thing it wrote.
+
+There is no per-file consent dialog, and that is the point rather than an
+omission. Unlike a screen look, a write into a folder that exists for it sends
+nothing anywhere and destroys nothing — what it risks is clutter, and the answer
+to clutter is being able to see it: `ui/outbox_panel.gd` is the third window of
+the same shape as the memory and transcript panels, where every line can be
+deleted on its own.
+
+Two producers, deliberately different in kind:
+
+- **The transcript export** (`ChatLogPanel._on_export`) involves no model at all.
+  It is the only thing in this app that can produce a file with the LLM switched
+  off entirely, which is also what made the folder testable before the agent
+  existed — build that half first. Ephemeral turns keep their
+  「這則關掉就忘了」 footnote in the Markdown, because a transcript that quietly
+  promoted a screen-look reply to a permanent record would break the one promise
+  ephemeral turns exist to make.
+- **`autoload/maker_service.gd`** hands the job to the Codex CLI.
+
+### Why the maker path shells out, and why chat doesn't
+
+`codex exec` is the pet's file-making backend and **deliberately not its chat
+backend**. Measured on the Linux box, ChatGPT Plus, `gpt-5.6-sol`:
+
+| | chat turn | successful file write |
+|---|---|---|
+| wall clock | 5–6 s | ~9 s |
+| input tokens | ~15.7k | ~31.6k (half cache-hit) |
+| output tokens | 25–36 | ~100 |
+
+Two findings decided the split. **There is no token-level streaming**: `--json`
+emits `thread.started` → `turn.started` → one `item.completed` carrying the whole
+reply → `turn.completed`, and none of the 96 feature flags offers deltas. That
+breaks the three things the bubble depends on — text typing itself out, the mood
+tag arriving in the first few tokens, and `TTSService` speaking sentence by
+sentence. And ~15.7k input tokens per casual line is roughly 14k of agent
+scaffolding on top of the pet's own ~1–2k prompt, buying nothing a chat turn
+uses. Neither cost matters when making a file: it is expected to take a moment,
+and the agent loop is exactly what is being paid for.
+
+There is still no OAuth here. `codex login` already handled that and
+`~/.codex/auth.json` is the CLI's own file, which nothing in this repo reads —
+the same shape as `SecretStore` shelling out to `security` / `secret-tool` /
+`powershell`. Forging the Codex client id to spend ChatGPT entitlement remains
+out of bounds, as it was before.
+
+Five things that look like implementation detail and are not:
+
+- **Never inherit `~/.codex/config.toml`.** It pins whatever model the user last
+  chose for their own work, and a stale one is rejected outright with an error
+  that reads as an account problem — *"not supported when using Codex with a
+  ChatGPT account"* — with no visible connection to the pet. `MakerService.MODEL`
+  is passed with `-m` every time. The id is not guessable either: there is no
+  plain `gpt-5.6`; that generation is `-sol` / `-luna` / `-terra`.
+- **Nothing is piped, and that is what keeps the pet responsive.**
+  `FileAccess.get_line()`/`get_buffer()` on a pipe *block* until a byte arrives,
+  and this agent thinks for seconds at a stretch, so polling one from `_process`
+  would freeze the window; Godot offers no readiness test. Leaving the pipe
+  undrained is worse — once the OS buffer fills the child blocks writing and
+  never exits. So it launches through `/bin/sh -c` with stdout, stderr and stdin
+  all redirected: the closing line comes from `-o`, and what got made is the
+  difference in the outbox listing. Closing **stdin** matters too, because the
+  current CLI reads additional prompt text from stdin even when a prompt argument
+  is given, and would sit waiting on a terminal that never sends EOF.
+- Because it goes through a shell, the request is quoted with
+  `_sh_quote()` — single quotes with any embedded quote closed and reopened, the
+  same discipline `SecretStore._ps_literal()` applies to PowerShell. Paths here
+  contain both spaces (`Godot Pet`) and CJK (`文件`), so this is exercised on
+  every run rather than being a theoretical concern.
+- Windows reports unsupported, like `PresenceService` does and for a comparable
+  reason: the launcher above is `/bin/sh`, and the CLI isn't realistically
+  installed there for this purpose. Disabled in the menu rather than hidden.
+- `_on_make_submitted` makes the pet say something *before* the job starts. The
+  reply lands ten seconds later, and without a line up front the pet just walks
+  off mid-job.
+- **`_on_pet_nudged` takes `unprompted`, and it is a different question from
+  `record`.** The guard at the top of it — refuse while a bubble is up or the
+  input is open — exists so `Nudger` never talks over what the user is doing. A
+  line answering something the user just asked for has to bypass it, and this
+  flow *opens the input itself*, so both the "give me a moment" line and the
+  result ten seconds later were silently swallowed until it did. Other direct
+  responses still routed through the default (餵食, the API-key confirmation, the
+  game score, 好啦那我不看) have the same latent hole.
+
+### Logging Codex in, from inside the pet
+
+`autoload/codex_cli.gd` owns the account: where the binary is, whether it has
+one, and how to give it one. **No OAuth is implemented here and no token is ever
+read** — both routes launch the vendor's own `codex login`, and
+`~/.codex/auth.json` is the CLI's file that nothing in this repo opens. That is
+the same line drawn above; forging the Codex client id remains out of bounds and
+none of this comes near it.
+
+Two routes, because they answer different questions, and the menu entry stays
+*enabled* without an account — having the CLI and having an account are separate
+failures and only the second one is recoverable by asking.
+
+- **`--with-api-key`, over stdin.** Uses the key this app may already be holding.
+  No browser, no interaction. The key goes over stdin and never argv, for the
+  reason `SecretStore` pipes secrets: `ps` shows another process's arguments to
+  anything running as the same user. Bills the API rather than the subscription.
+- **`--device-auth`, not the default localhost flow.** The default binds
+  `localhost:1455` and opens a browser *on this machine* — exactly the assumption
+  that fails on the remote and headless desktops a pet like this sits on, and the
+  CLI says so in its own output. Device auth produces a short URL and nine
+  characters, which is something a speech bubble can carry where a 400-character
+  OAuth URL is not. The one thing the default did for free was open the browser,
+  so `_look_for_code()` does that itself once the URL is known, and puts the code
+  on the clipboard as well as saying it.
+
+Four things worth knowing before editing it:
+
+- **The device code is parsed out of a regular file, never a pipe** — same rule
+  as the maker path, and here it is what makes the code reachable at all.
+- **The CLI colourises even when stdout is a file**, so the escapes have to be
+  stripped before matching. Write that pattern as `\x1b`: Godot's RegEx is
+  **PCRE2, which rejects `\u`**, and an invalid pattern is not loud — `sub()`
+  returns an empty string, so the code is simply never found and the pet says
+  nothing while the login sits there. Compile it once; this runs on a timer.
+- `is_logged_in()` is cached. `codex login status` costs 60-90ms, which is a
+  visible hitch every time the menu is built. Every login attempt drops the
+  cache; the only thing it can go stale against is a login made outside the app.
+- Both this and `MakerService` kill their child in `_exit_tree()`.
+  `OS.create_process` children outlive the app, and an abandoned `codex login`
+  keeps holding its port, so the next attempt would fail to bind with nothing on
+  screen explaining why.
+
+The login dialog's primary button gets `primary_button_styles`, not the ghost
+treatment. Ghosting it made both routes read as equally optional and the main one
+look disabled — the same mistake `ChatLogPanel`'s 關閉 button already records.
+
+### The Codex sandbox needs help on Ubuntu 24.04
+
+`codex exec -s workspace-write` builds its sandbox with bubblewrap, and Ubuntu
+24.04 sets `kernel.apparmor_restrict_unprivileged_userns=1` while shipping a
+`/usr/bin/bwrap` that is **not** setuid. Every write therefore failed with
+`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`, which the agent
+reported as a vague 「工作區沙箱發生權限錯誤」 after retrying four times — 50
+seconds and ~150k input tokens for nothing.
+
+The fix is an AppArmor profile at `/etc/apparmor.d/bwrap`: a *named* profile with
+`flags=(unconfined)` and `userns,`, copied from Ubuntu's own
+`/etc/apparmor.d/flatpak`. It is much narrower than the other common answer
+(`sysctl kernel.apparmor_restrict_unprivileged_userns=0`, which is machine-wide),
+though it does restore the capability for anything that invokes bwrap.
+
+Confirmed afterwards that the sandbox still *confines*, which is the part worth
+re-checking after any change here: asked to write outside its `-C` root, the
+agent refuses and no file appears. Note `/tmp` is writable in `workspace-write`
+mode as well as the root — that is the CLI's default, not something granted here.

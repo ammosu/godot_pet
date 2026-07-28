@@ -18,11 +18,16 @@ const DRAG_IMPACT_DURATION := 0.06
 const DRAG_LANDING_DURATION := 0.28
 
 ## Menu ids above these offsets select an installed pet pack / a body size /
-## an LLM backend / a mini-game.
+## an LLM backend / a mini-game / a model.
+##
+## Every test against these in `_on_menu_pressed` is "at or above", so they must
+## be checked highest-first — a model id at 500 also satisfies all four tests
+## below it.
 const PET_ID_BASE := 100
 const SIZE_BASE := 200
 const PROVIDER_BASE := 300
 const GAME_BASE := 400
+const MODEL_BASE := 500
 
 ## Multipliers on the display scale. Pixel art prefers integers, but on a 2x
 ## display the odd ones land on a whole physical pixel often enough to look fine.
@@ -52,7 +57,7 @@ const PET_GALLERY_URL := "https://codex-pets.net/"
 
 enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, SPEAK, ROAM, CALIBRATE,
-	RECENTRE, SET_KEY, CHAT_LOG, MEMORY, LOOK, QUIT,
+	RECENTRE, SET_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, MAKE, QUIT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -62,9 +67,12 @@ enum MenuId {
 @onready var _menu: PopupMenu = $Menu
 @onready var _consent: ConfirmationDialog = $Consent
 @onready var _presence_consent: ConfirmationDialog = $PresenceConsent
+@onready var _maker_consent: ConfirmationDialog = $MakerConsent
+@onready var _codex_login: ConfirmationDialog = $CodexLogin
 @onready var _memory: MemoryPanel = $Memory
 @onready var _chat_log: ChatLogPanel = $ChatLog
 @onready var _game: GamePanel = $Game
+@onready var _outbox: OutboxPanel = $Outbox
 
 var _installed_pets := PackedStringArray()
 ## Submenus, kept between rebuilds — PopupMenu.clear() empties the items but
@@ -88,6 +96,9 @@ var _grab_offset := Vector2i.ZERO
 ## The tap-bounce and the release-landing tweens drive the same squash channel,
 ## so only one may be alive at a time — see _stop_squash_tween().
 var _squash_tween: Tween = null
+## Set once the user has been told a login is still in flight, so the next click
+## on the same entry cancels it instead of repeating the message.
+var _login_cancel_armed := false
 
 
 func _ready() -> void:
@@ -101,6 +112,7 @@ func _ready() -> void:
 	_build_menu()
 	_memory.memories_changed.connect(_on_memories_changed)
 	_chat_log.conversation_cleared.connect(_on_conversation_cleared)
+	_chat_log.exported.connect(_on_exported)
 	_game.played.connect(_on_game_played)
 
 	_brain.state_changed.connect(_on_brain_state)
@@ -118,6 +130,9 @@ func _ready() -> void:
 
 	_chat.submitted.connect(_on_chat_submitted)
 	_chat.secret_submitted.connect(_on_secret_submitted)
+	_chat.make_submitted.connect(_on_make_submitted)
+	MakerService.finished.connect(_on_made)
+	MakerService.failed.connect(_on_make_failed)
 	_chat.input_toggled.connect(_on_input_toggled)
 	_chat.bubble_hidden.connect(_on_bubble_hidden)
 	EventBus.reply_chunk.connect(_on_reply_chunk)
@@ -128,6 +143,10 @@ func _ready() -> void:
 	EventBus.screen_look_requested.connect(_on_screen_look_requested)
 	_setup_consent_dialog()
 	_setup_presence_consent_dialog()
+	_setup_maker_consent_dialog()
+	_setup_codex_login_dialog()
+	CodexCli.login_finished.connect(_on_codex_login_finished)
+	CodexCli.login_hint.connect(_on_codex_login_hint)
 
 	# Only worth ticking where the mask clips rendering; elsewhere the bubble is
 	# outside it by design and moving is free.
@@ -449,8 +468,15 @@ func _on_reply_failed(message: String) -> void:
 ## but a line confirming the history was just emptied would be the one thing left
 ## in it — leaving the count at 1 and the list looking like the clear only half
 ## worked. That line is feedback about the app, not conversation.
-func _on_pet_nudged(emotion: String, text: String, record := true) -> void:
-	if _chat.is_showing() or _chat.is_input_open():
+## `unprompted` is what the guard below is for, and it is not the same question as
+## `record`. A line the pet volunteers must never talk over what the user is
+## doing. A line answering something they just asked for has to appear even then,
+## or it is simply lost — which is exactly what happened to the maker path, whose
+## flow *opens the input itself*, so the guard was still true when both the "give
+## me a moment" line and the result ten seconds later tried to speak.
+func _on_pet_nudged(emotion: String, text: String, record := true,
+		unprompted := true) -> void:
+	if unprompted and (_chat.is_showing() or _chat.is_input_open()):
 		return
 	_brain.on_talk_started()
 	_chat.begin_reply()
@@ -518,11 +544,19 @@ func _build_menu() -> void:
 	_menu.add_submenu_node_item("遊戲", _build_games_menu())
 	_menu.add_item("看一下我的螢幕…", MenuId.LOOK)
 	_menu.set_item_disabled(_menu.get_item_index(MenuId.LOOK), not VisionService.is_supported())
+	_menu.add_item("幫我做個東西…", MenuId.MAKE)
+	# Disabled rather than hidden: an entry that vanishes on a machine without the
+	# CLI is a feature nobody discovers exists, the same call the 依你的節奏搭話
+	# row makes where PresenceService reports unsupported.
+	_menu.set_item_disabled(_menu.get_item_index(MenuId.MAKE), not MakerService.is_supported())
 	_menu.add_item("回到角落", MenuId.RECENTRE)
 	# Above 記憶與資料 because it is the shallower of the two: this one is what
 	# we just said, that one is what the pet has kept.
 	_menu.add_item("對話記錄…", MenuId.CHAT_LOG)
 	_menu.add_item("記憶與資料…", MenuId.MEMORY)
+	# Third of the same kind: a window listing something the pet holds, where each
+	# line can be dropped on its own.
+	_menu.add_item("我做的東西…", MenuId.OUTBOX)
 
 	_menu.add_separator()
 	_menu.add_item("結束", MenuId.QUIT)
@@ -568,10 +602,31 @@ func _build_model_menu() -> PopupMenu:
 		menu.add_radio_check_item(LLMService.provider_label(provider), PROVIDER_BASE + i)
 		menu.set_item_checked(menu.get_item_index(PROVIDER_BASE + i),
 			provider == LLMService.get_provider_name())
+
+	# Only where the backend actually has models to choose between, so the mock
+	# doesn't grow a list that changes nothing.
+	var models := LLMService.list_models()
+	if not models.is_empty():
+		menu.add_separator()
+		var current := LLMService.get_model()
+		for i in models.size():
+			menu.add_radio_check_item(_model_label(models[i]), MODEL_BASE + i)
+			menu.set_item_checked(menu.get_item_index(MODEL_BASE + i),
+				str(models[i]["id"]) == current)
+
 	menu.add_separator()
 	menu.add_item(_api_key_label(), MenuId.SET_KEY)
 	_index_items(menu)
 	return menu
+
+
+## The id is what matters, so it leads; the note is a parenthetical and only some
+## models have one.
+func _model_label(model: Dictionary) -> String:
+	var note := str(model.get("note", ""))
+	if note.is_empty():
+		return str(model["id"])
+	return "%s（%s）" % [model["id"], note]
 
 
 func _build_behaviour_menu(current: PetPack) -> PopupMenu:
@@ -638,6 +693,11 @@ func _open_menu() -> void:
 func _on_menu_pressed(id: int) -> void:
 	# Highest base first: every one of these tests is "at or above", so a game id
 	# at 400 also satisfies the provider test at 300.
+	if id >= MODEL_BASE:
+		LLMService.select_model(str(LLMService.list_models()[id - MODEL_BASE]["id"]))
+		# The provider row shows the model name too, so both rows need redrawing.
+		_build_menu()
+		return
 	if id >= GAME_BASE:
 		_game.open(_window_ctl.get_ui_scale(), _visual.get_pack(),
 			_visual.state_rows(), id - GAME_BASE)
@@ -676,10 +736,14 @@ func _on_menu_pressed(id: int) -> void:
 			_ask_for_api_key()
 		MenuId.LOOK:
 			EventBus.screen_look_requested.emit(VisionService.DEFAULT_QUESTION, true)
+		MenuId.MAKE:
+			_ask_what_to_make()
 		MenuId.CHAT_LOG:
 			_chat_log.open(_window_ctl.get_ui_scale())
 		MenuId.MEMORY:
 			_memory.open(_window_ctl.get_ui_scale())
+		MenuId.OUTBOX:
+			_outbox.open(_window_ctl.get_ui_scale())
 		MenuId.QUIT:
 			get_tree().quit()
 
@@ -852,6 +916,182 @@ func _toggle_presence() -> void:
 		_presence_consent.popup_centered()
 
 
+# --- Making things ------------------------------------------------------------
+
+## The third consent shape in this app, and the questions are different again.
+## A screenshot's are how much, to whom, how long. A background poll's are what is
+## sampled and where it goes. This one's are: where does the file land, can it
+## overwrite something of mine, and can I take it back — answered by one visible
+## folder, no, and yes.
+##
+## Which is also why there is no per-file dialog after this one: a write into a
+## folder that exists for it sends nothing anywhere and destroys nothing, so the
+## standing answer is the only one worth asking for.
+func _setup_maker_consent_dialog() -> void:
+	var scale := _window_ctl.get_ui_scale()
+	_maker_consent.dialog_text = "\n".join(PackedStringArray([
+		"你可以叫我做東西 —— 一張筆記、一份清單、一張簡單的圖。我會請 Codex 幫忙，用你已經登入的那個帳號。",
+		"",
+		"・做出來的檔案只會放進「%s」" % OutboxService.folder_path(),
+		"・我不會蓋掉已經在裡面的檔案，同名就另外取一個",
+		"・只會做 md、txt、csv、json、svg 這幾種，不會產生可以執行的東西",
+		"・每一個檔案都能在「我做的東西」裡單獨刪掉",
+		"・這會用掉你的 ChatGPT 額度，一次大概十秒",
+	]))
+	_maker_consent.exclusive = false
+	_maker_consent.theme = PetStyle.dialog_theme(scale)
+	_maker_consent.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PetStyle.make_ghost_button(_maker_consent.get_ok_button(), scale)
+	_maker_consent.confirmed.connect(_on_maker_consent_confirmed)
+
+
+func _on_maker_consent_confirmed() -> void:
+	MakerService.grant_consent()
+	_ask_what_to_make()
+
+
+func _ask_what_to_make() -> void:
+	if not MakerService.has_consented():
+		_maker_consent.reset_size()
+		_maker_consent.popup_centered()
+		return
+	if MakerService.is_busy():
+		_on_pet_nudged("neutral", "我還在做上一個啦，等我一下。", false, false)
+		return
+	if CodexCli.is_logging_in():
+		# The armed-button idiom the panels already use, in the only place a menu
+		# entry can hold it: told once, and acted on the second time. Without this
+		# there is no way out of a login the user has abandoned except waiting for
+		# CodexCli.BROWSER_TIMEOUT.
+		if not _login_cancel_armed:
+			_login_cancel_armed = true
+			_on_pet_nudged("neutral", "還在等你登入喔。再點一次就取消。", false, false)
+			return
+		CodexCli.cancel_browser_login()
+		return
+	# Having the CLI is checked when the menu is built; having an *account* is
+	# recoverable, so it is asked about here rather than disabling the entry.
+	if not CodexCli.is_logged_in():
+		_codex_login.reset_size()
+		_codex_login.popup_centered()
+		return
+	_chat.ask_what_to_make("要我做什麼？Enter 送出")
+
+
+# --- Codex login --------------------------------------------------------------
+
+## Two ways in, because they answer different questions. The browser signs in a
+## ChatGPT account and spends its quota; the API key is the one this app may
+## already be holding, costs nothing extra to offer, and bills the API instead.
+##
+## The key route is only shown when there *is* a key — a button that explains it
+## can't do anything is worse than no button.
+func _setup_codex_login_dialog() -> void:
+	var scale := _window_ctl.get_ui_scale()
+	_codex_login.dialog_text = "\n".join(PackedStringArray([
+		"要我做東西得先讓 Codex 有個帳號。它是 OpenAI 自己的工具，我只是請它幫忙。",
+		"",
+		"・用 ChatGPT 帳號登入：我會開登入頁並給你一組一次性代碼，你輸入就好",
+		"・登入頁是 OpenAI 自己的網站，我不會經手你的密碼或憑證",
+		"・登入結果存在 Codex 自己的檔案裡，我不會去讀它",
+		"・走 ChatGPT 帳號會用掉你的訂閱額度；走 API key 則算在 OpenAI 帳單上",
+	]))
+	_codex_login.exclusive = false
+	_codex_login.theme = PetStyle.dialog_theme(scale)
+	_codex_login.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+
+	# The main action gets the loud treatment, not the ghost one. Ghosting it made
+	# both routes read as equally optional and the primary one look disabled —
+	# the same mistake ChatLogPanel's 關閉 button already records, where the ghost
+	# style hid the thing the window was for.
+	var ok := _codex_login.get_ok_button()
+	var primary := PetStyle.primary_button_styles(scale)
+	for state in primary:
+		ok.add_theme_stylebox_override(state, primary[state])
+	ok.add_theme_color_override("font_color", PetStyle.INK)
+	ok.add_theme_color_override("font_hover_color", PetStyle.INK)
+	ok.add_theme_color_override("font_pressed_color", PetStyle.INK)
+
+	# The quieter of the two routes, and only offered when there is a key to use.
+	var with_key := _codex_login.add_button("用我存的 API key", false, "apikey")
+	PetStyle.make_ghost_button(with_key, scale)
+	with_key.visible = Config.has_secret(OPENAI_KEY)
+
+	_codex_login.confirmed.connect(_start_browser_login)
+	_codex_login.custom_action.connect(func(action: StringName) -> void:
+		if action == &"apikey":
+			_codex_login.hide()
+			_login_with_stored_key())
+
+
+func _start_browser_login() -> void:
+	if not CodexCli.begin_browser_login():
+		_on_pet_nudged("sad", "咦，登入指令叫不起來欸。", false, false)
+		return
+	# The code takes a second or two to arrive; CodexCli emits it as a hint, and
+	# that line is what actually tells the user what to do.
+	_on_pet_nudged("neutral", "等我一下，我去拿登入碼。", false, false)
+
+
+## Blocking, but only for as long as the CLI takes to write a file — see
+## CodexCli.login_with_api_key(). Nothing is said before it, because a "稍等"
+## that resolves in the same frame just flickers.
+func _login_with_stored_key() -> void:
+	if CodexCli.login_with_api_key(Config.get_secret(OPENAI_KEY)):
+		_on_pet_nudged("happy", "用你的 API key 登好了，那我開始做。", false, false)
+		_ask_what_to_make()
+		return
+	_on_pet_nudged("sad", "那把 key 好像不能用來登入 Codex，要不要改用瀏覽器？", false, false)
+
+
+func _on_codex_login_hint(message: String) -> void:
+	_on_pet_nudged("neutral", message, false, false)
+
+
+func _on_codex_login_finished(ok: bool, message: String) -> void:
+	_login_cancel_armed = false
+	_on_pet_nudged("happy" if ok else "sad", message, false, false)
+	if ok:
+		# Straight on to the thing they actually asked for. The line above stays
+		# in the bubble; opening the input doesn't clear it.
+		_ask_what_to_make()
+
+
+func _on_make_submitted(text: String) -> void:
+	if not MakerService.make(text):
+		_on_pet_nudged("sad", "咦，我叫不動 codex 欸。", false, false)
+		return
+	# The brain would otherwise wander off mid-job, and the line below arrives
+	# ten seconds later with the pet somewhere else entirely.
+	_on_pet_nudged("excited", "好，我去做，等我一下下。", false, false)
+
+
+## Not recorded, for the same reason the export line isn't: this is the pet
+## narrating an action rather than answering anything, and a history whose newest
+## turn is that would be re-sent with the next real question for nothing.
+func _on_made(files: PackedStringArray, message: String) -> void:
+	var line := message if not message.is_empty() else "做好了！"
+	# The agent is asked to say what it did, and it almost always names the file
+	# itself — appending the list unconditionally produced 「…裝在「冷笑話.txt」
+	# 裡囉！（冷笑話.txt）」. So it is only added when the line doesn't already
+	# carry it, which in practice means the fallback above.
+	if not files.is_empty() and not _mentions_any(line, files):
+		line += "（%s）" % ", ".join(files)
+	_on_pet_nudged("happy", line, false, false)
+
+
+func _mentions_any(line: String, files: PackedStringArray) -> bool:
+	for name in files:
+		if line.contains(name):
+			return true
+	return false
+	_outbox.refresh_if_open()
+
+
+func _on_make_failed(reason: String) -> void:
+	_on_pet_nudged("sad", reason, false, false)
+
+
 ## Memory that can't be inspected is memory you can't trust, and a pet quietly
 ## carrying a wrong fact about you is worse than one that forgets. The list lives
 ## in its own window (ui/memory_panel.gd) rather than in the bubble, which fades
@@ -868,6 +1108,19 @@ func _on_memories_changed() -> void:
 ## difference is visible.
 func _on_conversation_cleared() -> void:
 	_on_pet_nudged("neutral", "好，剛剛聊的我放下了。要聊點新的嗎？", false)
+
+
+## The window knows what it wrote; only here is it decided how the pet reacts —
+## the same split the mini-games already make.
+##
+## Not recorded, for the reason a clear isn't: this is the pet narrating an action
+## the user just took, and a history whose newest turn is the pet describing the
+## export would be re-sent with the next real question for no reason.
+func _on_exported(file_name: String) -> void:
+	if file_name.is_empty():
+		_on_pet_nudged("sad", "欸，寫不出來……資料夾可能沒權限。", false, false)
+		return
+	_on_pet_nudged("happy", "寫好了！叫「%s」，在「我做的東西」裡面。" % file_name, false, false)
 
 
 func _feed() -> void:

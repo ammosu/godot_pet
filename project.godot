@@ -24,6 +24,9 @@ TTSService="*res://autoload/tts_service.gd"
 VisionService="*res://autoload/vision_service.gd"
 PresenceService="*res://autoload/presence_service.gd"
 FileDropService="*res://autoload/file_drop_service.gd"
+OutboxService="*res://autoload/outbox_service.gd"
+CodexCli="*res://autoload/codex_cli.gd"
+MakerService="*res://autoload/maker_service.gd"
 
 [audio]
 

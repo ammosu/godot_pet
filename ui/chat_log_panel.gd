@@ -20,6 +20,11 @@ class_name ChatLogPanel
 ## Emitted after the history is dropped, so the pet can say something about it.
 signal conversation_cleared
 
+## Emitted with the filename actually written, or empty on failure. What the pet
+## says about it is decided in pet.gd — the window knows what it wrote, only the
+## composition root knows how the pet reacts to anything.
+signal exported(file_name: String)
+
 const DESIGN_SIZE := Vector2i(440, 540)
 ## How far below the design size the user is allowed to drag the window.
 const MIN_SIZE_RATIO := 0.8
@@ -39,6 +44,7 @@ var _count_label: Label
 var _empty_label: Label
 var _folded_note: Label
 var _clear: Button
+var _export: Button
 ## The turns are gone for good and there is nowhere to get them back from, so
 ## the button asks first by becoming the question — the same answer MemoryPanel
 ## gives to the same problem one window along.
@@ -151,6 +157,14 @@ func _build() -> void:
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	footer.add_child(spacer)
+	# Lives here rather than in 我做的東西, because this is where the transcript
+	# is — and it costs no API call, which is what makes it the one thing in this
+	# app that can produce a file with the model switched off entirely.
+	_export = Button.new()
+	_export.text = "存成檔案"
+	_export.tooltip_text = "把這些對話寫成 Markdown，放進「我做的東西」"
+	_export.pressed.connect(_on_export)
+	footer.add_child(_export)
 	var close := Button.new()
 	close.text = "關閉"
 	close.pressed.connect(_close)
@@ -202,6 +216,7 @@ func refresh() -> void:
 	_folded_note.visible = not MemoryStore.summary().is_empty()
 	_clear.disabled = history.is_empty()
 	_clear.text = "真的清空？" if _clear_armed else "清空，開新對話"
+	_export.disabled = history.is_empty()
 
 
 ## Widest a bubble may be, in physical pixels.
@@ -310,3 +325,39 @@ func _on_clear() -> void:
 		return
 	refresh()
 	conversation_cleared.emit()
+
+
+func _on_export() -> void:
+	var history := MemoryStore.history()
+	if history.is_empty():
+		return
+	exported.emit(OutboxService.write(_export_name(), _as_markdown(history)))
+
+
+## Dated, because exporting twice in a week and getting "對話記錄" and
+## "對話記錄-2" tells you nothing about which is which.
+func _export_name() -> String:
+	return "對話記錄-%s.md" % Time.get_date_string_from_system()
+
+
+## Speaker labels match the ones MemoryStore._condense_prompt() already uses, so
+## the same conversation reads the same way whether a person or the model is the
+## one being handed it.
+func _as_markdown(history: Array[Dictionary]) -> String:
+	var lines := PackedStringArray(["# 對話記錄", ""])
+	lines.append("匯出時間：%s %s" % [
+		Time.get_date_string_from_system(),
+		Time.get_time_string_from_system().substr(0, 5),
+	])
+	lines.append("")
+	for message in history:
+		var who := "使用者" if str(message.get("role", "")) == "user" else "寵物"
+		lines.append("**%s**：%s" % [who, str(message.get("content", ""))])
+		# The same footnote the window puts under the bubble. A transcript that
+		# quietly promotes a screen-look reply to a permanent record would break
+		# the one promise ephemeral turns exist to make.
+		if bool(message.get("ephemeral", false)):
+			lines.append("")
+			lines.append("> 這則關掉就忘了")
+		lines.append("")
+	return "\n".join(lines)

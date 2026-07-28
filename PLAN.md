@@ -672,6 +672,134 @@ mask 那一整類麻煩。
 沒驗：翻翻看和跳過去我都沒有真的用鍵盤玩過（一樣是 xdotool），使用者手動按過說沒問題。全部
 十種圖案在牌面尺寸下的辨識度、以及「已配對」的淡化狀態，是把整盤 4×5 強制翻開截圖確認的。
 
+### 2026-07-28 —— 讓寵物會產出檔案，以及選模型（已完成）
+
+三件一起進來：右鍵選單能選模型、一個寵物專用的產出資料夾與它的視窗、還有把 Codex CLI 接成
+「幫我做個東西」的後端。
+
+**選模型。** `OpenAIProvider.MODELS` 是清單，id 是打 `/v1/models` 抄回來的，不是憑印象寫的
+—— 這個世代根本沒有 `gpt-5.6` 這個 id，是 `-sol` / `-luna` / `-terra`。選單裡只有「量過的」
+警告才會標註，所以 `gpt-5.4-nano` 寫著「看不懂螢幕」（它 `[look]` 是 0/12），其他都不寫。
+還是把 nano 列出來，因為它是最便宜的聊天方式，不問螢幕的人應該可以在知情的狀況下選它。
+
+`MODEL_BASE` 是 500，而且必須排在 `GAME_BASE`(400) 前面檢查 —— `_on_menu_pressed` 每一條
+判斷都是「大於等於」，這個坑之前小遊戲那次就踩過一次了。
+
+**產出資料夾。** `OutboxService` 只認一個資料夾（本機是 `~/文件/GodotPet`）。刻意不用
+`user://`：埋在 `~/.local/share` 底下就失去意義了，寵物做的東西的價值就在於你找得到、打得開。
+
+**檔名一律不可信** —— 寵物自己的匯出是安全的，但「做東西」那條路的檔名來自模型輸出，而模型
+的輸入本來就包含使用者拖進來的檔案內容、以及截圖裡讀得到的字，兩個都是可以被塞進一句話的
+地方。所以消毒過的結果（實測）：
+
+| 輸入 | 輸出 |
+|---|---|
+| `../../../etc/passwd` | `passwd.md` |
+| `/etc/shadow` | `shadow.md` |
+| `..\..\windows\system32\evil.exe` | `evil.exe.md` |
+| `.bashrc` | `bashrc.md` |
+| `run.sh` | `run.sh.md` |
+| `a/b/c.txt` | `c.txt` |
+| 空字串 / `...` | `小紙條.md` |
+
+副檔名是白名單而且沒有任何可執行的東西；不在名單上的不會被丟掉，而是併進主檔名，所以
+`run.sh` 變成 `run.sh.md` —— 不能跑，但看得出當初要的是什麼。同名絕不覆蓋，`note.md` 寫兩次
+會得到 `note.md` 和 `note-2.md`。
+
+**沒有逐檔詢問的對話框**，這是刻意的。跟看螢幕不一樣，寫進一個為此存在的資料夾不會把東西送
+去任何地方、也不會破壞任何東西；它的風險是「亂」，而對付亂的方法是看得見 —— `OutboxPanel`
+是第三個跟記憶、對話記錄同形狀的視窗，每一行都能單獨刪掉。
+
+**先做不需要模型的那半邊是對的。** 對話記錄的「存成檔案」完全不呼叫 API，是這個 app 裡唯一
+能在關掉 LLM 的狀態下產生檔案的功能 —— 也正因為如此，資料夾那一整套在 agent 還沒接上以前
+就能測完。ephemeral 的那幾則在 Markdown 裡保留「這則關掉就忘了」的註記，不然一份匯出就把
+看螢幕的回答偷偷升格成永久紀錄，那正是 ephemeral 存在要擋的事。
+
+**Codex 只接「做東西」，不接聊天。** 在這台機器上量的（ChatGPT Plus、`gpt-5.6-sol`）：
+
+| | 閒聊一輪 | 成功寫檔一輪 |
+|---|---|---|
+| 耗時 | 5–6 秒 | 約 9 秒 |
+| input tokens | 約 15.7k | 約 31.6k（一半命中 cache） |
+| output tokens | 25–36 | 約 100 |
+
+決定性的兩點：**完全沒有 token 串流**（`--json` 只給一個裝著整段回覆的 `item.completed`，
+96 個 feature flag 裡也沒有相關選項），這一次打掉打字機效果、情緒標記提早到達、以及 TTS
+逐句念三件事；而每句閒聊 15.7k input token，等於在寵物自己那 1–2k 的 prompt 上疊了約 14k
+的 agent 架構，聊天路徑一點都用不到。同樣的代價放在做檔案上就完全合理。
+
+沒有自己做 OAuth。`codex login` 已經處理完了，`~/.codex/auth.json` 是 CLI 自己的檔案，這個
+repo 一行都不讀 —— 跟 `SecretStore` 呼叫 `security` / `secret-tool` / `powershell` 同一個
+形狀。冒用 Codex client id 去花 ChatGPT 額度這件事，跟之前一樣不做。
+
+**不接管道（pipe）是這裡最重要的工程決定。** `FileAccess.get_line()` / `get_buffer()` 在
+pipe 上會**阻塞**到有位元組為止，而這個 agent 一想就是好幾秒，從 `_process` 輪詢它會直接凍住
+視窗，Godot 也沒有「有沒有資料可讀」的測試。放著不讀更糟：OS 緩衝區一滿，子行程就卡在寫入
+永遠不結束。所以改成用 `/bin/sh -c` 啟動，stdout、stderr、stdin 全部重導向：收尾那句話從
+`-o` 拿，做了什麼檔案則是比對資料夾前後的差異。關掉 **stdin** 也是必要的 —— 新版 CLI 就算
+已經有 prompt 參數還是會再讀 stdin，接到終端機就會一直等下去。
+
+**絕不繼承 `~/.codex/config.toml`。** 它釘著使用者自己工作用的模型，過期的那個會被直接拒絕，
+而錯誤訊息長得像帳號問題（*"not supported when using Codex with a ChatGPT account"*），完全
+看不出跟寵物有什麼關係。每次都用 `-m` 明講。
+
+**Ubuntu 24.04 的沙箱要先修。** `codex exec -s workspace-write` 用 bubblewrap 建沙箱，而
+Ubuntu 24.04 設了 `kernel.apparmor_restrict_unprivileged_userns=1`，且 `/usr/bin/bwrap`
+沒有 setuid，所以每次寫檔都失敗在 `bwrap: loopback: Failed RTM_NEWADDR`，agent 重試四次之後
+只回報一句含糊的「工作區沙箱發生權限錯誤」—— 50 秒、約 150k input token 換來零產出。
+
+解法是 `/etc/apparmor.d/bwrap`：一個 `flags=(unconfined)` 加 `userns,` 的具名 profile，照
+Ubuntu 自己的 `/etc/apparmor.d/flatpak` 抄。比另一個常見解法（`sysctl` 全機器關掉）窄得多，
+但確實會讓所有呼叫 bwrap 的程式都恢復這個能力。修完有回頭確認沙箱**還是會關人**：叫它寫
+`-C` 根目錄以外的路徑會被拒絕、也沒有檔案產生。注意 `workspace-write` 模式下 `/tmp` 也是可
+寫的，那是 CLI 的預設，不是我們給的。
+
+沒驗：Windows 直接回報不支援（啟動器是 `/bin/sh`），macOS 沒試過。選單項在偵測不到 `codex`
+時是 disabled 而不是隱藏 —— 跟 `PresenceService` 同一個判斷，會消失的功能等於沒人知道它存在。
+
+`pkill -f "godot --path"` 這個指令從 agent 的 shell 跑會殺掉自己（自己的命令列裡就有那串），
+要用 `pkill -f "godot --pat[h]"`。
+
+### 2026-07-28 —— 沒登入過 Codex 的人也能從介面登入（已完成）
+
+原本「幫我做個東西」預設使用者已經在終端機跑過 `codex login`。現在寵物自己問。
+
+`autoload/codex_cli.gd` 管帳號，`MakerService` 管工作。**一樣沒有自己做 OAuth、也不讀任何
+token** —— 兩條路都是啟動廠商自己的 `codex login`，`~/.codex/auth.json` 是它的檔案，這個
+repo 一行都不碰。選單項目在沒帳號時**仍然可用**：有沒有 CLI 和有沒有帳號是兩件事，只有後者
+問一下就能解決。
+
+- **`--with-api-key`（走 stdin）**：直接用這個 app 已經存著的 key，不用瀏覽器。key 走 stdin
+  不進 argv，理由跟 `SecretStore` 一樣 —— `ps` 會把別人的 argv 給同一個使用者看。代價是照
+  API 計費而不是訂閱。
+- **`--device-auth`，而不是預設的 localhost 流程**：預設那條會綁 `localhost:1455` 並在
+  **這台機器**開瀏覽器，而那正是遠端桌面 / headless 會踩空的假設 —— CLI 自己的輸出就寫著
+  「On a remote or headless machine? Use `codex login --device-auth` instead.」。device auth
+  給的是一個短網址加九個字元，這是氣泡裝得下的東西，400 字元的 OAuth URL 不是。預設那條唯一
+  白送的好處是幫你開瀏覽器，所以拿到網址後我們自己開。
+
+實測（全程用隔離的 `CODEX_HOME`，沒碰到真正的 `~/.codex`，mtime 前後一致）：
+
+- 未登入時 `login status` exit 1 → 對話框正確跳出
+- 點「用我存的 API key」→ 寵物說「用你的 API key 登好了，那我開始做。」→ **輸入框自動接上**
+- 點「用 ChatGPT 帳號登入」→ 幾秒後氣泡：「我開了登入頁，輸入這組碼就好：W6J9-CQ3LW（已經
+  幫你複製了）」，跟 CLI log 裡的代碼一致
+
+沒驗：真的完成 OAuth 交換那一步（需要使用者本人的瀏覽器和帳號），所以 device 這條的
+`login_finished(true)` 和「登完自動接上做東西」還沒有人跑過。API key 那條的自動接上有驗到。
+
+三個坑：
+
+- **`\u` 在 Godot 的 RegEx 裡是非法的**。它是 PCRE2，要寫 `\x1b`。而且失敗得很安靜 ——
+  `sub()` 直接回空字串，結果是代碼永遠找不到、寵物一句話都不說，log 才看得到
+  `PCRE2 does not support \F, \L, \l, \N{name}, \U, or \u`。
+- **CLI 就算 stdout 導到檔案還是會上色**，所以比對前一定要先剝掉 ANSI escape。
+- `is_logged_in()` 要快取。`codex login status` 要 60–90ms，每次開選單都跑一次會頓。
+
+驗證方法本身也升級了：這次全程在**隔離的 X display 上點**，沒有動到使用者的滑鼠。做法記在
+CLAUDE.md 沒有、但值得記的一句：寵物會走動，UI 自動化前先把 `[pet] roaming` 設成 false，
+否則座標追不上。
+
 ## 3. 時程估計
 
 | 階段 | 時間 | 備註 |

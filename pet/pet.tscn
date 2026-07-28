@@ -1,4 +1,4 @@
-[gd_scene load_steps=10 format=3]
+[gd_scene load_steps=11 format=3]
 
 [ext_resource type="Script" path="res://pet/pet.gd" id="1_pet"]
 [ext_resource type="Script" path="res://pet/window_controller.gd" id="2_window"]
@@ -9,6 +9,7 @@
 [ext_resource type="Script" path="res://ui/memory_panel.gd" id="7_memory"]
 [ext_resource type="Script" path="res://ui/chat_log_panel.gd" id="8_chatlog"]
 [ext_resource type="Script" path="res://ui/game_panel.gd" id="9_game"]
+[ext_resource type="Script" path="res://ui/outbox_panel.gd" id="10_outbox"]
 
 [node name="Pet" type="Node2D"]
 script = ExtResource("1_pet")
@@ -65,6 +66,16 @@ title = "留意你切換 App 的節奏"
 ok_button_text = "好，開始留意"
 cancel_button_text = "不用了"
 
+[node name="MakerConsent" type="ConfirmationDialog" parent="."]
+title = "讓我幫你做東西"
+ok_button_text = "好，開始吧"
+cancel_button_text = "先不要"
+
+[node name="CodexLogin" type="ConfirmationDialog" parent="."]
+title = "先讓 Codex 登入"
+ok_button_text = "用 ChatGPT 帳號登入"
+cancel_button_text = "先不要"
+
 [node name="Memory" type="Window" parent="."]
 title = "記憶與資料"
 initial_position = 2
@@ -82,3 +93,9 @@ title = "接東西"
 initial_position = 2
 visible = false
 script = ExtResource("9_game")
+
+[node name="Outbox" type="Window" parent="."]
+title = "我做的東西"
+initial_position = 2
+visible = false
+script = ExtResource("10_outbox")
