@@ -74,6 +74,20 @@ const INPUT_SHADOW_DROP := 3.0
 ## widen the region the chat panel reports as drawn.
 const INPUT_FOCUS_GLOW := 5.0
 
+## The way out of the chat field, tucked inside its right cap.
+##
+## Inside rather than beside, for two reasons. The passthrough mask is built
+## from `ChatPanel.get_input_rect()` — the field's own rect — so a button within
+## it is clickable with no change to the mask at all, where one hanging off the
+## edge would silently not receive the click that closes it. And the field is
+## the only thing on screen at that moment that the button belongs to; floating
+## it outside would read as a second, unrelated control.
+##
+## Sized as a fraction of the field's height so it stays a circle inside the
+## rounded cap at any display scale.
+const INPUT_CLOSE_RATIO := 0.58
+const INPUT_CLOSE_INSET := 5.0
+
 
 # --- Speech bubble ------------------------------------------------------------
 
@@ -119,7 +133,10 @@ static func bubble_edge_width(scale: float) -> float:
 ## stylebox's content margins set the control's *minimum* height, so padding it
 ## evenly quietly overrode the height the chat panel asked for and left a
 ## rounded-rectangle box where a pill was meant to be.
-static func input_style(scale: float, height: float, secret: bool) -> StyleBoxFlat:
+## `right_pad` is room reserved for the close button, on top of the ordinary
+## padding, so a long line of text never slides underneath it.
+static func input_style(scale: float, height: float, secret: bool,
+		right_pad := 0.0) -> StyleBoxFlat:
 	var box := StyleBoxFlat.new()
 	box.bg_color = PAPER
 	box.border_color = Color(SECRET, 0.45) if secret else EDGE
@@ -127,7 +144,7 @@ static func input_style(scale: float, height: float, secret: bool) -> StyleBoxFl
 	box.set_corner_radius_all(roundi(height * 0.5))
 	box.corner_detail = 12
 	box.content_margin_left = roundi(INPUT_PADDING * scale)
-	box.content_margin_right = roundi(INPUT_PADDING * scale)
+	box.content_margin_right = roundi(INPUT_PADDING * scale + right_pad)
 	box.content_margin_top = roundi(INPUT_PADDING_Y * scale)
 	box.content_margin_bottom = roundi(INPUT_PADDING_Y * scale)
 	box.shadow_color = SHADOW
@@ -143,7 +160,8 @@ static func input_style(scale: float, height: float, secret: bool) -> StyleBoxFl
 ## expanded copy of its own shape drawn behind it — including behind the part the
 ## box itself covers — so a focus box with a see-through fill doesn't glow, it
 ## just stains the field the colour of the halo.
-static func input_focus_style(scale: float, height: float, secret: bool) -> StyleBoxFlat:
+static func input_focus_style(scale: float, height: float, secret: bool,
+		right_pad := 0.0) -> StyleBoxFlat:
 	var tint := SECRET if secret else ACCENT
 	var box := StyleBoxFlat.new()
 	box.bg_color = Color(PAPER, 1.0)
@@ -152,7 +170,9 @@ static func input_focus_style(scale: float, height: float, secret: bool) -> Styl
 	box.set_corner_radius_all(roundi(height * 0.5))
 	box.corner_detail = 12
 	box.content_margin_left = roundi(INPUT_PADDING * scale)
-	box.content_margin_right = roundi(INPUT_PADDING * scale)
+	# Must match input_style()'s, or the text jumps sideways when the field takes
+	# focus — the two boxes are the same field in two states, not two fields.
+	box.content_margin_right = roundi(INPUT_PADDING * scale + right_pad)
 	box.content_margin_top = roundi(INPUT_PADDING_Y * scale)
 	box.content_margin_bottom = roundi(INPUT_PADDING_Y * scale)
 	# Not blurred — Godot has no such thing — so it reads as a ring rather than a
@@ -165,6 +185,43 @@ static func input_focus_style(scale: float, height: float, secret: bool) -> Styl
 
 static func input_caret_color(secret: bool) -> Color:
 	return SECRET if secret else ACCENT
+
+
+static func input_close_size(height: float) -> float:
+	return roundf(height * INPUT_CLOSE_RATIO)
+
+
+## Room the field has to leave on its right so text clears the close button.
+static func input_close_reserve(height: float, scale: float) -> float:
+	return input_close_size(height) + INPUT_CLOSE_INSET * scale
+
+
+## Quiet on paper. The one saturated colour in this project marks the live thing
+## on screen, and a way out of a field is not that — so this is ink, and it has
+## no fill at all until the pointer is over it.
+##
+## Styles a *blank* hit target. The cross is drawn by ChatPanel rather than set
+## as this button's text, because a Button centres its label's line box, and the
+## tall CJK face this project ships puts a "×" visibly above the middle of a
+## circle this small — as well as setting a minimum height that stops the circle
+## being a circle.
+static func make_input_close_button(button: Button, height: float) -> void:
+	var d := input_close_size(height)
+	button.add_theme_stylebox_override("normal", _round_style(Color(0, 0, 0, 0), d))
+	button.add_theme_stylebox_override("focus", _round_style(Color(0, 0, 0, 0), d))
+	button.add_theme_stylebox_override("hover", _round_style(Color(INK, 0.08), d))
+	button.add_theme_stylebox_override("pressed", _round_style(Color(INK, 0.16), d))
+
+
+## A circle, for the one control small enough that a rounded rectangle would
+## just look like a mistake.
+static func _round_style(fill: Color, diameter: float) -> StyleBoxFlat:
+	var box := StyleBoxFlat.new()
+	box.bg_color = fill
+	box.set_corner_radius_all(roundi(diameter * 0.5))
+	box.corner_detail = 8
+	box.set_content_margin_all(0.0)
+	return box
 
 
 # --- Right-click menu ---------------------------------------------------------

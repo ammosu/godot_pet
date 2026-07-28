@@ -49,9 +49,19 @@ const FADE_TIME := 0.4
 const APPEAR_TIME := 0.18
 const APPEAR_RISE := 7.0
 
+## Half-diagonal of the close cross, as a fraction of its circle. Small enough
+## that the stroke ends stay clear of the hover wash's edge.
+const CLOSE_ARM_RATIO := 0.21
+const CLOSE_STROKE := 1.6
+
 @onready var _bubble: PanelContainer = $Bubble
 @onready var _text: RichTextLabel = $Bubble/Text
 @onready var _input: LineEdit = $Input
+## Built here rather than in the scene because it is sized off the display
+## scale, which nothing knows until configure() runs. Parented to the field so
+## it inherits its visibility — every existing path that shows or hides the
+## input gets the button for free, and none of them can forget it.
+var _close: Button
 
 var _scale := 1.0
 ## Where the pet is drawn, in viewport pixels.
@@ -74,6 +84,7 @@ var _natural_width := 0.0
 ## Whatever the current bubble style uses for its edge, so the hand-drawn tail
 ## can match it.
 var _edge_color := PetStyle.EDGE
+var _close_hovered := false
 
 
 func _ready() -> void:
@@ -85,6 +96,21 @@ func _ready() -> void:
 	_input.text_submitted.connect(_on_submitted)
 	_input.caret_blink = true
 	_input.caret_blink_interval = 0.6
+
+	# No text: the cross is drawn in _on_close_draw(), so the button is only a
+	# hit target and a hover wash, and its minimum size stays zero.
+	_close = Button.new()
+	_close.flat = true
+	# Never a tab stop: the field beside it must keep the caret, or Enter stops
+	# submitting the moment the pointer has been anywhere near the button.
+	_close.focus_mode = Control.FOCUS_NONE
+	_close.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_close.pressed.connect(_on_close_pressed)
+	_close.mouse_entered.connect(_on_close_hover.bind(true))
+	_close.mouse_exited.connect(_on_close_hover.bind(false))
+	_close.draw.connect(_on_close_draw)
+	_input.add_child(_close)
+
 	_set_input_mode(InputMode.CHAT)
 
 
@@ -311,6 +337,31 @@ func _tail_point() -> Vector2:
 	return Vector2(_pet_rect.get_center().x, _pet_rect.position.y)
 
 
+## The close button's cross, drawn rather than set as its text.
+##
+## A Button centres the *line box* of its label, not the glyph inside it, and
+## this project ships a CJK face whose line box is far taller than a "×" —
+## which put the cross visibly above the middle of its circle. The same tall
+## line box also set the button's minimum height, so asking for a square gave
+## back something taller.
+##
+## Painted onto the button's own canvas, via its `draw` signal, rather than in
+## this node's `_draw()`. A Control draws underneath its children, and the field
+## this button sits inside fills itself with opaque paper — so a cross drawn
+## here is painted and then immediately covered, with nothing to show for it.
+## (The bubble's tail gets away with living in `_draw()` only because it hangs
+## below the panel it belongs to, outside anything that would paint over it.)
+func _on_close_draw() -> void:
+	var centre := _close.size * 0.5
+	var arm := _close.size.x * CLOSE_ARM_RATIO
+	var width := maxf(1.0, roundf(CLOSE_STROKE * _scale))
+	var tint := PetStyle.INK if _close_hovered else PetStyle.INK_SOFT
+	_close.draw_line(centre - Vector2(arm, arm), centre + Vector2(arm, arm),
+		tint, width, true)
+	_close.draw_line(centre - Vector2(arm, -arm), centre + Vector2(arm, -arm),
+		tint, width, true)
+
+
 func _draw() -> void:
 	if not _bubble.visible:
 		return
@@ -388,6 +439,7 @@ func set_input_open(open: bool) -> void:
 	else:
 		_input.release_focus()
 		_input.text = ""
+		_close_hovered = false
 		_set_input_mode(InputMode.CHAT)
 	input_toggled.emit(open)
 
@@ -416,9 +468,13 @@ func _set_input_mode(mode: InputMode, placeholder := CHAT_PLACEHOLDER) -> void:
 func _apply_input_style() -> void:
 	var secret := _input_mode == InputMode.SECRET
 	var height := INPUT_HEIGHT * _scale
-	_input.add_theme_stylebox_override("normal", PetStyle.input_style(_scale, height, secret))
-	_input.add_theme_stylebox_override("read_only", PetStyle.input_style(_scale, height, secret))
-	_input.add_theme_stylebox_override("focus", PetStyle.input_focus_style(_scale, height, secret))
+	var reserve := PetStyle.input_close_reserve(height, _scale)
+	_input.add_theme_stylebox_override("normal",
+		PetStyle.input_style(_scale, height, secret, reserve))
+	_input.add_theme_stylebox_override("read_only",
+		PetStyle.input_style(_scale, height, secret, reserve))
+	_input.add_theme_stylebox_override("focus",
+		PetStyle.input_focus_style(_scale, height, secret, reserve))
 	_input.add_theme_color_override("font_color", PetStyle.INK)
 	_input.add_theme_color_override("font_placeholder_color", PetStyle.INK_SOFT)
 	_input.add_theme_color_override("font_selected_color", PetStyle.INK)
@@ -427,6 +483,7 @@ func _apply_input_style() -> void:
 		Color(PetStyle.input_caret_color(secret), 0.20))
 	_input.add_theme_constant_override("caret_width", maxi(1, roundi(2.0 * _scale)))
 	_input.add_theme_font_size_override("font_size", roundi(15.0 * _scale))
+	PetStyle.make_input_close_button(_close, height)
 
 
 ## Sits just under the pet's feet, pulled back on screen if that would fall below
@@ -446,6 +503,16 @@ func _layout_input() -> void:
 			maxf(min_x, limit.end.x - width - margin)),
 		clampf(_pet_rect.end.y + margin, limit.position.y + margin,
 			maxf(limit.position.y, lowest)))
+
+	# Centred in the field's right cap. Positioned in the field's own space, so
+	# this doesn't have to be redone when the pet walks and the field follows.
+	var d := PetStyle.input_close_size(height)
+	_close.size = Vector2(d, d)
+	_close.position = Vector2(width - d - PetStyle.INPUT_CLOSE_INSET * _scale,
+		(height - d) * 0.5)
+	# The cross is scaled off the button's own size, so a resize has to repaint
+	# it. Godot redraws a Control whose size changed, but not one that only moved.
+	_close.queue_redraw()
 
 
 func is_input_open() -> bool:
@@ -492,6 +559,19 @@ func _on_submitted(text: String) -> void:
 		secret_submitted.emit(trimmed)
 	else:
 		submitted.emit(trimmed)
+
+
+## The same thing Escape does, and the same thing tapping the pet does — this
+## just makes it something you can see.
+func _on_close_pressed() -> void:
+	set_input_open(false)
+
+
+## The wash under the cross is the button's own hover stylebox; the cross itself
+## is ours to redraw.
+func _on_close_hover(inside: bool) -> void:
+	_close_hovered = inside
+	_close.queue_redraw()
 
 
 func _unhandled_key_input(event: InputEvent) -> void:
