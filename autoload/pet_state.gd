@@ -55,6 +55,7 @@ func _ready() -> void:
 	EventBus.pet_tapped.connect(_on_tapped)
 	EventBus.pet_released.connect(_on_released)
 	EventBus.user_said.connect(_on_user_said)
+	EventBus.file_content_said.connect(_on_user_said)
 	EventBus.pet_activity_changed.connect(_on_activity_changed)
 
 	var timer := Timer.new()

@@ -66,6 +66,7 @@ func _ready() -> void:
 	_persona = _load_persona()
 	set_provider(str(Config.get_value("llm", "provider", _default_provider())))
 	EventBus.user_said.connect(_on_user_said)
+	EventBus.file_content_said.connect(_on_file_content_said)
 
 
 ## Talk to a real model if there's a key to do it with, otherwise fall back to
@@ -184,11 +185,14 @@ func note_pet_said(text: String) -> void:
 	MemoryStore.append("assistant", text)
 
 
-## Ask about a screenshot. Same streaming path as any reply, so it types into
-## the bubble and drives the animation the usual way — but the answer is marked
-## ephemeral, because it describes whatever happened to be on screen and has no
-## business becoming a permanent fact about the user.
-func ask_about_image(question: String, data_url: String, record_question := true) -> void:
+## Ask about an image. Same streaming path as any reply, so it types into the
+## bubble and drives the animation the usual way. Screen-look answers default
+## to ephemeral, because they describe whatever happened to be on screen and
+## have no business becoming a permanent fact about the user; a dropped image
+## is something the user deliberately handed over, so FileDropService passes
+## `ephemeral = false` and lets it join ordinary history like any other turn.
+func ask_about_image(question: String, data_url: String, record_question := true,
+		ephemeral := true) -> void:
 	if _provider == null:
 		return
 	if _provider.is_busy():
@@ -209,12 +213,25 @@ func ask_about_image(question: String, data_url: String, record_question := true
 	_tag_resolved = false
 	_tag_buffer = ""
 	_clean_reply = ""
-	_reply_is_ephemeral = true
+	_reply_is_ephemeral = ephemeral
 	_in_vision_pass = true
 	_provider.send(messages, build_system_prompt())
 
 
 func _on_user_said(text: String) -> void:
+	_start_user_turn(text, true)
+
+
+## A user turn that isn't literally typed — a dropped file's content, composed
+## by FileDropService. Skips the local screen-look phrase match: that match is
+## a blind substring test meant for a short typed question, and a dropped
+## file's own content — or just its name, e.g. "我的螢幕錄影.mp4" — can trip it
+## on text that has nothing to do with the current screen.
+func _on_file_content_said(text: String) -> void:
+	_start_user_turn(text, false)
+
+
+func _start_user_turn(text: String, check_look: bool) -> void:
 	var trimmed := text.strip_edges()
 	if trimmed.is_empty() or _provider == null:
 		return
@@ -234,7 +251,7 @@ func _on_user_said(text: String) -> void:
 	# Ask for the screen *before* answering, when the question plainly needs it.
 	# Waiting for the model to request it costs a wasted round-trip at best, and
 	# on a small model it never happens at all.
-	if VisionService.wants_a_look(trimmed):
+	if check_look and VisionService.wants_a_look(trimmed):
 		EventBus.screen_look_requested.emit(trimmed, false)
 		return
 

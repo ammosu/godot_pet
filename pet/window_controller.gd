@@ -73,6 +73,7 @@ func _ready() -> void:
 	_win.transparent = true
 	_win.borderless = true
 	_win.always_on_top = true
+	_win.files_dropped.connect(_on_files_dropped)
 	_apply_dpi_scale()
 	# Only ticks while a probe is in flight, which is once per run at most.
 	set_process(false)
@@ -256,6 +257,19 @@ func park_at_default_spot() -> void:
 	var margin := roundi(16.0 * _ui_scale)
 	set_pet_screen_position(rect.position + rect.size - Vector2i(margin, margin)
 		- _content_rel.size - _content_rel.position)
+
+
+# --- Files ---------------------------------------------------------------------
+
+## OS drag-and-drop reaches the whole window regardless of the mouse-
+## passthrough mask (see EventBus.files_dropped_on_window), so this can fire
+## from anywhere in the window's mostly transparent, overhanging rect — not
+## just the visible pet. Report it in window-local pixels, the same frame
+## set_hit_region() works in, and let pet.gd, which owns the pet's
+## silhouette, decide whether it actually landed on the pet.
+func _on_files_dropped(files: PackedStringArray) -> void:
+	var local := Vector2(DisplayServer.mouse_get_position() - _win.position)
+	EventBus.files_dropped_on_window.emit(files, local)
 
 
 # --- Click-through ------------------------------------------------------------

@@ -34,6 +34,7 @@ func _ready() -> void:
 	EventBus.reply_finished.connect(_on_finished)
 	EventBus.reply_failed.connect(_on_interrupted)
 	EventBus.user_said.connect(_on_user_said)
+	EventBus.file_content_said.connect(_on_user_said)
 	EventBus.pet_nudged.connect(_on_nudged)
 
 

@@ -58,6 +58,11 @@ title = "看一下你的螢幕"
 ok_button_text = "好，看這一次"
 cancel_button_text = "不要"
 
+[node name="PresenceConsent" type="ConfirmationDialog" parent="."]
+title = "留意你切換 App 的節奏"
+ok_button_text = "好，開始留意"
+cancel_button_text = "不用了"
+
 [node name="Memory" type="Window" parent="."]
 title = "記憶與資料"
 initial_position = 2

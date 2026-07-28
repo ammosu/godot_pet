@@ -6,6 +6,17 @@ extends Node2D
 ## How far the mouse must travel before a click counts as a drag.
 const DRAG_THRESHOLD := 4.0
 
+## Named so the release tween can start from the exact value _on_grabbed applies
+## instead of a second -0.08 literal drifting out of sync with it.
+const GRAB_SQUASH := -0.08
+const TAP_BOUNCE_SQUASH := 0.12
+const TAP_BOUNCE_DURATION := 0.25
+## A quick punch past rest on landing, then the same elastic settle as a tap —
+## just retuned larger/longer, since a drop reads as a harder impact than a poke.
+const DRAG_IMPACT_SQUASH := 0.14
+const DRAG_IMPACT_DURATION := 0.06
+const DRAG_LANDING_DURATION := 0.28
+
 ## Menu ids above these offsets select an installed pet pack / a body size /
 ## an LLM backend.
 const PET_ID_BASE := 100
@@ -39,7 +50,7 @@ const OPENAI_KEY := "OPENAI_API_KEY"
 const PET_GALLERY_URL := "https://codex-pets.net/"
 
 enum MenuId {
-	FALLBACK, GET_PETS, FEED, NUDGES, SPEAK, ROAM, CALIBRATE, RECENTRE,
+	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, SPEAK, ROAM, CALIBRATE, RECENTRE,
 	SET_KEY, MEMORY, LOOK, QUIT,
 }
 
@@ -49,6 +60,7 @@ enum MenuId {
 @onready var _chat: ChatPanel = $Chat
 @onready var _menu: PopupMenu = $Menu
 @onready var _consent: ConfirmationDialog = $Consent
+@onready var _presence_consent: ConfirmationDialog = $PresenceConsent
 @onready var _memory: MemoryPanel = $Memory
 
 var _installed_pets := PackedStringArray()
@@ -70,9 +82,15 @@ var _pressed := false
 var _dragging := false
 var _press_pos := Vector2i.ZERO
 var _grab_offset := Vector2i.ZERO
+## The tap-bounce and the release-landing tweens drive the same squash channel,
+## so only one may be alive at a time — see _stop_squash_tween().
+var _squash_tween: Tween = null
 
 
 func _ready() -> void:
+	# No ordering dependency, unlike _brain.setup() below, which must run after
+	# park_at_default_spot().
+	_visual.setup(_window_ctl)
 	_size_factor = float(Config.get_value("pet", "size_factor", DEFAULT_SIZE_FACTOR))
 	_layout_visual()
 	_load_selected_pack()
@@ -82,6 +100,7 @@ func _ready() -> void:
 
 	_brain.state_changed.connect(_on_brain_state)
 	_brain.facing_changed.connect(_visual.set_facing)
+	_brain.drag_lean_changed.connect(_visual.set_drag_lean)
 	_brain.set_roaming(bool(Config.get_value("pet", "roaming", true)))
 
 	EventBus.pet_grabbed.connect(_on_grabbed)
@@ -90,6 +109,7 @@ func _ready() -> void:
 	# How much of the window is on screen changes as the pet walks, and the chat
 	# UI has to stay inside it.
 	EventBus.pet_moved.connect(_on_pet_moved)
+	EventBus.files_dropped_on_window.connect(_on_files_dropped_on_window)
 
 	_chat.submitted.connect(_on_chat_submitted)
 	_chat.secret_submitted.connect(_on_secret_submitted)
@@ -102,6 +122,7 @@ func _ready() -> void:
 	EventBus.pet_nudged.connect(_on_pet_nudged)
 	EventBus.screen_look_requested.connect(_on_screen_look_requested)
 	_setup_consent_dialog()
+	_setup_presence_consent_dialog()
 
 	# Only worth ticking where the mask clips rendering; elsewhere the bubble is
 	# outside it by design and moving is free.
@@ -268,13 +289,16 @@ func _begin_press() -> void:
 	_window_ctl.suspend_passthrough()
 
 
+## Feeds the brain a target rather than moving the window directly, so the body
+## can lag behind the cursor instead of teleporting onto it — PetBrain._step_drag()
+## is what actually moves the window now, every frame while Mode.DRAG.
 func _update_drag() -> void:
 	var mouse := DisplayServer.mouse_get_position()
 	if not _dragging and Vector2(mouse - _press_pos).length() > DRAG_THRESHOLD:
 		_dragging = true
 		EventBus.pet_grabbed.emit()
 	if _dragging:
-		_window_ctl.set_pet_screen_position(mouse - _grab_offset)
+		_brain.set_drag_target(mouse - _grab_offset)
 
 
 func _end_press() -> void:
@@ -289,13 +313,34 @@ func _end_press() -> void:
 		EventBus.pet_tapped.emit()
 
 
+## Whoever is about to write the squash channel gets it to themselves. The
+## release landing runs for a third of a second, and grabbing the pet again
+## inside that window used to leave the old tween easing the squash back to
+## zero underneath the new grab — which both un-squashed a pet that was being
+## held and re-armed PetVisual's cursor reaction, gated on a zero squash, in the
+## middle of a drag.
+func _stop_squash_tween() -> void:
+	if _squash_tween != null and _squash_tween.is_valid():
+		_squash_tween.kill()
+	_squash_tween = null
+
+
 func _on_grabbed() -> void:
 	_brain.on_grabbed()
-	_visual.set_squash(-0.08)
+	_stop_squash_tween()
+	_visual.set_squash(GRAB_SQUASH)
 
 
+## A quick punch to a landing peak, then the same elastic settle shape already
+## shipped for a tap — bounce and squash on release, not an instant snap to rest.
 func _on_released() -> void:
-	_visual.set_squash(0.0)
+	_stop_squash_tween()
+	var tween := create_tween()
+	_squash_tween = tween
+	tween.tween_method(_visual.set_squash, GRAB_SQUASH, DRAG_IMPACT_SQUASH, DRAG_IMPACT_DURATION) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_method(_visual.set_squash, DRAG_IMPACT_SQUASH, 0.0, DRAG_LANDING_DURATION) \
+		.set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
 	_brain.on_released()
 	# Being picked up drops the brain out of TALK, so without this the pet strolls
 	# off the moment it's put down — dragging the field the user is typing into
@@ -306,8 +351,10 @@ func _on_released() -> void:
 
 func _on_tapped() -> void:
 	_brain.on_tapped()
+	_stop_squash_tween()
 	var tween := create_tween()
-	tween.tween_method(_visual.set_squash, 0.12, 0.0, 0.25) \
+	_squash_tween = tween
+	tween.tween_method(_visual.set_squash, TAP_BOUNCE_SQUASH, 0.0, TAP_BOUNCE_DURATION) \
 		.set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
 	_chat.toggle_input()
 
@@ -346,6 +393,23 @@ func _on_input_toggled(open: bool) -> void:
 		_brain.on_talk_started()
 	elif not _chat.is_showing():
 		_brain.on_talk_ended()
+
+
+## OS drag-and-drop reaches the whole window regardless of the passthrough
+## mask (see WindowController._on_files_dropped), so a drop anywhere in the
+## mostly-transparent, overhanging window rect fires this — including well
+## past the pet, over whatever desktop icons the corner happens to overhang.
+## Only take it if it actually landed on the pet's own hit box (the same one
+## clicks/taps/drags use); otherwise dragging a file toward the desktop
+## corner this window overhangs would randomly get hijacked.
+func _on_files_dropped_on_window(files: PackedStringArray, at: Vector2) -> void:
+	if files.is_empty() or not _pet_box.has_point(at):
+		return
+	# One turn at a time, same as typing — extra files in the same drop are
+	# silently ignored rather than queued or concatenated.
+	_chat.begin_reply()
+	_brain.on_talk_started()
+	FileDropService.handle_drop(files[0])
 
 
 func _on_chat_submitted(text: String) -> void:
@@ -494,11 +558,14 @@ func _build_model_menu() -> PopupMenu:
 
 func _build_behaviour_menu(current: PetPack) -> PopupMenu:
 	var menu := _submenu("Behaviour")
-	# Four switches people flip together — closing the menu after each one turns
-	# a ten-second job into four trips.
+	# Several switches people flip together — closing the menu after each one turns
+	# a ten-second job into several trips.
 	menu.hide_on_checkable_item_selection = false
 	menu.add_check_item("主動說話", MenuId.NUDGES)
 	menu.set_item_checked(menu.get_item_index(MenuId.NUDGES), Nudger.is_enabled())
+	menu.add_check_item("依你的節奏搭話", MenuId.PRESENCE)
+	menu.set_item_checked(menu.get_item_index(MenuId.PRESENCE), PresenceService.is_enabled())
+	menu.set_item_disabled(menu.get_item_index(MenuId.PRESENCE), not PresenceService.is_supported())
 	menu.add_check_item(_voice_label(), MenuId.SPEAK)
 	menu.set_item_checked(menu.get_item_index(MenuId.SPEAK), TTSService.is_enabled())
 	menu.set_item_disabled(menu.get_item_index(MenuId.SPEAK), not TTSService.is_available())
@@ -560,6 +627,8 @@ func _on_menu_pressed(id: int) -> void:
 			_feed()
 		MenuId.NUDGES:
 			_toggle_nudges()
+		MenuId.PRESENCE:
+			_toggle_presence()
 		MenuId.SPEAK:
 			_toggle_speech()
 		MenuId.ROAM:
@@ -698,6 +767,53 @@ func _resolve_look(allowed: bool, remember: bool) -> void:
 		# The question is already sitting in history unanswered. Leaving it there
 		# would look like the pet ignored it, so answer it blind instead.
 		LLMService.answer_without_looking()
+
+
+# --- Presence (rhythm-based nudging) ------------------------------------------
+
+## Modelled on the screen-look consent above: nothing is sampled until the
+## user agrees, and the one way to agree here already *is* the standing
+## consent — there's no "just this once" for a background poll — so the
+## accept button gets the quiet treatment the vision dialog reserves for
+## "以後都不用問我", not the loud one it gives its one-off "看這一次".
+func _setup_presence_consent_dialog() -> void:
+	var scale := _window_ctl.get_ui_scale()
+	_presence_consent.title = "留意你切換 App 的節奏"
+	_presence_consent.dialog_text = "\n".join(PackedStringArray([
+		"我想多留意一點你的作息，這樣主動找你聊天才不會挑錯時間。",
+		"",
+		"・只記錄目前最上層 App 的名稱，還有你留在同一個 App 多久",
+		"・不會看視窗標題、內容，或是你打的字",
+		"・這些資料只留在這台電腦，不會送出網路，也不會寫進任何檔案",
+		"・關掉開關，我就完全不會再讀",
+	]))
+	_presence_consent.exclusive = false
+	_presence_consent.theme = PetStyle.dialog_theme(scale)
+	_presence_consent.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_presence_consent.ok_button_text = "好，開始留意"
+	_presence_consent.cancel_button_text = "不用了"
+	PetStyle.make_ghost_button(_presence_consent.get_ok_button(), scale)
+	_presence_consent.confirmed.connect(_on_presence_consent_confirmed)
+
+
+func _on_presence_consent_confirmed() -> void:
+	PresenceService.grant_consent()
+	_set_checked(MenuId.PRESENCE, true)
+
+
+## Consent, once given, is sticky — re-checking the box after turning it off
+## doesn't re-ask something already agreed to (same durability as vision's
+## "always"). Turning it off needs no dialog at all; it's pure withdrawal.
+func _toggle_presence() -> void:
+	if PresenceService.is_enabled():
+		PresenceService.set_enabled(false)
+		_set_checked(MenuId.PRESENCE, false)
+	elif PresenceService.has_consented():
+		PresenceService.set_enabled(true)
+		_set_checked(MenuId.PRESENCE, true)
+	else:
+		_presence_consent.reset_size()
+		_presence_consent.popup_centered()
 
 
 ## Memory that can't be inspected is memory you can't trust, and a pet quietly

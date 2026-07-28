@@ -51,6 +51,16 @@ const NOMINAL_HEIGHT_RATIO := 0.9
 ## holding a prop rather than the character — can't produce an enormous pet.
 const PACK_SCALE_RANGE := Vector2(0.6, 1.6)
 
+## How the pet notices the cursor: a lean and a perk that fade in over this
+## radius and peak right next to the pet, kept well under HIT_MARGIN and close
+## to the already-shipped squash magnitudes (-0.08 grab, 0.12 tap) so nothing
+## it draws strays outside the hit region that's built from the same silhouette.
+const CURSOR_NOTICE_RADIUS := 260.0   # design px, scaled by get_ui_scale() at use
+const CURSOR_LEAN_MAX := 3.0          # sprite-local px, same space as _base_offset
+const CURSOR_PERK_MAX := 0.035        # squash-amount units, same scale as set_squash()
+const CURSOR_REACT_RATE := 10.0       # exponential per-second catch-up, not a snap
+const CURSOR_FACING_DEADZONE := 24.0  # design px, hysteresis so facing doesn't flicker
+
 @onready var _sprite: AnimatedSprite2D = $Sprite
 @onready var _fallback: Node2D = $Fallback
 @onready var _label: Label = $CalibrationLabel
@@ -63,6 +73,19 @@ var _state_rows := DEFAULT_STATE_ROWS.duplicate()
 var _state := &"idle"
 var _base_offset := Vector2.ZERO
 var _hit_polygon := PackedVector2Array()
+
+var _window: WindowController = null
+## The "held" channel — grab, drag, tap-bounce, release — kept apart from the
+## cursor channels below so _apply_pose() can add all three rather than one
+## silently overwriting another.
+var _squash := 0.0
+var _brain_facing := 1
+## 0 = no cursor override; else -1/1. Never persists past the frame eligibility
+## ends, so the sprite can't get stuck facing the cursor after e.g. a walk starts.
+var _cursor_facing_dir := 0
+var _cursor_lean := 0.0
+var _cursor_perk := 0.0
+var _drag_lean := 0.0
 
 var _calibrating := false
 var _calibration_row := 0
@@ -77,9 +100,92 @@ func _ready() -> void:
 	_hit_polygon = _fallback.get_hit_polygon()
 
 
+## Only calls WindowController's public accessors, mirroring how PetBrain gets
+## the same reference — never get_window() itself.
+func setup(window: WindowController) -> void:
+	_window = window
+
+
 func _process(delta: float) -> void:
 	if _calibrating:
 		_advance_calibration(delta)
+	else:
+		_update_cursor_reaction(delta)
+
+
+## Perks up when the pointer is close, fades out with distance, and eases
+## rather than snaps — this is the one place PetVisual reads outside itself,
+## since the cursor is a global desktop position and the window is click-through.
+func _update_cursor_reaction(delta: float) -> void:
+	# Gated to idle: PetBrain aliases DRAG's animation state to "idle" too (no pack
+	# provides a drag animation), so the squash channel — nonzero throughout
+	# grab/drag/release — is what tells a held pet apart from a genuinely idle one.
+	# WALK and SLEEP are excluded outright: reacting mid-stride would fight the
+	# walk's own facing decision, and perking up while "asleep" reads as a bug.
+	var eligible := _window != null and _state == &"idle" and is_zero_approx(_squash)
+	var lean_target := 0.0
+	var perk_target := 0.0
+	if eligible:
+		var scale := _window.get_ui_scale()
+		var radius := CURSOR_NOTICE_RADIUS * scale
+		var offset := Vector2(DisplayServer.mouse_get_position() - _window.get_pet_screen_position())
+		var dist := offset.length()
+		if dist < radius:
+			# Squared so the reaction concentrates near the pet ("perks up when
+			# close") instead of a constant low-level twitch out to the full radius.
+			var falloff := pow(1.0 - dist / radius, 2.0)
+			lean_target = (offset.x / radius) * CURSOR_LEAN_MAX * falloff
+			perk_target = -CURSOR_PERK_MAX * falloff
+			if absf(offset.x) > CURSOR_FACING_DEADZONE * scale:
+				_cursor_facing_dir = 1 if offset.x > 0.0 else -1
+		else:
+			_cursor_facing_dir = 0
+	else:
+		var was_overriding := _cursor_facing_dir != 0
+		_cursor_facing_dir = 0
+		# Walking, talking, asleep or held — where the pet spends most of its
+		# life, and where there is nothing to aim at. Once the two channels have
+		# finished easing back there is no pose left to write, so don't spend a
+		# frame writing the same one again.
+		if not was_overriding and is_zero_approx(_cursor_lean) and is_zero_approx(_cursor_perk):
+			return
+
+	var t := clampf(delta * CURSOR_REACT_RATE, 0.0, 1.0)
+	_cursor_lean = lerpf(_cursor_lean, lean_target, t)
+	_cursor_perk = lerpf(_cursor_perk, perk_target, t)
+	_apply_pose()
+
+
+func _display_facing() -> int:
+	return _cursor_facing_dir if _cursor_facing_dir != 0 else _brain_facing
+
+
+## The single place that writes to the sprite/fallback transforms, so facing,
+## the cursor lean/perk and the held squash never overwrite one another —
+## whichever last called set_facing()/set_squash() used to just clobber the rest.
+##
+## Deliberately scale (squash) and offset (lean) only, never rotation, on either
+## the sprite or this node. pet.gd::_refresh_hit_region() measures the hit
+## polygon as `p * _visual.scale`, which can't see a rotation — and it's only
+## re-run on discrete triggers (pack switch, size change, anchor change), never
+## per frame, so a continuously-varying rotation would go unmeasured regardless
+## of whether that formula learned to read one.
+func _apply_pose() -> void:
+	var facing := _display_facing()
+	var flipped := facing < 0
+	_sprite.flip_h = flipped
+	# flip_h mirrors within the drawn rect, so an off-centre offset would swing
+	# the character sideways. Negate it to keep them planted; lean is a plain
+	# screen-space nudge, not a padding correction, so it is never negated.
+	var lean := _cursor_lean + _drag_lean
+	_sprite.offset = Vector2((-_base_offset.x if flipped else _base_offset.x) + lean, _base_offset.y)
+	_fallback.position = Vector2(lean, 0.0)
+
+	var total_squash := _squash + _cursor_perk
+	if _pack == null:
+		_fallback.set_squash(total_squash)
+	else:
+		_sprite.scale = Vector2(1.0 + total_squash, 1.0 - total_squash)
 
 
 # --- Pack ---------------------------------------------------------------------
@@ -145,6 +251,10 @@ static func _normalised_scale(pack: PetPack, rest: Rect2i) -> float:
 
 func play_state(state: StringName) -> void:
 	_state = state
+	# Re-sync facing/lean/squash for the new state's eligibility on the transition
+	# frame itself, not just the next _process() tick — closing a one-callback-order
+	# race where PetBrain's facing_changed can fire one line before state_changed.
+	_apply_pose()
 	if _pack == null or _calibrating:
 		return
 	_sprite.play(PetPack.row_anim(_resolve_row(state)))
@@ -160,18 +270,22 @@ func _resolve_row(state: StringName) -> int:
 
 
 func set_facing(facing: int) -> void:
-	var flipped := facing < 0
-	_sprite.flip_h = flipped
-	# flip_h mirrors within the drawn rect, so an off-centre offset would swing
-	# the character sideways. Negate it to keep them planted.
-	_sprite.offset = Vector2(-_base_offset.x if flipped else _base_offset.x, _base_offset.y)
+	_brain_facing = facing
+	_apply_pose()
 
 
+## The "held" channel — grab/tap/release — as opposed to the cursor-perk channel,
+## which _apply_pose() adds on top rather than one silently overwriting the other.
 func set_squash(amount: float) -> void:
-	if _pack == null:
-		_fallback.set_squash(amount)
-	else:
-		_sprite.scale = Vector2(1.0 + amount, 1.0 - amount)
+	_squash = amount
+	_apply_pose()
+
+
+## Counterpart to PetBrain.drag_lean_changed: the body trailing the grab point
+## during a drag reads as lag, not just position catch-up, once it also leans.
+func set_drag_lean(amount: float) -> void:
+	_drag_lean = amount
+	_apply_pose()
 
 
 ## Region that should catch mouse clicks, in this node's local space.
@@ -189,6 +303,11 @@ func set_calibrating(on: bool) -> void:
 	if _calibrating:
 		_calibration_row = -1
 		_calibration_timer = 0.0
+		# Otherwise the row preview would be skewed by whatever lean/perk happened
+		# to be mid-flight when calibration started.
+		_cursor_lean = 0.0
+		_cursor_perk = 0.0
+		_apply_pose()
 	else:
 		play_state(_state)
 

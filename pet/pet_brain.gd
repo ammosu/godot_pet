@@ -10,8 +10,11 @@ class_name PetBrain
 
 signal state_changed(state: StringName)
 signal facing_changed(facing: int)
+## How far the body is still lagging behind the grab point, in sprite-local px
+## — PetVisual.set_drag_lean's counterpart. Zero outside DRAG/SETTLE.
+signal drag_lean_changed(amount: float)
 
-enum Mode { IDLE, WALK, SLEEP, DRAG, TALK }
+enum Mode { IDLE, WALK, SLEEP, DRAG, TALK, SETTLE }
 
 ## Design-unit pixels per second; scaled by the display's DPI at runtime.
 const WALK_SPEED := 45.0
@@ -28,6 +31,16 @@ const SLEEP_TIMEOUT := 30.0 * 60.0
 ## How long a tired pet stays up after being poked awake.
 const WAKE_GRACE_SECONDS := 90.0
 
+## Per-second exponential catch-up for the dragged body chasing the cursor;
+## higher = lighter/snappier. Deliberately not 1:1 — the whole point is lag.
+const DRAG_FOLLOW_RATE := 18.0
+## Design px of lag that reaches full lean.
+const DRAG_LEAN_REFERENCE := 60.0
+## Sprite-local px, same space as PetVisual.CURSOR_LEAN_MAX.
+const DRAG_LEAN_MAX := 6.0
+## Design px; below this the body counts as having arrived at the drop point.
+const SETTLE_DONE_DISTANCE := 2.0
+
 var _window: WindowController
 var _mode := Mode.IDLE
 var _timer := 0.0
@@ -40,6 +53,10 @@ var _wake_grace := 0.0
 ## Tracked as a float so slow walks don't stall on integer window positions.
 var _walk_x := 0.0
 var _target_x := 0.0
+
+## Where the body is chasing during DRAG/SETTLE — the raw, unclamped cursor-
+## derived point, not a live read of the window (which is still mid-catch-up).
+var _drag_target := Vector2i.ZERO
 
 
 func setup(window: WindowController) -> void:
@@ -82,20 +99,45 @@ func _process(delta: float) -> void:
 		Mode.SLEEP:
 			if PetState.is_rested() or _timer <= 0.0:
 				_enter(Mode.IDLE)
-		Mode.DRAG, Mode.TALK:
+		Mode.DRAG:
+			_step_drag(delta)
+		Mode.SETTLE:
+			var before := _window.get_pet_screen_position()
+			var after := _step_drag(delta)
+			# Finish on arrival *or* on stalling. The drop point is a raw
+			# cursor-derived position and can be somewhere the pet is not
+			# allowed to stand — let go of it in the desktop corner with the
+			# cursor past the edge and the clamped position never closes the
+			# gap. Distance alone therefore never fired, which left the brain
+			# out of IDLE for the rest of the run (no walking, no sleeping),
+			# the lean frozen part-way, and pet_moved emitting every frame.
+			var gap := Vector2(_drag_target - after).length()
+			if gap < SETTLE_DONE_DISTANCE * _window.get_ui_scale() or after == before:
+				_finish_settle()
+		Mode.TALK:
 			pass
 
 
 # --- External nudges ----------------------------------------------------------
 
 func on_grabbed() -> void:
+	_drag_target = _window.get_pet_screen_position()
 	_enter(Mode.DRAG)
 
 
+## Fed on every mouse-motion event while dragging, instead of the window being
+## teleported there directly — _step_drag() is what actually moves it, with lag.
+func set_drag_target(pos: Vector2i) -> void:
+	_drag_target = pos
+
+
 func on_released() -> void:
-	# Dropping the pet somewhere is how you tell it where to live.
-	set_home_here()
-	_enter(Mode.IDLE)
+	# Provisional: the raw cursor-derived drop point, not set_home_here()'s live
+	# read, because at the instant of release the window is still mid-catch-up
+	# towards it. _finish_settle() replaces it with where the pet really landed;
+	# this one only has to cover a chat opening before the settle finishes.
+	_home_x = float(_drag_target.x)
+	_enter(Mode.SETTLE)
 
 
 func on_tapped() -> void:
@@ -135,7 +177,14 @@ func _enter(mode: Mode) -> void:
 			state_changed.emit(&"sleep")
 		Mode.DRAG:
 			state_changed.emit(&"drag")
+		Mode.SETTLE:
+			state_changed.emit(&"settle")
 		Mode.TALK:
+			# TALK can be entered straight out of SETTLE (on_talk_started() only
+			# guards against interrupting an active DRAG) — without this, a chat
+			# opened right as the pet lands would freeze the lean at whatever it
+			# was mid-fall, since nothing else would ever tick it back down.
+			drag_lean_changed.emit(0.0)
 			state_changed.emit(&"talk")
 
 
@@ -190,6 +239,43 @@ func _step_walk(delta: float) -> void:
 func _move_to(x: float) -> void:
 	var pos := _window.get_pet_screen_position()
 	_window.set_pet_screen_position(Vector2i(roundi(x), pos.y))
+
+
+## Shared by DRAG and SETTLE: the body chases _drag_target with lag rather than
+## teleporting onto it, in both dimensions — unlike walking, which only moves x.
+##
+## Returns where the pet actually ended up, which is not always where it was
+## sent: set_pet_screen_position() clamps to what the window and the anchor can
+## between them reach, and the caller needs the real answer to tell converging
+## apart from being stuck against a screen edge.
+func _step_drag(delta: float) -> Vector2i:
+	var current := _window.get_pet_screen_position()
+	var target := Vector2(_drag_target)
+	var t := clampf(delta * DRAG_FOLLOW_RATE, 0.0, 1.0)
+	var lagged := Vector2(current).lerp(target, t)
+	var next := Vector2i(roundi(lagged.x), roundi(lagged.y))
+	# Every move emits pet_moved, which re-lays-out the chat UI and re-pushes the
+	# mask. A pet held still, or one that has already converged, must not pay for
+	# a move it isn't making — this runs every frame, unlike a walk step.
+	if next != current:
+		_window.set_pet_screen_position(next)
+
+	# The still-open gap doubles as the lean signal — no separate velocity to
+	# track, and it decays to ~0 by itself as SETTLE converges.
+	var lag := target - lagged
+	var reference := DRAG_LEAN_REFERENCE * _window.get_ui_scale()
+	drag_lean_changed.emit(clampf(lag.x / reference, -1.0, 1.0) * DRAG_LEAN_MAX)
+	return _window.get_pet_screen_position()
+
+
+## Where the pet came to rest is where it lives now. Read off the window rather
+## than off _drag_target: that one is the raw cursor position and may be outside
+## the area the pet is allowed to occupy, and a home_x off the walkable strip
+## makes _wander_bounds() give up and hand back the whole screen.
+func _finish_settle() -> void:
+	set_home_here()
+	drag_lean_changed.emit(0.0)
+	_enter(Mode.IDLE)
 
 
 func _set_facing(facing: int) -> void:

@@ -83,7 +83,10 @@ holds no behaviour itself.
 - `pets/pet_pack.gd` — spritesheet loader (see below).
 - `autoload/llm_service.gd` — conversation orchestration and the emotion-tag
   parser; `llm/llm_provider.gd` is the backend interface.
-- `autoload/pet_state.gd` — needs; `autoload/nudger.gd` — unprompted lines.
+- `autoload/pet_state.gd` — needs; `autoload/nudger.gd` — unprompted lines;
+  `autoload/presence_service.gd` — which app you're in, which is what decides
+  when one of those lines is worth saying.
+- `autoload/file_drop_service.gd` — turns a file dropped on the pet into a turn.
 - `ui/style.gd` (`PetStyle`) — every colour and edge, and the builders for the
   themes. See below.
 - `ui/chat_panel.gd` — speech bubble and chat input;
@@ -270,6 +273,77 @@ The manifest declares neither the grid, nor frame counts, nor row semantics:
   correction is clamped, since a mis-detected idle row would otherwise scale the
   pet by whatever a blank or prop-only row happens to measure.
 
+### Every pose channel goes through `_apply_pose()`
+
+Four separate things move the sprite now: which way it faces, the lean and perk
+it does when the cursor comes near, the squash of being held or tapped, and the
+lean of a body still catching up with the grab point. They used to be written
+straight to `_sprite.flip_h` / `offset` / `scale` by whichever setter ran last,
+which meant the last caller silently erased the others — `set_facing()` rewrote
+the offset the cursor lean had just put there.
+
+`PetVisual._apply_pose()` is the single write point and it *adds* the channels.
+A new one is a new variable plus a term in that function, never another
+`_sprite.offset = …` somewhere else.
+
+- It writes scale and offset only, **never rotation**, on either the sprite or
+  this node. `pet.gd::_refresh_hit_region()` measures the hit polygon as
+  `p * _visual.scale`, which cannot see a rotation — and it only re-runs on
+  discrete triggers (pack switch, size change, anchor change), never per frame,
+  so a continuously-varying rotation would go unmeasured even if that formula
+  learned to read one.
+- `play_state()` calls it on the transition frame rather than leaving it to the
+  next `_process()`, closing a callback-order race: `PetBrain` can emit
+  `facing_changed` one line before `state_changed`.
+- The cursor reaction is gated on `_state == &"idle"` **and a zero squash**. The
+  state alone is not enough: no pack has a drag animation, so `_resolve_row()`
+  sends `drag` and `settle` back to the idle row, and the squash channel —
+  nonzero right through grab, drag and release — is the only thing that tells a
+  held pet from a resting one.
+- Which is why the squash channel has exactly one owner. Both the tap bounce and
+  the release landing are tweens on it, and `_stop_squash_tween()` kills the live
+  one first. The landing runs a third of a second, and re-grabbing inside that
+  window left the old tween easing the squash back to zero underneath the new
+  grab — un-squashing a pet that was being held, and re-arming the cursor
+  reaction mid-drag.
+
+### A dragged pet lags, and the settle has to end even when it can't arrive
+
+Dragging no longer teleports the window onto the cursor. `pet.gd` feeds
+`PetBrain.set_drag_target()`, and `_step_drag()` — run every frame in `Mode.DRAG`
+— moves the window towards it exponentially, so the body trails the grab point.
+The gap it hasn't closed doubles as the lean signal (`drag_lean_changed`), so
+there is no separate velocity to track and the lean decays to nothing by itself.
+
+Release enters `Mode.SETTLE`, which shares `_step_drag()`: the body keeps falling
+towards the last grab point after the mouse has gone. It has no animation row of
+its own and doesn't need one — `_resolve_row()` already falls back to idle, the
+same way `drag` always has.
+
+The trap is how SETTLE ends. **It cannot test distance alone.** The drop point is
+a raw cursor-derived position and the pet is frequently not allowed to occupy it:
+let go in the bottom-right corner — where the pet lives by default — with the
+cursor past the screen edge, and `set_pet_screen_position()` clamps every step,
+so the gap never closes. The brain then stayed out of `IDLE` for the rest of the
+run (no walking, no sleeping, no waking), the lean froze part-way, and
+`pet_moved` fired every single frame, each one re-laying-out the chat UI and
+re-pushing the mask. So `_step_drag()` returns where the pet *actually* ended up,
+and SETTLE finishes on arrival **or** on that having stopped changing.
+
+Three more things that look optional and are not:
+
+- `_step_drag()` skips the window write when the rounded position is unchanged.
+  Unlike a walk step this runs every frame, and every move emits `pet_moved`; a
+  pet held still must not cost a mask rebuild per frame.
+- `_enter(Mode.TALK)` emits `drag_lean_changed(0.0)`. `on_talk_started()` only
+  refuses to interrupt an active `DRAG`, so TALK can be entered straight out of
+  SETTLE — and then nothing is left ticking the lean down, so a chat opened as
+  the pet lands freezes it mid-fall.
+- `_finish_settle()` takes the new home from the window, not from `_drag_target`:
+  a `_home_x` off the walkable strip makes `_wander_bounds()` give up and hand
+  back the whole screen. `on_released()` still sets a provisional one from the
+  raw target, which only has to cover a chat opening before the settle ends.
+
 ### LLM layer
 
 Providers extend `LLMProvider` and are swapped through `LLMService`. `mock`
@@ -415,11 +489,71 @@ is only involved once the user replies. Anything the pet says unprompted goes
 through `LLMService.note_pet_said()` so its next real reply doesn't contradict
 it.
 
+Two of the pools are more than a list of lines:
+
+- `focus` fires off `PresenceService` after 45 unbroken minutes in one app, and
+  sits *above* the quiet-since-last-chat gate, in the same tier as hungry and
+  tired — whether the pet talked to you ten minutes ago has nothing to do with
+  whether you need to stand up. It shares the ordinary 35-minute per-reason
+  cooldown, so a long session earns a break line roughly every 35 minutes. Nobody
+  has yet sat through a run of those to say whether that reads as caring or as
+  nagging.
+- `memory` entries are `{fact}` templates, filled from `MemoryStore.facts()` at
+  pick time — still no API call, so the pool stays as cheap as the rest. Facts
+  are free text some model wrote, so `_usable_facts()` drops anything over 30
+  characters or carrying sentence-ending punctuation before it goes near a
+  template: splicing a complete clause into 你記得你{fact}耶 glues two sentences
+  together with no connector. It is taken only 40% of the times it is available,
+  and the last three facts used are steered away from — in memory only, not
+  persisted, the same judgement already made for `_last_nudge_at`.
+
+### Watching which app you're in
+
+`autoload/presence_service.gd` samples the foreground app every 30 seconds so
+`Nudger` can decide *when* to speak instead of guessing off a plain timer. Two
+values, both content-free: an opaque per-platform app identifier — WM_CLASS's
+class half on Linux, the process name on macOS — and how long it has held focus.
+**Never a window title**, which is where documents, messages and URLs actually
+live, and never logged, never written to disk.
+
+Consent is modelled on `VisionService`'s and deliberately isn't the same shape.
+Vision asks per event, because each capture is its own decision; a background
+poll has no "just this once", so the only way to say yes here already *is*
+standing consent — which is why the accept button gets the quiet treatment the
+vision dialog reserves for 以後都不用問我. It stores **two** config keys:
+`consented` is sticky once granted, `enabled` is the live switch, so re-checking
+the menu item after turning it off doesn't re-ask something already agreed to.
+
+- **Windows reports unsupported on purpose.** `GetForegroundWindow()` from
+  PowerShell means `Add-Type`-compiling a P/Invoke declaration on every fresh
+  `powershell.exe` — the same most-of-a-second cost documented above for
+  `CredRead`, except this one would run on an unattended timer for as long as the
+  app is open, where `SecretStore` pays it once per key thanks to its cache. The
+  menu item is disabled rather than the pet stalling every 30 seconds.
+- macOS goes through `osascript`, and **the first call is the one that raises the
+  Automation permission prompt**. Hence `grant_consent()` samples immediately
+  instead of waiting for the timer — that prompt should land while the user is
+  still looking at the dialog they just accepted — and hence `_run()` has a
+  timeout at all, since an unanswered prompt otherwise sits there forever.
+- Linux shells out to `xprop` (`x11-utils`), and only ever reads
+  `_NET_ACTIVE_WINDOW` and `WM_CLASS`. Wayland has neither, so it reports
+  unsupported there — the same X11-only promise the window positioning already
+  makes.
+- `_run()` closes stdio explicitly. `SecretStore` can leave it to refcounting
+  because its writes are one-shot; this is a repeating timer that lives as long
+  as the process, where a leaked pipe handle is a slow fd leak.
+- An empty sample means "couldn't answer this tick", never "switched to
+  nothing". One flaky read must not reset a real streak.
+- `seconds_in_current_app()` returns -1.0 when there is nothing to say — not
+  consented, not supported, no sample yet — which every threshold test above
+  treats as "not long enough" without special-casing it.
+
 ## Tuning without code changes
 
 `prompts/persona.md` (character and reply format), `prompts/nudges.json`
-(unprompted lines), and the `DECAY` / `STARTING` constants in
-`autoload/pet_state.gd`. Prompt files take effect on restart.
+(unprompted lines, including the `{fact}` templates in the `memory` pool), and
+the `DECAY` / `STARTING` constants in `autoload/pet_state.gd`. Prompt files take
+effect on restart.
 
 ### Screen vision
 
@@ -493,3 +627,52 @@ glimpse of something private becomes a permanent fact re-sent with every request
 The persona has to grant an explicit exception for this — it tells the pet it
 can't see the screen, and the model will refuse to describe a screenshot it is
 plainly being shown unless the exception is spelled out.
+
+### Files dropped on the pet
+
+**`Window.files_dropped` is not shaped by the mouse-passthrough mask.** It rides
+on the OS's native drag-and-drop target registration, which is a different
+mechanism from the click hit-testing that mask shapes, so with a window this size
+a drop fires from anywhere in the mostly-transparent, overhanging rect —
+including over whatever desktop icons the bottom-right corner is sitting on top
+of. `WindowController` therefore only reports it, in window-local pixels, and
+`pet.gd::_on_files_dropped_on_window()` hit-tests `_pet_box` before doing
+anything; otherwise dragging a file *past* the pet to the desktop gets hijacked.
+
+That first sentence is reasoned from the two mechanisms being separate, not
+measured on all three platforms — but the hit test is needed either way, since
+on Windows the mask is widened to the whole chat chrome regardless.
+
+The content goes out on `EventBus.file_content_said`, not `user_said`. The two
+are the same thing to `TTSService` and `PetState`, which connect their existing
+`user_said` handler to it as well — but `LLMService`'s `user_said` listener also
+runs the local screen-look phrase match, and that is a blind substring test
+written for a short typed question. A file's own text, or just its name
+(`我的螢幕錄影.mp4`), trips it; this repo's own `PLAN.md` contains 我在幹嘛
+verbatim.
+
+An image takes the `image_url` path `VisionService` already built —
+`image_to_data_url()` stopped being private for exactly this, so both pay the
+same bounded prompt-token cost — but with `ephemeral = false`. A screen look is
+an incidental glimpse of whatever was open and must not harden into a permanent
+fact; a file the user dragged over is something they deliberately handed across,
+and belongs in history like any other turn.
+
+- `handle_drop()` normalises backslashes to `/` on entry. Windows hands back
+  native paths, and `String.get_file()` / `get_extension()` only recognise `/`,
+  so an un-normalised Windows path looks like it has no directory and no
+  extension. `FileAccess` and `DirAccess` take forward slashes there anyway, so
+  one replace at the top beats special-casing every string op below it.
+- Everything unreadable — a folder, a vanished path, an empty file, one over the
+  size cap, an extension not on the list — still produces a line *phrased as the
+  user*, so the pet answers instead of going quiet. That is why the service
+  always ends in exactly one emission or one `ask_about_image()`, and the caller
+  never branches on the outcome.
+- Known gap: the image branch calls `LLMService.ask_about_image()` directly, so
+  it never emits `file_content_said`. A dropped image therefore doesn't stop the
+  pet mid-sentence and doesn't count as an interaction for `PetState`, where
+  dropped text does both.
+
+`persona.md` needs the same kind of explicit exception the screen look does — it
+states flatly that the pet cannot see files, and the model will refuse to discuss
+one it is plainly being handed unless told otherwise.

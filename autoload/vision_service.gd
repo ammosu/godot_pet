@@ -80,7 +80,7 @@ func look(question := DEFAULT_QUESTION, record_question := true) -> void:
 			"我只看到桌布欸……是不是還沒給我螢幕錄製權限？系統設定 → 隱私權與安全性 → 螢幕錄製。")
 		return
 
-	LLMService.ask_about_image(question, _to_data_url(shot), record_question)
+	LLMService.ask_about_image(question, image_to_data_url(shot), record_question)
 
 
 ## Hide the pet for the length of one capture, so it doesn't spend the
@@ -99,7 +99,11 @@ func _capture() -> Image:
 	return shot
 
 
-func _to_data_url(shot: Image) -> String:
+## Downscale to MAX_EDGE and JPEG-encode into a data: URL for an image_url
+## content part — shared by the screen-look path here and by
+## FileDropService for a dropped image, so both pay the same, bounded
+## prompt-token cost.
+func image_to_data_url(shot: Image) -> String:
 	var longest := maxi(shot.get_width(), shot.get_height())
 	if longest > MAX_EDGE:
 		var scale := float(MAX_EDGE) / float(longest)

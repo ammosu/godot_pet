@@ -22,6 +22,8 @@ LLMService="*res://autoload/llm_service.gd"
 Nudger="*res://autoload/nudger.gd"
 TTSService="*res://autoload/tts_service.gd"
 VisionService="*res://autoload/vision_service.gd"
+PresenceService="*res://autoload/presence_service.gd"
+FileDropService="*res://autoload/file_drop_service.gd"
 
 [audio]
 
