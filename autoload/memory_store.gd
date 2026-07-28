@@ -40,6 +40,9 @@ var _facts: PackedStringArray = []
 var _summary := ""
 var _condensing := false
 var _dirty := false
+## Bumped every time the history is thrown away, so a fold already in flight can
+## tell that it is about to write turns the user has since asked to forget.
+var _epoch := 0
 
 
 func _ready() -> void:
@@ -74,6 +77,30 @@ func drop_trailing_user_turn() -> void:
 	if not _history.is_empty() and _history[-1].get("role") == "user":
 		_history.pop_back()
 		_dirty = true
+
+
+## Every verbatim turn still held, `ephemeral` flag and all — for the transcript
+## window, which is the one caller that has to show what won't survive the
+## session. Deliberately not recent_messages(): that one is the wire format, cut
+## to the window the API sees and stripped of anything the API mustn't get.
+func history() -> Array[Dictionary]:
+	return _history.duplicate(true)
+
+
+## Start a fresh conversation without becoming a stranger: the verbatim turns go,
+## the summary and the facts stay.
+##
+## Those are two different kinds of memory — what we were just talking about, and
+## who you are — and only the first is what "new conversation" means. Wiping both
+## is still available, one window along, as 全部忘掉.
+func clear_history() -> bool:
+	if _history.is_empty():
+		return false
+	_history.clear()
+	_epoch += 1
+	_dirty = true
+	_save_if_dirty()
+	return true
 
 
 ## Wire format only: the bookkeeping flag must not reach the API.
@@ -137,6 +164,7 @@ func has_memories() -> bool:
 
 func forget_all() -> void:
 	_history.clear()
+	_epoch += 1
 	_facts = PackedStringArray()
 	_summary = ""
 	_dirty = true
@@ -156,9 +184,10 @@ func maybe_condense() -> void:
 
 	var aged := _history.slice(0, overflow)
 	_condensing = true
+	var epoch := _epoch
 	var sent: bool = LLMService.request_background(
 		CONDENSE_SYSTEM, _condense_prompt(aged),
-		func(reply: String) -> void: _on_condensed(reply, overflow))
+		func(reply: String) -> void: _on_condensed(reply, overflow, epoch))
 	if not sent:
 		_condensing = false
 		# No backend able to summarise (mock, or no key). Only start discarding
@@ -181,8 +210,14 @@ func _condense_prompt(aged: Array) -> String:
 	]
 
 
-func _on_condensed(reply: String, consumed: int) -> void:
+func _on_condensed(reply: String, consumed: int, epoch: int) -> void:
 	_condensing = false
+	# The conversation this was folding no longer exists — the user cleared it
+	# while the request was in flight. Writing the summary anyway would put the
+	# turns they just dropped somewhere permanent, which is the one outcome
+	# 清空 has to rule out.
+	if epoch != _epoch:
+		return
 	var data: Variant = JSON.parse_string(_strip_code_fence(reply))
 	if typeof(data) != TYPE_DICTIONARY:
 		push_warning("MemoryStore: could not parse the fold, keeping the turns")

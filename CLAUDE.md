@@ -90,7 +90,8 @@ holds no behaviour itself.
 - `ui/style.gd` (`PetStyle`) — every colour and edge, and the builders for the
   themes. See below.
 - `ui/chat_panel.gd` — speech bubble and chat input;
-  `ui/memory_panel.gd` — the window listing what the pet remembers.
+  `ui/memory_panel.gd` — the window listing what the pet remembers;
+  `ui/chat_log_panel.gd` — the window listing what was actually said.
 
 ### PetStyle
 
@@ -455,6 +456,26 @@ each line can be dropped on its own. It used to be a menu item that emptied the
 whole list into the speech bubble, which was the wrong shape twice over: the
 bubble fades on a timer, so the answer timed out while being read, and a list you
 can only read is a list you can only wipe.
+
+`ui/chat_log_panel.gd` shows the verbatim layer the same way, for the same
+reason: the bubble is the pet *talking*, so it holds one line at a time and is
+gone in at most twenty-two seconds. Both windows read the store rather than
+keeping a copy, and both are real OS windows — subwindow embedding is off
+project-wide. A useful side effect: neither touches the pet window's passthrough
+mask, so the Windows "the mask clips rendering" rule below doesn't reach them.
+
+Clearing the transcript drops the verbatim turns and **keeps the summary and the
+facts** — forget what we were just talking about, not who you are. Wiping both is
+still 全部忘掉, one window along. Two things this forces:
+
+- `_epoch` is bumped by every clear and checked in `_on_condensed()`. A fold can
+  be in flight when the user clears, and letting it land would write the turns
+  they just dropped into the one layer that persists — the single outcome
+  clearing has to rule out.
+- The pet's line acknowledging a clear must **not** be recorded
+  (`pet.gd::_on_pet_nudged()` takes `record`). Otherwise the freshly emptied
+  history contains exactly one message, saying it was emptied, and the count
+  sits at 1 as if the clear half worked.
 
 The fact-extraction prompt has to explicitly exclude speculation and
 soon-stale details, or facts fill up with "probably still has concurrency risk"

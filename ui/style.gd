@@ -390,6 +390,50 @@ static func make_danger_button(button: Button, scale: float) -> void:
 	button.add_theme_color_override("font_disabled_color", NIGHT_MUTED)
 
 
+# --- Conversation log ---------------------------------------------------------
+
+const LOG_BUBBLE_CORNER := 13.0
+## The corner nearest the speaker, squared off rather than rounded.
+const LOG_BUBBLE_ROOT := 4.0
+const LOG_BUBBLE_PADDING := 11.0
+const LOG_BUBBLE_PADDING_Y := 8.0
+
+
+## One row of the transcript.
+##
+## The two surfaces this file opens with are exactly the distinction a
+## conversation list needs, so it borrows them rather than inventing a third:
+## what the pet said is paper, what you said is the app's own ink. The pet's
+## lines are the ones that carry the character, and on the dark slab paper is
+## also the one that catches the eye first — which is the right way round.
+##
+## No tail. One is a bubble; a column of twelve is noise. The corner nearest the
+## speaker is squared off instead, which says the same thing quietly enough to
+## repeat.
+static func chat_log_bubble_style(scale: float, mine: bool) -> StyleBoxFlat:
+	var box := StyleBoxFlat.new()
+	box.bg_color = NIGHT_WASH if mine else PAPER
+	# Paper needs no outline against the night panel; the wash is faint enough
+	# that without one it stops reading as a bubble at all.
+	box.border_color = NIGHT_EDGE if mine else Color(0, 0, 0, 0)
+	box.set_border_width_all(maxi(1, roundi(1.0 * scale)))
+	box.set_corner_radius_all(roundi(LOG_BUBBLE_CORNER * scale))
+	if mine:
+		box.corner_radius_bottom_right = roundi(LOG_BUBBLE_ROOT * scale)
+	else:
+		box.corner_radius_bottom_left = roundi(LOG_BUBBLE_ROOT * scale)
+	box.corner_detail = 10
+	box.content_margin_left = roundi(LOG_BUBBLE_PADDING * scale)
+	box.content_margin_right = roundi(LOG_BUBBLE_PADDING * scale)
+	box.content_margin_top = roundi(LOG_BUBBLE_PADDING_Y * scale)
+	box.content_margin_bottom = roundi(LOG_BUBBLE_PADDING_Y * scale)
+	return box
+
+
+static func chat_log_text_color(mine: bool) -> Color:
+	return NIGHT_TEXT if mine else INK
+
+
 # --- Consent dialog buttons ---------------------------------------------------
 
 ## The one action that sends a picture of the screen somewhere. It should not

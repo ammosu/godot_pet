@@ -51,7 +51,7 @@ const PET_GALLERY_URL := "https://codex-pets.net/"
 
 enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, SPEAK, ROAM, CALIBRATE, RECENTRE,
-	SET_KEY, MEMORY, LOOK, QUIT,
+	SET_KEY, CHAT_LOG, MEMORY, LOOK, QUIT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -62,6 +62,7 @@ enum MenuId {
 @onready var _consent: ConfirmationDialog = $Consent
 @onready var _presence_consent: ConfirmationDialog = $PresenceConsent
 @onready var _memory: MemoryPanel = $Memory
+@onready var _chat_log: ChatLogPanel = $ChatLog
 
 var _installed_pets := PackedStringArray()
 ## Submenus, kept between rebuilds — PopupMenu.clear() empties the items but
@@ -97,6 +98,7 @@ func _ready() -> void:
 	_style_menu()
 	_build_menu()
 	_memory.memories_changed.connect(_on_memories_changed)
+	_chat_log.conversation_cleared.connect(_on_conversation_cleared)
 
 	_brain.state_changed.connect(_on_brain_state)
 	_brain.facing_changed.connect(_visual.set_facing)
@@ -438,7 +440,13 @@ func _on_reply_failed(message: String) -> void:
 
 ## The pet speaking up on its own. Same presentation as a reply, but the text is
 ## canned rather than generated — see nudger.gd for why.
-func _on_pet_nudged(emotion: String, text: String) -> void:
+##
+## `record` exists for the lines that acknowledge a *clear*. Everything the pet
+## says normally goes into history so its next real reply doesn't contradict it,
+## but a line confirming the history was just emptied would be the one thing left
+## in it — leaving the count at 1 and the list looking like the clear only half
+## worked. That line is feedback about the app, not conversation.
+func _on_pet_nudged(emotion: String, text: String, record := true) -> void:
 	if _chat.is_showing() or _chat.is_input_open():
 		return
 	_brain.on_talk_started()
@@ -446,7 +454,8 @@ func _on_pet_nudged(emotion: String, text: String) -> void:
 	_on_emotion_changed(emotion)
 	_chat.append_reply(text)
 	_chat.end_reply()
-	LLMService.note_pet_said(text)
+	if record:
+		LLMService.note_pet_said(text)
 
 
 ## Wait for the bubble to clear rather than for the stream to end — the text is
@@ -504,6 +513,9 @@ func _build_menu() -> void:
 	_menu.add_item("看一下我的螢幕…", MenuId.LOOK)
 	_menu.set_item_disabled(_menu.get_item_index(MenuId.LOOK), not VisionService.is_supported())
 	_menu.add_item("回到角落", MenuId.RECENTRE)
+	# Above 記憶與資料 because it is the shallower of the two: this one is what
+	# we just said, that one is what the pet has kept.
+	_menu.add_item("對話記錄…", MenuId.CHAT_LOG)
 	_menu.add_item("記憶與資料…", MenuId.MEMORY)
 
 	_menu.add_separator()
@@ -642,6 +654,8 @@ func _on_menu_pressed(id: int) -> void:
 			_ask_for_api_key()
 		MenuId.LOOK:
 			EventBus.screen_look_requested.emit(VisionService.DEFAULT_QUESTION, true)
+		MenuId.CHAT_LOG:
+			_chat_log.open(_window_ctl.get_ui_scale())
 		MenuId.MEMORY:
 			_memory.open(_window_ctl.get_ui_scale())
 		MenuId.QUIT:
@@ -822,7 +836,16 @@ func _toggle_presence() -> void:
 ## on a timer, or in the menu, which can't scroll.
 func _on_memories_changed() -> void:
 	if not MemoryStore.has_memories():
-		_on_pet_nudged("sad", "好……全部清空了，我們重新認識吧。")
+		_on_pet_nudged("sad", "好……全部清空了，我們重新認識吧。", false)
+
+
+## Clearing the transcript drops the verbatim turns and keeps the facts, so the
+## pet says something that matches that — it forgot the conversation, not you.
+## Said out loud rather than left as a silently emptied list, because the two
+## clears in this app differ only in what they spare, and the line is where the
+## difference is visible.
+func _on_conversation_cleared() -> void:
+	_on_pet_nudged("neutral", "好，剛剛聊的我放下了。要聊點新的嗎？", false)
 
 
 func _feed() -> void:

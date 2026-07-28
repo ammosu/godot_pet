@@ -1,4 +1,4 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene load_steps=9 format=3]
 
 [ext_resource type="Script" path="res://pet/pet.gd" id="1_pet"]
 [ext_resource type="Script" path="res://pet/window_controller.gd" id="2_window"]
@@ -7,6 +7,7 @@
 [ext_resource type="Script" path="res://pet/fallback_blob.gd" id="5_blob"]
 [ext_resource type="Script" path="res://ui/chat_panel.gd" id="6_chat"]
 [ext_resource type="Script" path="res://ui/memory_panel.gd" id="7_memory"]
+[ext_resource type="Script" path="res://ui/chat_log_panel.gd" id="8_chatlog"]
 
 [node name="Pet" type="Node2D"]
 script = ExtResource("1_pet")
@@ -68,3 +69,9 @@ title = "記憶與資料"
 initial_position = 2
 visible = false
 script = ExtResource("7_memory")
+
+[node name="ChatLog" type="Window" parent="."]
+title = "對話記錄"
+initial_position = 2
+visible = false
+script = ExtResource("8_chatlog")
