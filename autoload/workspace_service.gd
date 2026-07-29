@@ -171,6 +171,41 @@ func level_label(level: String) -> String:
 	return "可以改" if level == LEVEL_EDIT else "只能看"
 
 
+# --- Sessions -----------------------------------------------------------------
+
+## The agent conversation attached to this folder, or empty.
+##
+## Kept **per workspace**, not globally: a session carries what the agent read and
+## concluded, and resuming it somewhere else would answer questions about the
+## wrong project. Stored inside the workspace entry so removing the folder takes
+## the session with it, with no separate table to keep in step.
+func get_session(raw: String) -> String:
+	var wanted := normalise(raw)
+	for entry in _raw_list():
+		if entry is Dictionary and str(entry.get("path", "")) == wanted:
+			return str(entry.get("session", ""))
+	return ""
+
+
+func set_session(raw: String, session_id: String) -> void:
+	var wanted := normalise(raw)
+	var spaces := _raw_list()
+	var touched := false
+	for entry in spaces:
+		if entry is Dictionary and str(entry.get("path", "")) == wanted:
+			entry["session"] = session_id
+			touched = true
+	if touched:
+		# Deliberately not through _store(): a session id changing is not a change
+		# to the *list*, and emitting `changed` here would rebuild the menu and the
+		# panel rows after every single job.
+		Config.set_value(SECTION, KEY_SPACES, spaces)
+
+
+func clear_session(raw: String) -> void:
+	set_session(raw, "")
+
+
 func _valid_level(level: String) -> String:
 	return LEVEL_EDIT if level == LEVEL_EDIT else LEVEL_READ
 

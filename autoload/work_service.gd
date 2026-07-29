@@ -91,6 +91,14 @@ var _log: Array[Dictionary] = []
 var _last_text := ""
 var _cost := 0.0
 var _reported := false
+## The agent conversation this run belongs to, read off the result event and kept
+## so the next job in the same folder can carry on from it.
+var _session := ""
+## Whether this launch passed --resume, which is what makes a zero-turn failure
+## worth retrying rather than reporting.
+var _resuming := false
+## Set when that failure is seen, so _process can start over instead of reporting.
+var _session_is_stale := false
 var _claude_path := ""
 var _claude_looked_up := false
 
@@ -221,14 +229,26 @@ func start(space: Dictionary, request: String) -> bool:
 	_runner = runner()
 	_space = space
 	_request = trimmed
+	_log.clear()
+	return _launch(true)
+
+
+## Split from start() so a resume that turns out to be stale can be retried
+## fresh without the caller ever knowing. `allow_resume` is false on that retry,
+## which is also what stops it looping.
+func _launch(allow_resume: bool) -> bool:
+	var path := str(_space.get("path", ""))
 	_offset = 0
 	_pending = PackedByteArray()
-	_log.clear()
 	_last_text = ""
 	_cost = 0.0
 	_elapsed = 0.0
 	_since_poll = 0.0
 	_reported = false
+	_session = ""
+	# Only claude can resume; the codex path has no equivalent here.
+	_resuming = allow_resume and _runner == RUNNER_CLAUDE \
+		and not WorkspaceService.get_session(path).is_empty()
 
 	var stream := ProjectSettings.globalize_path(STREAM_PATH)
 	var message := ProjectSettings.globalize_path(MESSAGE_PATH)
@@ -242,10 +262,18 @@ func start(space: Dictionary, request: String) -> bool:
 	if _pid == -1:
 		push_warning("WorkService: could not start %s" % _runner)
 		return false
-	_note("在 %s 開工了" % str(_space.get("name", path.get_file())))
+	_note("%s %s" % ["接著上次，在" if _resuming else "在",
+		str(_space.get("name", path.get_file())) + ("" if _resuming else " 開工了")])
 	set_process(true)
 	state_changed.emit()
 	return true
+
+
+## Whether the next job in this workspace would carry the previous one's context.
+## Asked by pet.gd so the input can say so before anything is typed.
+func would_resume(space: Dictionary) -> bool:
+	return runner() == RUNNER_CLAUDE \
+		and not WorkspaceService.get_session(str(space.get("path", ""))).is_empty()
 
 
 func cancel() -> void:
@@ -340,6 +368,12 @@ func _claude_args(_message: String) -> PackedStringArray:
 		# consent dialog, which says so rather than promising otherwise.
 		args.append_array(["--permission-mode", "acceptEdits",
 			"--allowed-tools", _sh_quote("Read,Edit,Write,Grep,Glob,Bash")])
+	# Carry on from the last job in this folder. Verified headlessly: a second turn
+	# answered a question about the first without re-reading anything, which is the
+	# whole point — every follow-up used to pay to read the project again.
+	if _resuming:
+		args.append_array(["--resume",
+			_sh_quote(WorkspaceService.get_session(str(_space.get("path", ""))))])
 	args.append_array(["--", _sh_quote(_prompt())])
 	return args
 
@@ -414,6 +448,21 @@ func _process(delta: float) -> void:
 
 	# The child is gone, but the last few lines may still be unread.
 	_drain()
+
+	# The context we tried to carry on from is no longer there. Drop it and do the
+	# job from scratch — silently, because "the CLI expired a session file" is not
+	# something the user asked about or can act on.
+	if _session_is_stale:
+		_session_is_stale = false
+		WorkspaceService.clear_session(str(_space.get("path", "")))
+		_pid = -1
+		set_process(false)
+		_note("上次的脈絡不見了，我重來一次")
+		if _launch(false):
+			return
+		_finish(false, "做不成，重試也起不來。")
+		return
+
 	_finish(true, "")
 
 
@@ -469,6 +518,15 @@ func _handle_claude(event: Dictionary) -> void:
 				_read_content(message.get("content", []))
 		"result":
 			_cost = float(event.get("total_cost_usd", 0.0))
+			_session = str(event.get("session_id", ""))
+			# A resume against a session the CLI no longer has fails instantly:
+			# exit 1, is_error, and **zero turns**. That combination is what
+			# separates "the context is gone" from "the job genuinely failed",
+			# and it has to be caught or a cleaned-up session file would break
+			# that workspace permanently.
+			if _resuming and bool(event.get("is_error", false)) \
+					and int(event.get("num_turns", 0)) == 0:
+				_session_is_stale = true
 			var text := str(event.get("result", "")).strip_edges()
 			if not text.is_empty():
 				_last_text = text
@@ -600,6 +658,12 @@ func _finish(natural: bool, override: String) -> void:
 	var seconds := _elapsed
 	var space := _space
 	_stop()
+
+	# Remembered only when the run actually got somewhere. Storing the id off a
+	# failed launch would hand the next job a session with nothing in it, which
+	# resumes fine and helps nobody.
+	if natural and code == 0 and not _session.is_empty():
+		WorkspaceService.set_session(path, _session)
 
 	var message := override
 	if message.is_empty():

@@ -979,6 +979,43 @@ it clears `_pending_space` — or a later menu-driven job inherits it — and
 `_queued_request`, or the next folder the user picks silently runs the sentence
 they just abandoned.
 
+#### Follow-ups carry on, per folder
+
+Each job used to be a fresh `claude -p` with no memory, so 「不對，再改一下」 paid
+to read the whole project again. The session id is in the `result` event this
+already parses, so `WorkspaceService` keeps it **inside the workspace entry** and
+the next job passes `--resume`.
+
+Per workspace, not global: a session carries what the agent read and concluded,
+and resuming it somewhere else answers questions about the wrong project. Living
+in the entry also means removing the folder takes the session with it, with no
+second table to keep in step. `set_session()` deliberately writes config without
+going through `_store()` — a session id changing is not a change to the *list*,
+and emitting `changed` would rebuild the menu and every panel row after each job.
+
+Measured end to end: first round $0.06, follow-up 「那個要怎麼改？」 answered
+「把第19行改成 `sorted(numbers)[-n:][::-1]`」 for **$0.0068 with no tool calls at
+all** — it knew what 那個 referred to and did not re-read the file.
+
+**A stale session has to be survivable.** Resuming one the CLI no longer has
+fails instantly — exit 1, `is_error`, and **zero turns**, with
+`No conversation found` only on stderr. That combination is what distinguishes
+"the context is gone" from "the job failed", and without catching it a
+cleaned-up session file would break that workspace permanently. `_launch()` is
+split from `start()` so the retry can run with `allow_resume = false`, which is
+also what stops it looping. Verified by pointing a workspace at a fabricated
+uuid: the run failed, the session was dropped, the job re-ran and answered, and a
+fresh id was stored — with only a line in the panel's log to show it happened.
+
+The resume state is surfaced in the **input placeholder**
+(「接著上次，要我在 X 做什麼？」) rather than as its own control: it is the one
+moment the answer changes what is worth typing, and it costs no extra UI. Starting
+over is a 重來 button on the workspace row, shown only when there is a session, so
+the ordinary row stays two buttons wide.
+
+Only claude resumes. `codex exec` has no equivalent on this path, which
+`would_resume()` and `_launch()` both check rather than assume.
+
 #### The guard that protects the level the user chose
 
 Editing in place is the default because it was chosen deliberately, having been

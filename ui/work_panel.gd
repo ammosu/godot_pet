@@ -301,6 +301,9 @@ func _remember(result: Dictionary, summary: String) -> void:
 	}
 	if visible and _spaces != null:
 		_refresh_job()
+		# A finished job is what creates a session, so the row's 重來 button
+		# appears here and nowhere else.
+		_refresh_spaces()
 
 
 # --- The workspaces -----------------------------------------------------------
@@ -360,6 +363,19 @@ func _make_space_row(space: Dictionary) -> Control:
 		_refresh_spaces()
 		workspaces_changed.emit())
 	row.add_child(level)
+
+	# Only when there is something to forget, so the ordinary row stays two
+	# buttons wide. A conversation that has run long enough to wander is the one
+	# case where carrying it on costs more than it saves.
+	if not WorkspaceService.get_session(path).is_empty():
+		var fresh := Button.new()
+		fresh.text = "重來"
+		fresh.tooltip_text = "忘掉上次的脈絡，下次從頭開始"
+		PetStyle.make_quiet_button(fresh, _scale)
+		fresh.pressed.connect(func() -> void:
+			WorkspaceService.clear_session(path)
+			_refresh_spaces())
+		row.add_child(fresh)
 
 	var drop := Button.new()
 	drop.text = "✕"

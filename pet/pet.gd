@@ -1169,7 +1169,13 @@ func _open_work_input(space: Dictionary) -> void:
 		return
 	var suffix := "" if str(space.get("level", "")) == WorkspaceService.LEVEL_EDIT \
 		else "（只能看）"
-	_chat.ask_what_to_do("要我在 %s 做什麼？%s" % [str(space.get("name", "")), suffix])
+	# Whether the last job's context carries over changes what is worth typing —
+	# "再改一下" only means anything if it does. The placeholder is the one place
+	# that answer is already in front of the user at the moment they need it, so it
+	# costs no extra UI.
+	var lead := "接著上次，" if WorkService.would_resume(space) else ""
+	_chat.ask_what_to_do("%s要我在 %s 做什麼？%s"
+		% [lead, str(space.get("name", "")), suffix])
 
 
 ## The model decided a typed message was a job. It is put to the user rather than
