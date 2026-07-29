@@ -11,8 +11,9 @@ class_name MiniGame
 ##
 ## Subclasses override the small contract below. The games deliberately ask for
 ## different things — position in 接東西, timing in 跳過去, memory in 翻翻看,
-## movement plus an opponent in 排球對決, and return angles in 敲磚塊 —
-## rather than being one reflex game with several coats of paint.
+## movement plus an opponent in 排球對決, return angles in 敲磚塊, discrete
+## planning in 推箱子尋零食, and route finding in 一筆畫 — rather than being
+## one reflex game with several coats of paint.
 
 ## A run played to its end. `treats` is how much the pet actually ate, which only
 ## 接東西 can be nonzero for; it is separate from `score` because the bonus is
