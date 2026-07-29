@@ -9,10 +9,10 @@ class_name MiniGame
 ## nothing in there may hold focus. Written once here and in GamePanel, a new
 ## game is a field and a handful of numbers.
 ##
-## Subclasses override the small contract below. The three that exist are
-## deliberately three different verbs — 接東西 is where you stand, 跳過去 is
-## when you press, 翻翻看 is what you remember — because three variations on
-## reflexes would be one game with three coats of paint.
+## Subclasses override the small contract below. The games deliberately ask for
+## different things — position in 接東西, timing in 跳過去, memory in 翻翻看,
+## and movement plus an opponent in 排球對決 — rather than being one reflex
+## game with several coats of paint.
 
 ## A run played to its end. `treats` is how much the pet actually ate, which only
 ## 接東西 can be nonzero for; it is separate from `score` because the bonus is
@@ -50,7 +50,7 @@ func _ready() -> void:
 
 ## Window size this game wants, in design units. A runner reads horizontally and
 ## a memory grid vertically; one shared size would waste most of the window for
-## two of the three.
+## both.
 func design_size() -> Vector2i:
 	return Vector2i(440, 560)
 
@@ -72,6 +72,11 @@ func uses_lives() -> bool:
 
 func pet_design_height() -> float:
 	return GamePet.DEFAULT_HEIGHT
+
+
+## Extra setup for games that own more than the shared player pet.
+func _setup(_pack: PetPack, _rows: Dictionary) -> void:
+	pass
 
 
 ## Per-run reset. Called on every reset(), including the one inside start().
@@ -116,6 +121,7 @@ func setup(ui_scale: float, pack: PetPack, rows: Dictionary) -> void:
 		_pet = GamePet.new()
 		add_child(_pet)
 	_pet.build(_scale, pack, rows, pet_design_height())
+	_setup(pack, rows)
 	reset()
 
 
@@ -181,6 +187,10 @@ func _lose_one() -> void:
 	_misses += 1
 	if _misses >= MISSES_ALLOWED:
 		_finish()
+
+
+func _recover_one() -> void:
+	_misses = maxi(0, _misses - 1)
 
 
 func _report() -> void:

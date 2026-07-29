@@ -480,6 +480,20 @@ const GAME_LEAF_VEIN := Color("2f5f39")
 ## another — punching a hole the colour of one background leaves a smudge on the
 ## other.
 const GAME_ITEM_INK := Color("2b2018")
+## Court markings for 排球對決. The player's persimmon and the rival's teal
+## identify sides without recolouring whichever pet pack the user installed.
+const GAME_VOLLEY_PLAYER := Color("dc7b56")
+const GAME_VOLLEY_RIVAL := Color("5fb0ad")
+const GAME_VOLLEY_BALL := Color("f4ecdd")
+const GAME_VOLLEY_SEAM := Color("b87958")
+const GAME_VOLLEY_NET := Color("d8cfc1", 0.72)
+## Platform language for 下樓梯. Normal ground is quiet paper; every special
+## platform has one distinct hue and silhouette so it can be read while falling.
+const GAME_DESCENT_PLATFORM := Color("d8cfc1")
+const GAME_DESCENT_MOVING := Color("5fb0ad")
+const GAME_DESCENT_SPRING := Color("f0c05a")
+const GAME_DESCENT_BREAK := Color("b87958")
+const GAME_DESCENT_DANGER := Color("c8383f")
 
 
 ## A card in 翻翻看. Face down it is chrome; face up it is paper, which is the
