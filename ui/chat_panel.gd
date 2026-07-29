@@ -15,6 +15,11 @@ signal secret_submitted(text: String)
 ## rather than into the conversation.
 signal work_submitted(text: String)
 signal input_toggled(open: bool)
+## The field grew or shrank a row. The passthrough mask is built from
+## get_input_rect(), and outside the frame-by-frame case (Windows, where the mask
+## also clips rendering) it is only pushed on discrete events — so without this,
+## typing a second line would draw a field whose upper half doesn't take clicks.
+signal input_resized
 ## The line finished being read and faded away.
 signal bubble_hidden
 
@@ -35,7 +40,13 @@ const BUBBLE_MIN_WIDTH := 76.0
 const BUBBLE_WAITING_WIDTH := 74.0
 const GAP_ABOVE_PET := 10.0
 const SIDE_MARGIN := 12.0
+## One row. The field is a pill at this height and grows by exactly one line per
+## row after it — see _field_height().
 const INPUT_HEIGHT := 38.0
+## Past this the field scrolls instead of growing. The window is only so tall,
+## the pet has to stay visible above it, and a field that keeps growing turns
+## into a document editor sitting on the desktop.
+const INPUT_MAX_ROWS := 5
 ## The bubble tops out at 300; an input running the full width of a 440-wide
 ## window under it looks like a different piece of software.
 const INPUT_MAX_WIDTH := 320.0
@@ -62,11 +73,20 @@ const CLOSE_STROKE := 1.6
 
 @onready var _bubble: PanelContainer = $Bubble
 @onready var _text: RichTextLabel = $Bubble/Text
+## Two fields, one visible at a time — see _field().
+##
+## The masked one has to stay a LineEdit: `secret` is a LineEdit property with no
+## TextEdit equivalent, and an API key is one line by definition, so there is
+## nothing for it to gain from growing. Everything the user *says* goes through
+## the TextEdit, which is the only one of the two that can hold more than a line
+## at all.
 @onready var _input: LineEdit = $Input
+@onready var _area: TextEdit = $Area
 ## Built here rather than in the scene because it is sized off the display
-## scale, which nothing knows until configure() runs. Parented to the field so
-## it inherits its visibility — every existing path that shows or hides the
-## input gets the button for free, and none of them can forget it.
+## scale, which nothing knows until configure() runs. Parented to whichever
+## field is on screen so it inherits that field's visibility — every existing
+## path that shows or hides the input gets the button for free, and none of them
+## can forget it.
 var _close: Button
 
 var _scale := 1.0
@@ -91,6 +111,9 @@ var _natural_width := 0.0
 ## can match it.
 var _edge_color := PetStyle.EDGE
 var _close_hovered := false
+## Last height the field was laid out at, so input_resized only fires on a row
+## actually being gained or lost — _layout_input() also runs on every pet step.
+var _field_height := 0.0
 
 
 func _ready() -> void:
@@ -102,6 +125,23 @@ func _ready() -> void:
 	_input.text_submitted.connect(_on_submitted)
 	_input.caret_blink = true
 	_input.caret_blink_interval = 0.6
+
+	_area.visible = false
+	_area.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	_area.scroll_fit_content_height = false
+	_area.caret_blink = true
+	_area.caret_blink_interval = 0.6
+	_area.text_changed.connect(_layout_input)
+	# Connected as a signal rather than overridden: Control emits `gui_input`
+	# *before* running its own handler precisely so a listener can take the event
+	# first, which is the only way to stop Enter inserting a newline.
+	_area.gui_input.connect(_on_area_gui_input)
+	# Past INPUT_MAX_ROWS the field scrolls, and the engine's default scrollbar
+	# inside a paper pill reads as a rendering fault. Emptied rather than hidden:
+	# TextEdit re-shows the bar itself whenever it decides one is needed.
+	var blank := StyleBoxEmpty.new()
+	for item in ["scroll", "scroll_focus", "grabber", "grabber_highlight", "grabber_pressed"]:
+		_area.get_v_scroll_bar().add_theme_stylebox_override(item, blank)
 
 	# No text: the cross is drawn in _on_close_draw(), so the button is only a
 	# hit target and a hover wash, and its minimum size stays zero.
@@ -115,7 +155,6 @@ func _ready() -> void:
 	_close.mouse_entered.connect(_on_close_hover.bind(true))
 	_close.mouse_exited.connect(_on_close_hover.bind(false))
 	_close.draw.connect(_on_close_draw)
-	_input.add_child(_close)
 
 	_set_input_mode(InputMode.CHAT)
 
@@ -430,21 +469,31 @@ func _offset_points(points: PackedVector2Array, by: Vector2) -> PackedVector2Arr
 
 # --- Input --------------------------------------------------------------------
 
+## Whichever of the two fields the current mode uses. Everything below works
+## through this rather than naming a node, so the split between the masked
+## LineEdit and the growable TextEdit stays in one place.
+func _field() -> Control:
+	return _input if _input_mode == InputMode.SECRET else _area
+
+
 func toggle_input() -> void:
-	set_input_open(not _input.visible)
+	set_input_open(not is_input_open())
 
 
 func set_input_open(open: bool) -> void:
-	if _input.visible == open:
+	if is_input_open() == open:
 		return
-	_input.visible = open
+	var field := _field()
+	field.visible = open
 	if open:
-		_input.grab_focus()
-		_input.modulate.a = 0.0
-		create_tween().tween_property(_input, "modulate:a", 1.0, 0.14)
+		# Before the fade, not after: the field is sized to its content, and one
+		# laid out at a stale width flashes at the wrong size for a frame.
+		_layout_input()
+		field.grab_focus()
+		field.modulate.a = 0.0
+		create_tween().tween_property(field, "modulate:a", 1.0, 0.14)
 	else:
-		_input.release_focus()
-		_input.text = ""
+		field.release_focus()
 		_close_hovered = false
 		_set_input_mode(InputMode.CHAT)
 	input_toggled.emit(open)
@@ -454,9 +503,10 @@ func set_input_open(open: bool) -> void:
 ## soon as it's submitted or dismissed, so the pet can't end up quietly
 ## swallowing conversation into a settings field.
 func ask_for_secret(placeholder: String) -> void:
+	var was_open := is_input_open()
 	_set_input_mode(InputMode.SECRET, placeholder)
-	if _input.visible:
-		_input.grab_focus()
+	if was_open:
+		_field().grab_focus()
 	else:
 		set_input_open(true)
 
@@ -466,27 +516,58 @@ func ask_for_secret(placeholder: String) -> void:
 ## in a special mode would send the next ordinary sentence somewhere surprising,
 ## and here "somewhere surprising" is an agent loose in a repository.
 func ask_what_to_do(placeholder: String) -> void:
+	var was_open := is_input_open()
 	_set_input_mode(InputMode.WORK, placeholder)
-	if _input.visible:
-		_input.grab_focus()
+	if was_open:
+		_field().grab_focus()
 	else:
 		set_input_open(true)
 
 
+## Switching mode swaps which of the two fields is on screen, and the close
+## button moves with it — being its child is what makes it impossible to show a
+## field without its way out.
 func _set_input_mode(mode: InputMode, placeholder := CHAT_PLACEHOLDER) -> void:
+	var was_open := is_input_open()
 	_input_mode = mode
 	_input.secret = mode == InputMode.SECRET
 	_input.placeholder_text = placeholder
+	_area.placeholder_text = placeholder
 	_input.text = ""
+	_area.text = ""
+
+	var field := _field()
+	if _close.get_parent() == null:
+		field.add_child(_close)
+	elif _close.get_parent() != field:
+		# Keeping the global transform would fight the layout below for a frame;
+		# _layout_input() places it in the new parent's space unconditionally.
+		_close.reparent(field, false)
+	_input.visible = was_open and field == _input
+	_area.visible = was_open and field == _area
+
 	_apply_input_style()
+	_layout_input()
 
 
 ## Typing a key is not conversation, so the field says so in colour as well as in
 ## its placeholder — the accent switches from persimmon to a cool green.
+##
+## Both fields are styled, not just the visible one: they are the same field to
+## everyone outside this file, and restyling on every mode switch would mean the
+## one that isn't showing is always a display-scale change out of date.
+##
+## The two controls do **not** share theme item names, and a wrong one is
+## silent — it simply never applies, the same trap ChatLogPanel records for
+## RichTextLabel. TextEdit wants `line_spacing` where the bubble wants
+## `line_separation`, and has no `read_only` colour worth setting here.
 func _apply_input_style() -> void:
 	var secret := _input_mode == InputMode.SECRET
 	var height := INPUT_HEIGHT * _scale
 	var reserve := PetStyle.input_close_reserve(height, _scale)
+	var caret := PetStyle.input_caret_color(secret)
+	var font_size := roundi(15.0 * _scale)
+
 	_input.add_theme_stylebox_override("normal",
 		PetStyle.input_style(_scale, height, secret, reserve))
 	_input.add_theme_stylebox_override("read_only",
@@ -496,12 +577,69 @@ func _apply_input_style() -> void:
 	_input.add_theme_color_override("font_color", PetStyle.INK)
 	_input.add_theme_color_override("font_placeholder_color", PetStyle.INK_SOFT)
 	_input.add_theme_color_override("font_selected_color", PetStyle.INK)
-	_input.add_theme_color_override("caret_color", PetStyle.input_caret_color(secret))
-	_input.add_theme_color_override("selection_color",
-		Color(PetStyle.input_caret_color(secret), 0.20))
+	_input.add_theme_color_override("caret_color", caret)
+	_input.add_theme_color_override("selection_color", Color(caret, 0.20))
 	_input.add_theme_constant_override("caret_width", maxi(1, roundi(2.0 * _scale)))
-	_input.add_theme_font_size_override("font_size", roundi(15.0 * _scale))
+	_input.add_theme_font_size_override("font_size", font_size)
+
+	# Font and spacing before the boxes: the vertical padding below is derived
+	# from the line height, which is not knowable until they are applied.
+	_area.add_theme_font_size_override("font_size", font_size)
+	_area.add_theme_constant_override("line_spacing", roundi(4.0 * _scale))
+	var pad := _text_pad_y()
+	_area.add_theme_stylebox_override("normal",
+		PetStyle.input_style(_scale, height, false, reserve, pad))
+	_area.add_theme_stylebox_override("read_only",
+		PetStyle.input_style(_scale, height, false, reserve, pad))
+	_area.add_theme_stylebox_override("focus",
+		PetStyle.input_focus_style(_scale, height, false, reserve, pad))
+	_area.add_theme_color_override("font_color", PetStyle.INK)
+	_area.add_theme_color_override("font_placeholder_color", PetStyle.INK_SOFT)
+	_area.add_theme_color_override("font_selected_color", PetStyle.INK)
+	_area.add_theme_color_override("caret_color", caret)
+	_area.add_theme_color_override("selection_color", Color(caret, 0.20))
+	# Its own background and the row highlight would both draw on top of the
+	# paper pill the stylebox already paints.
+	_area.add_theme_color_override("background_color", Color(0, 0, 0, 0))
+	_area.add_theme_color_override("current_line_color", Color(0, 0, 0, 0))
+	_area.add_theme_constant_override("caret_width", maxi(1, roundi(2.0 * _scale)))
+
 	PetStyle.make_input_close_button(_close, height)
+
+
+## What the multi-line field needs above and below its text so that *one* row
+## sits centred in the same pill the LineEdit draws. A LineEdit centres its
+## single line itself; a TextEdit draws from the top, so left at PetStyle's own
+## inset the text rides visibly high in the field.
+func _text_pad_y() -> float:
+	return maxf(0.0, (INPUT_HEIGHT * _scale - float(_area.get_line_height())) * 0.5)
+
+
+## How many rows the text currently occupies, wrapping included, capped at what
+## the field will grow to.
+##
+## Summed from get_line_wrap_count() rather than taken from
+## get_total_visible_line_count(), whose name reads as "how many rows are on
+## screen" — which is a different number the moment the field starts scrolling,
+## and would feed the field's own height back into the answer.
+func _row_count() -> int:
+	var rows := 0
+	for i in _area.get_line_count():
+		rows += 1 + _area.get_line_wrap_count(i)
+		if rows >= INPUT_MAX_ROWS:
+			return INPUT_MAX_ROWS
+	return maxi(1, rows)
+
+
+## One row is the pill the field has always been; each row after it adds exactly
+## one line height. Deriving it from the padding instead would make the step from
+## one row to two smaller than every step after it, which reads as the field
+## having lost its padding rather than gained a line.
+func _field_height_for(field: Control) -> float:
+	var single := INPUT_HEIGHT * _scale
+	if field != _area:
+		return single
+	return single + float(_row_count() - 1) * float(_area.get_line_height())
 
 
 ## Sits just under the pet's feet, pulled back on screen if that would fall below
@@ -510,39 +648,52 @@ func _apply_input_style() -> void:
 func _layout_input() -> void:
 	var limit := _limits()
 	var margin := SIDE_MARGIN * _scale
-	var height := INPUT_HEIGHT * _scale
-	var width := clampf(limit.size.x - margin * 2.0, height, INPUT_MAX_WIDTH * _scale)
-	_input.size = Vector2(width, height)
+	var single := INPUT_HEIGHT * _scale
+	var width := clampf(limit.size.x - margin * 2.0, single, INPUT_MAX_WIDTH * _scale)
+	var field := _field()
+	# Width first, and as its own assignment: how many rows the text wraps into
+	# depends on it, and the height depends on that. Setting both at once would
+	# measure the wrap against the width the field had a moment ago.
+	field.size.x = width
+	var height := _field_height_for(field)
+	field.size.y = height
 
 	var min_x := limit.position.x + margin
 	var lowest := limit.end.y - margin - height
-	_input.position = Vector2(
+	field.position = Vector2(
 		clampf(_pet_rect.get_center().x - width * 0.5, min_x,
 			maxf(min_x, limit.end.x - width - margin)),
 		clampf(_pet_rect.end.y + margin, limit.position.y + margin,
 			maxf(limit.position.y, lowest)))
 
-	# Centred in the field's right cap. Positioned in the field's own space, so
-	# this doesn't have to be redone when the pet walks and the field follows.
-	var d := PetStyle.input_close_size(height)
+	# In the field's right cap, and measured from its *bottom* rather than
+	# centred in it. Where the pet lives — the corner — the field is pinned to
+	# the desktop edge and grows upward, so an anchor at the bottom is the one
+	# that leaves the button sitting still while you type.
+	var d := PetStyle.input_close_size(single)
 	_close.size = Vector2(d, d)
 	_close.position = Vector2(width - d - PetStyle.INPUT_CLOSE_INSET * _scale,
-		(height - d) * 0.5)
+		height - d - (single - d) * 0.5)
 	# The cross is scaled off the button's own size, so a resize has to repaint
 	# it. Godot redraws a Control whose size changed, but not one that only moved.
 	_close.queue_redraw()
 
+	if not is_equal_approx(height, _field_height):
+		_field_height = height
+		input_resized.emit()
+
 
 func is_input_open() -> bool:
-	return _input.visible
+	return _input.visible or _area.visible
 
 
 ## Viewport-space rect that must receive clicks. Empty when the input is closed —
 ## the bubble is display-only, so it stays click-through.
 func get_input_rect() -> Rect2:
-	if not _input.visible:
+	if not is_input_open():
 		return Rect2()
-	return Rect2(_input.position, _input.size)
+	var field := _field()
+	return Rect2(field.position, field.size)
 
 
 ## Viewport-space rect covering everything this panel currently *draws* — the
@@ -555,7 +706,7 @@ func get_input_rect() -> Rect2:
 ## WindowController.passthrough_clips_rendering().
 func get_chrome_rect() -> Rect2:
 	var box := Rect2()
-	if _input.visible:
+	if is_input_open():
 		box = get_input_rect().grow((PetStyle.INPUT_SHADOW + PetStyle.INPUT_SHADOW_DROP) * _scale)
 	if not _bubble.visible:
 		return box
@@ -567,9 +718,29 @@ func get_chrome_rect() -> Rect2:
 	return bubble if not box.has_area() else box.merge(bubble)
 
 
+## Enter sends, Shift+Enter breaks a line. The field grows for a reason, and the
+## reason is the reply the pet gets, not composing a document — so the shortcut
+## everyone already presses has to stay the one that sends.
+func _on_area_gui_input(event: InputEvent) -> void:
+	if not (event is InputEventKey) or not event.pressed:
+		return
+	var key := event as InputEventKey
+	if key.keycode != KEY_ENTER and key.keycode != KEY_KP_ENTER:
+		return
+	if key.shift_pressed:
+		return
+	_area.accept_event()
+	_on_submitted(_area.text)
+
+
 func _on_submitted(text: String) -> void:
 	var trimmed := text.strip_edges()
 	_input.text = ""
+	_area.text = ""
+	# Back to one row before anything else runs: the branches below can leave the
+	# field open, and a submitted five-line message must not leave a five-line
+	# hole behind it.
+	_layout_input()
 	if trimmed.is_empty():
 		return
 	if _input_mode == InputMode.SECRET:
@@ -596,7 +767,7 @@ func _on_close_hover(inside: bool) -> void:
 
 
 func _unhandled_key_input(event: InputEvent) -> void:
-	if not _input.visible:
+	if not is_input_open():
 		return
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
 		set_input_open(false)

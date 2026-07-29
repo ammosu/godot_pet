@@ -57,8 +57,9 @@ const OPENAI_KEY := "OPENAI_API_KEY"
 const PET_GALLERY_URL := "https://codex-pets.net/"
 
 enum MenuId {
-	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, SPEAK, ROAM, CALIBRATE,
-	RECENTRE, SET_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, QUIT,
+	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, MONITOR, SPEAK, ROAM, CALIBRATE,
+	RECENTRE, SET_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
+	QUIT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -77,6 +78,7 @@ enum MenuId {
 @onready var _game: GamePanel = $Game
 @onready var _outbox: OutboxPanel = $Outbox
 @onready var _work: WorkPanel = $Work
+@onready var _monitor: MonitorPanel = $Monitor
 
 var _installed_pets := PackedStringArray()
 ## Submenus, kept between rebuilds — PopupMenu.clear() empties the items but
@@ -154,6 +156,9 @@ func _ready() -> void:
 	WorkService.failed.connect(_on_work_failed)
 	WorkService.progress.connect(_on_work_progress)
 	_chat.input_toggled.connect(_on_input_toggled)
+	# The field is sized to what's typed in it now, so the mask has to follow it
+	# on the platforms where it's only pushed on discrete events.
+	_chat.input_resized.connect(_refresh_mask)
 	_chat.bubble_hidden.connect(_on_bubble_hidden)
 	EventBus.reply_chunk.connect(_on_reply_chunk)
 	EventBus.reply_finished.connect(_on_reply_finished)
@@ -162,6 +167,7 @@ func _ready() -> void:
 	EventBus.pet_nudged.connect(_on_pet_nudged)
 	EventBus.screen_look_requested.connect(_on_screen_look_requested)
 	EventBus.work_requested.connect(_on_work_requested)
+	EventBus.resource_alert.connect(_on_resource_alert)
 	_setup_consent_dialog()
 	_setup_presence_consent_dialog()
 	_setup_work_consent_dialog()
@@ -578,9 +584,17 @@ func _submenu(key: String) -> PopupMenu:
 	return menu
 
 
-## Four groups behind submenus, then the handful of things worth reaching in one
-## click. Flat, the menu ran to twenty rows — every setting the app has, at the
-## same weight as "餵食", which is the one people actually came for.
+## Four setting groups behind submenus, then the verbs worth reaching in one
+## click, then one door to the windows. Flat, the menu ran to twenty rows — every
+## setting the app has, at the same weight as "餵食", which is the one people
+## actually came for.
+##
+## The panels were folded away second, for a different reason than the settings
+## were. Measured at seventeen rows: 476px on a 1080p desktop, which Godot had to
+## shove upward to fit on screen at all, and ~595px at 125%. Five of those rows
+## were the same shape as each other — a window listing something the pet holds —
+## and they are the group that *grows*, since every feature since has added one.
+## The verbs don't: there are only so many things to ask a pet to do.
 func _build_menu() -> void:
 	_menu.clear()
 	_item_menus.clear()
@@ -607,15 +621,12 @@ func _build_menu() -> void:
 	# row makes where PresenceService reports unsupported.
 	_menu.set_item_disabled(_menu.get_item_count() - 1, not WorkService.is_supported())
 	_menu.add_item("回到角落", MenuId.RECENTRE)
-	# Above 記憶與資料 because it is the shallower of the two: this one is what
-	# we just said, that one is what the pet has kept.
-	_menu.add_item("對話記錄…", MenuId.CHAT_LOG)
-	_menu.add_item("記憶與資料…", MenuId.MEMORY)
-	# Third of the same kind: a window listing something the pet holds, where each
-	# line can be dropped on its own.
-	_menu.add_item("我做的東西…", MenuId.OUTBOX)
-	# Fourth, and the only one that also shows something happening *now*.
-	_menu.add_item("工作…", MenuId.WORK)
+
+	# Its own block, because it is a different kind of thing from everything above
+	# it: those are verbs, this is a door. No ellipsis — in this menu "…" means
+	# "opens something further", which a submenu arrow already says.
+	_menu.add_separator()
+	_menu.add_submenu_node_item("查看", _build_panels_menu())
 
 	_menu.add_separator()
 	_menu.add_item("結束", MenuId.QUIT)
@@ -698,6 +709,16 @@ func _build_behaviour_menu(current: PetPack) -> PopupMenu:
 	menu.add_check_item("依你的節奏搭話", MenuId.PRESENCE)
 	menu.set_item_checked(menu.get_item_index(MenuId.PRESENCE), PresenceService.is_enabled())
 	menu.set_item_disabled(menu.get_item_index(MenuId.PRESENCE), not PresenceService.is_supported())
+	menu.add_check_item("留意電腦負載", MenuId.MONITOR)
+	menu.set_item_checked(menu.get_item_index(MenuId.MONITOR), MonitorService.is_enabled())
+	menu.set_item_disabled(menu.get_item_index(MenuId.MONITOR), not MonitorService.is_supported())
+	# The one non-obvious consequence, said where the switch is rather than in a
+	# dialog: the scan itself never leaves this machine, but the line the pet says
+	# about it is an ordinary thing the pet said, and goes into the conversation
+	# like any other — which means the model sees it on the next turn.
+	menu.set_item_tooltip(menu.get_item_index(MenuId.MONITOR),
+		"%s 每 20 分鐘看一次系統負載，只有異常時才開口。\n那句話會提到程序名稱，並和其他對話一樣留在記錄裡。"
+			% MonitorService.hours_label())
 	menu.add_check_item(_voice_label(), MenuId.SPEAK)
 	menu.set_item_checked(menu.get_item_index(MenuId.SPEAK), TTSService.is_enabled())
 	menu.set_item_disabled(menu.get_item_index(MenuId.SPEAK), not TTSService.is_available())
@@ -733,6 +754,31 @@ func _build_work_menu() -> PopupMenu:
 		menu.add_separator("還沒指定我可以動的資料夾")
 	menu.add_separator()
 	menu.add_item("加一個資料夾…", MenuId.ADD_SPACE)
+	_index_items(menu)
+	return menu
+
+
+## The five windows that are all the same shape: a list of something the pet
+## holds or watches, where each row can be acted on by itself.
+##
+## Kept in the order they were added to the flat menu, which is also shallowest
+## first — what we just said, then what the pet has kept, then what it made, then
+## what it is doing for you, then what your machine is doing.
+##
+## The last two are the ones that show something happening *now*, and burying
+## them costs a click at exactly the moment you want them. Taken anyway: the pet
+## says "還在弄" on its own while a job runs, so the menu is not how you find out
+## it is still alive — and a group with an exception in it has no honest name.
+func _build_panels_menu() -> PopupMenu:
+	var menu := _submenu("Panels")
+	menu.add_item("對話記錄…", MenuId.CHAT_LOG)
+	menu.add_item("記憶與資料…", MenuId.MEMORY)
+	menu.add_item("我做的東西…", MenuId.OUTBOX)
+	menu.add_item("工作…", MenuId.WORK)
+	menu.add_item("電腦狀況…", MenuId.LOAD)
+	# Disabled rather than hidden, the same call every other unsupported row here
+	# makes: an entry that vanishes is a feature nobody discovers exists.
+	menu.set_item_disabled(menu.get_item_index(MenuId.LOAD), not MonitorService.is_supported())
 	_index_items(menu)
 	return menu
 
@@ -814,6 +860,8 @@ func _on_menu_pressed(id: int) -> void:
 			_toggle_nudges()
 		MenuId.PRESENCE:
 			_toggle_presence()
+		MenuId.MONITOR:
+			_toggle_monitor()
 		MenuId.SPEAK:
 			_toggle_speech()
 		MenuId.ROAM:
@@ -838,6 +886,8 @@ func _on_menu_pressed(id: int) -> void:
 			_memory.open(_window_ctl.get_ui_scale())
 		MenuId.OUTBOX:
 			_outbox.open(_window_ctl.get_ui_scale())
+		MenuId.LOAD:
+			_monitor.open(_window_ctl.get_ui_scale())
 		MenuId.QUIT:
 			get_tree().quit()
 
@@ -1008,6 +1058,48 @@ func _toggle_presence() -> void:
 	else:
 		_presence_consent.reset_size()
 		_presence_consent.popup_centered()
+
+
+# --- Watching the machine -----------------------------------------------------
+
+## No consent dialog, unlike the two above, and the difference is what is being
+## looked at. A screenshot leaves the machine and a presence poll is a record of
+## what *you* were doing; a process list is what the computer is doing, read
+## locally, never written down and never sent. The switch being off by default is
+## the opt-in, and the row's tooltip carries the one consequence that isn't
+## obvious from its name — see _build_behaviour_menu().
+func _toggle_monitor() -> void:
+	MonitorService.set_enabled(not MonitorService.is_enabled())
+	_set_checked(MenuId.MONITOR, MonitorService.is_enabled())
+
+
+## The service knows the numbers; only the composition root knows how the pet
+## reacts to anything — the same split the mini-game scores and the work results
+## already use, and the reason MonitorService emits a kind rather than a sentence.
+##
+## Gated on 主動說話 as well as on its own switch. This is the pet opening its
+## mouth without being asked, which is exactly what that switch is for; leaving
+## it out would give the one setting that means "don't do that" a hole in it.
+func _on_resource_alert(kind: String, detail: Dictionary) -> void:
+	if not Nudger.is_enabled():
+		return
+	var percent := roundi(float(detail.get("percent", 0.0)))
+	var name := str(detail.get("name", ""))
+	var emotion := "sad"
+	var line := ""
+	match kind:
+		MonitorService.ALERT_MEM_TIGHT:
+			line = "記憶體只剩 %d%% 可用了，要不要關掉幾個東西？" % percent
+		MonitorService.ALERT_PROC_MEM:
+			emotion = "neutral"
+			line = "%s 一個就吃掉 %d%% 的記憶體耶。" % [name, percent]
+		MonitorService.ALERT_CPU_BUSY:
+			emotion = "neutral"
+			line = "CPU 現在衝到 %d%%，跑最兇的是 %s。" % [percent, name] if not name.is_empty() \
+				else "CPU 現在衝到 %d%%，風扇應該很忙。" % percent
+	if line.is_empty():
+		return
+	_on_pet_nudged(emotion, line)
 
 
 # --- Doing work ---------------------------------------------------------------

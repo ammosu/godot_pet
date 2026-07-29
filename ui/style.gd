@@ -135,8 +135,15 @@ static func bubble_edge_width(scale: float) -> float:
 ## rounded-rectangle box where a pill was meant to be.
 ## `right_pad` is room reserved for the close button, on top of the ordinary
 ## padding, so a long line of text never slides underneath it.
+##
+## `height` is only ever read for the corner radius, so a field that has grown
+## taller than one line still passes its *single-line* height here and keeps the
+## pill's corner instead of turning into a lozenge. `pad_y` overrides the
+## vertical inset for the same reason in reverse: a LineEdit centres its one line
+## itself, a TextEdit draws from the top, so the multi-line field has to be given
+## the padding that puts a single row in the middle of the same pill.
 static func input_style(scale: float, height: float, secret: bool,
-		right_pad := 0.0) -> StyleBoxFlat:
+		right_pad := 0.0, pad_y := -1.0) -> StyleBoxFlat:
 	var box := StyleBoxFlat.new()
 	box.bg_color = PAPER
 	box.border_color = Color(SECRET, 0.45) if secret else EDGE
@@ -145,8 +152,8 @@ static func input_style(scale: float, height: float, secret: bool,
 	box.corner_detail = 12
 	box.content_margin_left = roundi(INPUT_PADDING * scale)
 	box.content_margin_right = roundi(INPUT_PADDING * scale + right_pad)
-	box.content_margin_top = roundi(INPUT_PADDING_Y * scale)
-	box.content_margin_bottom = roundi(INPUT_PADDING_Y * scale)
+	box.content_margin_top = _input_inset_y(scale, pad_y)
+	box.content_margin_bottom = _input_inset_y(scale, pad_y)
 	box.shadow_color = SHADOW
 	box.shadow_size = roundi(INPUT_SHADOW * scale)
 	box.shadow_offset = Vector2(0.0, INPUT_SHADOW_DROP * scale)
@@ -161,7 +168,7 @@ static func input_style(scale: float, height: float, secret: bool,
 ## box itself covers — so a focus box with a see-through fill doesn't glow, it
 ## just stains the field the colour of the halo.
 static func input_focus_style(scale: float, height: float, secret: bool,
-		right_pad := 0.0) -> StyleBoxFlat:
+		right_pad := 0.0, pad_y := -1.0) -> StyleBoxFlat:
 	var tint := SECRET if secret else ACCENT
 	var box := StyleBoxFlat.new()
 	box.bg_color = Color(PAPER, 1.0)
@@ -173,14 +180,20 @@ static func input_focus_style(scale: float, height: float, secret: bool,
 	# Must match input_style()'s, or the text jumps sideways when the field takes
 	# focus — the two boxes are the same field in two states, not two fields.
 	box.content_margin_right = roundi(INPUT_PADDING * scale + right_pad)
-	box.content_margin_top = roundi(INPUT_PADDING_Y * scale)
-	box.content_margin_bottom = roundi(INPUT_PADDING_Y * scale)
+	box.content_margin_top = _input_inset_y(scale, pad_y)
+	box.content_margin_bottom = _input_inset_y(scale, pad_y)
 	# Not blurred — Godot has no such thing — so it reads as a ring rather than a
 	# glow. Kept faint enough that it registers as "this field is live" instead of
 	# as a second border.
 	box.shadow_color = Color(tint, 0.18)
 	box.shadow_size = roundi(INPUT_FOCUS_GLOW * scale)
 	return box
+
+
+## The two boxes above are the same field in two states, so they must agree on
+## every inset or the text jumps when it takes focus.
+static func _input_inset_y(scale: float, pad_y: float) -> int:
+	return roundi(INPUT_PADDING_Y * scale) if pad_y < 0.0 else roundi(pad_y)
 
 
 static func input_caret_color(secret: bool) -> Color:

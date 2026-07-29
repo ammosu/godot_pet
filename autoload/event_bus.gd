@@ -68,6 +68,19 @@ signal file_content_said(text: String)
 ## PresenceService for the consent gate.
 signal presence_sampled(app_name: String, seconds_in_app: float)
 
+# --- Machine load ---
+## A resource scan completed. The dictionary is MonitorService's whole sample —
+## machine CPU and memory plus the two top-N process rankings — and exists so
+## MonitorPanel can redraw without polling. Local only: nothing carried here is
+## written to disk or sent anywhere.
+signal resources_sampled(sample: Dictionary)
+
+## A scan crossed one of MonitorService's thresholds. `kind` is one of its
+## ALERT_* constants and `detail` carries the numbers behind it. Deliberately not
+## a finished sentence: pet.gd owns how the pet reacts to anything, the same
+## split the mini-game scores and the work results already use.
+signal resource_alert(kind: String, detail: Dictionary)
+
 # --- Work ---
 ## The model decided the user is asking for something to be *done* in one of the
 ## pet's workspaces rather than answered in the bubble. `space_name` is whatever

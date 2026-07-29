@@ -91,7 +91,9 @@ holds no behaviour itself.
   parser; `llm/llm_provider.gd` is the backend interface.
 - `autoload/pet_state.gd` — needs; `autoload/nudger.gd` — unprompted lines;
   `autoload/presence_service.gd` — which app you're in, which is what decides
-  when one of those lines is worth saying.
+  when one of those lines is worth saying;
+  `autoload/monitor_service.gd` — what the *machine* is doing, on the same
+  twenty-minute rhythm.
 - `autoload/file_drop_service.gd` — turns a file dropped on the pet into a turn;
   a dropped *folder* is a workspace offer instead, handled in `pet.gd`.
 - `autoload/outbox_service.gd` — the one folder the pet may write to, which now
@@ -106,7 +108,36 @@ holds no behaviour itself.
   `ui/chat_log_panel.gd` — the window listing what was actually said;
   `ui/outbox_panel.gd` — the window listing what the pet has made;
   `ui/work_panel.gd` — the workspaces, and what the pet is doing in one now;
+  `ui/monitor_panel.gd` — what is running on this machine and what it costs;
   `ui/game_panel.gd` + `ui/games/` — the mini-game window and the games in it.
+
+### The right-click menu is grouped by kind, and one group is allowed to grow
+
+Four setting submenus, then the verbs (餵食 / 遊戲 / 看螢幕 / 幫我做事 / 回到角落),
+then one 查看 submenu holding every window, then 結束.
+
+The second fold happened because the first one stopped being enough. Measured
+flat at seventeen rows: **476px on a 1080p desktop, which Godot had to shove
+upward to fit on screen at all**, and about 595px at 125%. Five of those rows
+were the same shape as each other — a window listing something the pet holds —
+so they went behind one door, taking the menu to 13 rows and 364px.
+
+Which group moves is not arbitrary. **The panels are the group that grows**:
+every feature since the transcript has added one. The verbs don't — there are
+only so many things to ask a pet to do — so they stay one click away, which is
+what the menu is for. A sixth panel now costs nothing; a sixth verb would be the
+signal to think again.
+
+Two judgements worth not re-litigating:
+
+- **`工作…` and `電腦狀況…` went in with the rest**, even though they are the two
+  that show something happening *now* and burying them costs a click at exactly
+  the wrong moment. The pet already says 還在弄 on its own while a job runs, so
+  the menu is not how you learn it is still alive — and a group with an exception
+  in it has no honest name.
+- **Submenus carry no `…`.** In this menu the ellipsis means "opens something
+  further", which a submenu's arrow already says; `查看` is the door, and the
+  five rows behind it keep their ellipses because they open real windows.
 
 ### PetStyle
 
@@ -657,6 +688,107 @@ Two of the pools are more than a list of lines:
   and the last three facts used are steered away from — in memory only, not
   persisted, the same judgement already made for `_last_nudge_at`.
 
+### The chat input grows with what you type
+
+Two fields live under the pet, one visible at a time. The masked one has to stay
+a `LineEdit` — `secret` is a LineEdit property with no `TextEdit` equivalent, and
+an API key is one line by definition — so `_input` keeps the keys and `_area`
+(a `TextEdit`) takes everything the user *says*. `ChatPanel._field()` is the
+single point that branches; `_close` is reparented onto whichever field is up, so
+it still inherits that field's visibility and no path can show a field without
+its way out.
+
+- **Enter sends, Shift+Enter breaks a line**, done by connecting the `gui_input`
+  *signal* rather than overriding `_gui_input()`. `Control::_call_gui_input`
+  emits the signal before calling the virtual — its own source comment says this
+  is so a listener can override the event — and that is the only way to stop
+  Enter inserting a newline.
+- The height is **one row at `INPUT_HEIGHT`, plus one line height per row after
+  it**, not derived from the padding. Derived, the step from one row to two comes
+  out smaller than every later step, which reads as the field having lost its
+  padding rather than gained a line.
+- `PetStyle.input_style()` is always passed the **single-line** height. That
+  argument only feeds the corner radius, so a grown field keeps the pill's corner
+  and becomes a rounded rectangle instead of a giant lozenge. Its `pad_y`
+  argument exists for the opposite reason: a `LineEdit` centres its one line
+  itself and a `TextEdit` draws from the top, so without it the text rides
+  visibly high.
+- The close button is measured from the field's **bottom**, not centred. Where
+  the pet lives the field is pinned to the desktop edge and grows *upward*, so a
+  bottom anchor is what leaves the button still while you type.
+- **`ChatPanel.input_resized` is not optional.** The passthrough mask is built
+  from `get_input_rect()`, and where the mask doesn't clip rendering it is only
+  pushed on discrete events — so without that signal a field that grew to two
+  rows draws fine and the upper half takes no clicks.
+- Past `INPUT_MAX_ROWS` the field scrolls. The engine's default scrollbar inside
+  a paper pill reads as a rendering fault, so its styleboxes are emptied rather
+  than the bar hidden — `TextEdit` re-shows it itself whenever it decides one is
+  needed.
+
+### Watching what the machine is doing
+
+`autoload/monitor_service.gd` samples the process table every twenty minutes
+during working hours. Sibling of `PresenceService` and deliberately the other
+half of the same question: that one watches *you*, this one watches the machine.
+Nothing is written to disk or sent anywhere.
+
+**Scanning every twenty minutes and reporting every twenty minutes are different
+decisions.** The scan is cheap and its value is the record it builds; a line
+spoken aloud that often is noise. So the pet opens its mouth only on a crossed
+threshold, and everything else waits in `ui/monitor_panel.gd`.
+
+Two silent failures this cost:
+
+- **`FileAccess.get_as_text()` returns an empty string on `/proc/meminfo`.**
+  procfs reports a length of 0 for these files, so the read succeeds at nothing
+  with no error and every number downstream becomes zero. Use `get_line()`.
+- **`OS.get_memory_info()`'s `available` is unusable on Linux.** Measured at the
+  same instant: `/proc/meminfo` MemAvailable 29.1 GB, `get_memory_info()`
+  13.4 GB — less than half, which trips the "memory is tight" threshold on a
+  machine with 44% of its RAM free.
+
+**Linux does not go through `ps`, and the reason is resolution.** `ps -o time`
+prints whole seconds there, so across a two-second window every process resolves
+to 0%, 50% or 100% — measured, and it put three unrelated processes at exactly
+50%. `/proc/<pid>/stat` counts in USER_HZ ticks, which the kernel fixes at 100
+for the procfs ABI, so 10 ms. It is also faster: 741 processes in 12.5 ms against
+`ps`'s 18 ms, and with no subprocess there is no blocking wait to bound. macOS
+keeps `ps`, where the same field carries hundredths (`0:00.42`).
+
+- Split `/proc/<pid>/stat` on the **last** `)`, never on whitespace: field two is
+  the executable name in parentheses and the kernel neither escapes nor quotes
+  it, so a process named `foo) bar` is a legal way to defeat a naive parser.
+- **The page size is derived, not assumed** — `stat` counts pages and Godot
+  exposes no page size, so `status`'s `VmRSS` in kB divides back to it. 4096
+  everywhere x86 Linux has run, but an ARM kernel can be built at 16k or 64k,
+  where a constant misreports every process by a factor of four.
+- **Linux truncates a process name at 15 characters** wherever that lands, so
+  `next-server (v15.2.1)` arrives as `next-server (v1`. Untidy in the panel; in
+  the line the pet said aloud it came out as 「跑最兇的是 next-server (v1。」, an
+  unclosed bracket against a full stop, which reads as the app breaking mid-word.
+  The orphaned fragment is dropped.
+
+One scan is **two samples two seconds apart**, and every CPU figure is the
+average over that gap. Diffing against the previous scan twenty minutes ago
+sounds more thorough and reads worse: a build that pegged every core for four
+minutes and finished would still top the list sixteen minutes later. The long
+view is the panel's history strip, built out of these. The gap is an `await`,
+never a busy wait — two seconds of that is a frozen pet.
+
+There is no consent dialog, unlike the screen look and the presence poll, and the
+difference is what is being looked at: a process list is what the computer is
+doing, read locally, and the switch being off by default is the opt-in. The one
+non-obvious consequence is on the menu row's tooltip instead — the scan never
+leaves the machine, but **the line the pet says names a process and goes into the
+conversation like any other**, so the model sees it next turn. That is
+deliberate: unrecorded, a reply of 「哪個程式在吃？」 would find the pet with no
+idea what it just said. `_on_resource_alert` is gated on 主動說話 as well as its
+own switch, since this is the pet speaking unbidden.
+
+At most one line per scan, most consequential first: no memory left beats one
+program holding a lot of it, which beats a busy CPU. Three at once would be the
+pet reading out a dashboard, which is what the panel is for.
+
 ### Watching which app you're in
 
 `autoload/presence_service.gd` samples the foreground app every 30 seconds so
@@ -704,6 +836,12 @@ the menu item after turning it off doesn't re-ask something already agreed to.
 (unprompted lines, including the `{fact}` templates in the `memory` pool), and
 the `DECAY` / `STARTING` constants in `autoload/pet_state.gd`. Prompt files take
 effect on restart.
+
+`config.cfg`'s `[monitor]` section carries the load monitor's working hours
+(`start_hour`, `end_hour`, `weekdays_only`) and its three alert thresholds
+(`mem_tight`, `proc_mem_share`, `cpu_busy`). The thresholds live there rather
+than in code because what counts as "too much" is a property of the machine:
+12% of 8 GB and 12% of 64 GB are not the same amount of trouble.
 
 ### Screen vision
 
