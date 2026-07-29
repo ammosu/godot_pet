@@ -494,6 +494,15 @@ const GAME_DESCENT_MOVING := Color("5fb0ad")
 const GAME_DESCENT_SPRING := Color("f0c05a")
 const GAME_DESCENT_BREAK := Color("b87958")
 const GAME_DESCENT_DANGER := Color("c8383f")
+## Brick rows for 敲磚塊 reuse the field's established hues, but every row keeps
+## one colour so the wall reads as a structure instead of scattered confetti.
+const GAME_BREAKOUT_CREAM := Color("e9dfd1")
+const GAME_BREAKOUT_TEAL := Color("5fb0ad")
+const GAME_BREAKOUT_GOLD := Color("f0c05a")
+const GAME_BREAKOUT_PERSIMMON := Color("dc7b56")
+const GAME_BREAKOUT_GREEN := Color("83a968")
+const GAME_BREAKOUT_BALL := Color("f4ecdd")
+const GAME_BREAKOUT_PADDLE := Color("dc7b56")
 
 
 ## A card in 翻翻看. Face down it is chrome; face up it is paper, which is the
