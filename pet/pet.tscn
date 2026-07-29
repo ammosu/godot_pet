@@ -1,4 +1,4 @@
-[gd_scene load_steps=11 format=3]
+[gd_scene load_steps=12 format=3]
 
 [ext_resource type="Script" path="res://pet/pet.gd" id="1_pet"]
 [ext_resource type="Script" path="res://pet/window_controller.gd" id="2_window"]
@@ -10,6 +10,7 @@
 [ext_resource type="Script" path="res://ui/chat_log_panel.gd" id="8_chatlog"]
 [ext_resource type="Script" path="res://ui/game_panel.gd" id="9_game"]
 [ext_resource type="Script" path="res://ui/outbox_panel.gd" id="10_outbox"]
+[ext_resource type="Script" path="res://ui/work_panel.gd" id="11_work"]
 
 [node name="Pet" type="Node2D"]
 script = ExtResource("1_pet")
@@ -66,10 +67,15 @@ title = "留意你切換 App 的節奏"
 ok_button_text = "好，開始留意"
 cancel_button_text = "不用了"
 
-[node name="MakerConsent" type="ConfirmationDialog" parent="."]
-title = "讓我幫你做東西"
+[node name="WorkConsent" type="ConfirmationDialog" parent="."]
+title = "讓我在你的資料夾裡做事"
 ok_button_text = "好，開始吧"
 cancel_button_text = "先不要"
+
+[node name="DirtyWarning" type="ConfirmationDialog" parent="."]
+title = "這個資料夾有沒存好的東西"
+ok_button_text = "就這樣開始"
+cancel_button_text = "我先去存"
 
 [node name="CodexLogin" type="ConfirmationDialog" parent="."]
 title = "先讓 Codex 登入"
@@ -99,3 +105,9 @@ title = "我做的東西"
 initial_position = 2
 visible = false
 script = ExtResource("10_outbox")
+
+[node name="Work" type="Window" parent="."]
+title = "工作"
+initial_position = 2
+visible = false
+script = ExtResource("11_work")

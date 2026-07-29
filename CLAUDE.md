@@ -7,6 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A Godot 4.7 desktop pet for macOS: a transparent, always-on-top, click-through
 window holding an animated character you can chat with via an LLM.
 
+It is also a small assistant — not by being an agent itself, but by being the
+face of one. You tell it what you want done, it hands the job to `claude` or
+`codex` in a folder you have explicitly given it, and it reports back. The
+character is the point: something you look at while thinking, that can also go
+and do a thing.
+
 `PLAN.md` is the living design document — phased milestones, decisions made and
 why, plus the platform quirks discovered while building. Read it before starting
 substantial work, and update it when a phase lands or a new quirk is found.
@@ -86,15 +92,20 @@ holds no behaviour itself.
 - `autoload/pet_state.gd` — needs; `autoload/nudger.gd` — unprompted lines;
   `autoload/presence_service.gd` — which app you're in, which is what decides
   when one of those lines is worth saying.
-- `autoload/file_drop_service.gd` — turns a file dropped on the pet into a turn.
-- `autoload/outbox_service.gd` — the one folder the pet is allowed to write to;
-  `autoload/maker_service.gd` — the Codex CLI run that fills it.
+- `autoload/file_drop_service.gd` — turns a file dropped on the pet into a turn;
+  a dropped *folder* is a workspace offer instead, handled in `pet.gd`.
+- `autoload/outbox_service.gd` — the one folder the pet may write to, which now
+  only the transcript export fills.
+- `autoload/workspace_service.gd` — the folders the pet may work in, and the git
+  questions about them; `autoload/work_service.gd` — the coding-agent CLI run;
+  `autoload/codex_cli.gd` — where that CLI is and whether it has an account.
 - `ui/style.gd` (`PetStyle`) — every colour and edge, and the builders for the
   themes. See below.
 - `ui/chat_panel.gd` — speech bubble and chat input;
   `ui/memory_panel.gd` — the window listing what the pet remembers;
   `ui/chat_log_panel.gd` — the window listing what was actually said;
   `ui/outbox_panel.gd` — the window listing what the pet has made;
+  `ui/work_panel.gd` — the workspaces, and what the pet is doing in one now;
   `ui/game_panel.gd` + `ui/games/` — the mini-game window and the games in it.
 
 ### PetStyle
@@ -790,10 +801,15 @@ pet produces lands there. Deliberately not `user://`: buried under
 `~/.local/share`, it defeats the whole point, which is that the thing the pet
 made is something you can find and open.
 
-**Names arriving there are not trusted.** The pet's own exports compose them, but
-the maker path takes the name from model output, and the model's input already
-includes text dropped on the pet and whatever was legible in a screenshot — both
-places where a sentence can be planted. So:
+The pet **no longer makes files of its own**. `MakerService` is gone: asking a
+model to invent a note and drop it in a folder turned out to be the least
+interesting thing an agent CLI can do, and it competed with the thing that is
+interesting — see "The pet as an assistant" below. What still writes here is the
+transcript export, which involves no model at all.
+
+**Names arriving there are still not trusted**, because the sanitiser is what
+makes that guarantee cheap to keep rather than something to re-derive if
+anything ever writes here again. So:
 
 - `sanitise_name()` reduces anything to a leaf. Verified against the obvious
   attempts: `../../../etc/passwd` → `passwd.md`, `/etc/shadow` → `shadow.md`,
@@ -813,81 +829,170 @@ to clutter is being able to see it: `ui/outbox_panel.gd` is the third window of
 the same shape as the memory and transcript panels, where every line can be
 deleted on its own.
 
-Two producers, deliberately different in kind:
+**The transcript export** (`ChatLogPanel._on_export`) is now the only producer.
+It involves no model at all, which makes it the one thing in this app that can
+produce a file with the LLM switched off entirely — and it is what made the
+folder testable before any agent existed. Ephemeral turns keep their
+「這則關掉就忘了」 footnote in the Markdown, because a transcript that quietly
+promoted a screen-look reply to a permanent record would break the one promise
+ephemeral turns exist to make.
 
-- **The transcript export** (`ChatLogPanel._on_export`) involves no model at all.
-  It is the only thing in this app that can produce a file with the LLM switched
-  off entirely, which is also what made the folder testable before the agent
-  existed — build that half first. Ephemeral turns keep their
-  「這則關掉就忘了」 footnote in the Markdown, because a transcript that quietly
-  promoted a screen-look reply to a permanent record would break the one promise
-  ephemeral turns exist to make.
-- **`autoload/maker_service.gd`** hands the job to the Codex CLI.
+### The pet as an assistant: it drives a coding-agent CLI
 
-### Why the maker path shells out, and why chat doesn't
+The pet's job is not to be an agent. It is to be the *face* of one: you tell it
+what you want, it hands the work to `claude` or `codex`, and it tells you how it
+went. Everything in this feature follows from that split — a speech bubble
+filling up with tool calls has stopped being a pet, so the bubble gets one line
+and `ui/work_panel.gd` gets everything else.
 
-`codex exec` is the pet's file-making backend and **deliberately not its chat
-backend**. Measured on the Linux box, ChatGPT Plus, `gpt-5.6-sol`:
+Three parts:
 
-| | chat turn | successful file write |
+- `autoload/workspace_service.gd` — the folders the pet may touch, and the whole
+  trust boundary. **It starts empty and nothing is ever inferred into it.** Also
+  owns the git questions, since "what changed" and "is there unsaved work here"
+  are the two things the rest of the feature has to ask.
+- `autoload/work_service.gd` — launches the CLI and tails its progress.
+- `ui/work_panel.gd` — the fourth window of the same shape as the memory,
+  transcript and outbox panels, with the same useful side effect: nothing in it
+  touches the pet window's passthrough mask.
+
+#### Why a real allowlist, and why the level lives per folder
+
+`OutboxService` needed no allowlist because it owns one folder that exists for
+the pet; this points at the user's own projects, where the risk is not clutter
+but their work. The machine this was built on has 85 directories under
+`git_project/`, which is also why the 幫我做事 menu is a **submenu of
+workspaces** rather than an item: "做事" always has a *where*, and picking it up
+front is what stops the pet guessing.
+
+`rejection_reason()` refuses the filesystem root, the home directory itself, and
+**any path with a hidden component** — one rule that covers `~/.ssh`, `~/.gnupg`,
+`~/.config`, `~/.codex` and `~/.claude` at once, and every future one, instead of
+a list of names that rots. It returns a sentence rather than a bool because every
+caller has a person waiting, and a refusal without a reason reads as a broken
+feature.
+
+Two levels, `read` and `edit`, per folder rather than global — a repo can be
+demoted without being removed. There is deliberately no level above `edit`;
+"and may also reach outside the folder" is not on offer.
+
+#### claude vs codex: measured, and not equivalent
+
+| | `codex exec` | `claude -p` |
 |---|---|---|
-| wall clock | 5–6 s | ~9 s |
-| input tokens | ~15.7k | ~31.6k (half cache-hit) |
-| output tokens | 25–36 | ~100 |
+| token-level streaming | **none** (one `item.completed`) | **yes** (`content_block_delta`) |
+| redirected to a file | — | **flushes progressively** |
+| sandbox | **OS-level** (`-s workspace-write`) | none; the agent's own discipline |
+| session resume | — | `--session-id` / `--resume` |
+| spend ceiling | — | `--max-budget-usd` |
 
-Two findings decided the split. **There is no token-level streaming**: `--json`
-emits `thread.started` → `turn.started` → one `item.completed` carrying the whole
-reply → `turn.completed`, and none of the 96 feature flags offers deltas. That
-breaks the three things the bubble depends on — text typing itself out, the mood
-tag arriving in the first few tokens, and `TTSService` speaking sentence by
-sentence. And ~15.7k input tokens per casual line is roughly 14k of agent
-scaffolding on top of the pet's own ~1–2k prompt, buying nothing a chat turn
-uses. Neither cost matters when making a file: it is expected to take a moment,
-and the agent loop is exactly what is being paid for.
+The second row is what made this design possible at all. The no-pipes rule
+`MakerService` established still holds — `FileAccess` reads on a pipe *block*,
+and an undrained pipe stops the child ever exiting — but a regular file that
+grows line by line can be **tailed by byte offset from `_process`**, which never
+blocks. Measured: a 16-second job's stream file grew 21k → 45k in eight visible
+steps. That is `CodexCli`'s device-code trick paying off much harder.
 
-There is still no OAuth here. `codex login` already handled that and
-`~/.codex/auth.json` is the CLI's own file, which nothing in this repo reads —
-the same shape as `SecretStore` shelling out to `security` / `secret-tool` /
-`powershell`. Forging the Codex client id to spend ChatGPT entitlement remains
-out of bounds, as it was before.
+Split lines on the newline **byte**, never on a decoded string: a read can end
+mid-character, and `0x0A` cannot occur inside a UTF-8 sequence, so a byte split
+is the safe one. `_pending` holds the partial last line between polls.
 
-Five things that look like implementation detail and are not:
+The third row is the one to keep in mind before trusting either. Codex genuinely
+confines writes to its `-C` root; Claude Code does not, and a shell command it
+runs can reach anywhere the user can. The consent dialog says exactly that rather
+than promising a containment that isn't there.
 
-- **Never inherit `~/.codex/config.toml`.** It pins whatever model the user last
-  chose for their own work, and a stale one is rejected outright with an error
-  that reads as an account problem — *"not supported when using Codex with a
-  ChatGPT account"* — with no visible connection to the pet. `MakerService.MODEL`
-  is passed with `-m` every time. The id is not guessable either: there is no
-  plain `gpt-5.6`; that generation is `-sol` / `-luna` / `-terra`.
-- **Nothing is piped, and that is what keeps the pet responsive.**
-  `FileAccess.get_line()`/`get_buffer()` on a pipe *block* until a byte arrives,
-  and this agent thinks for seconds at a stretch, so polling one from `_process`
-  would freeze the window; Godot offers no readiness test. Leaving the pipe
-  undrained is worse — once the OS buffer fills the child blocks writing and
-  never exits. So it launches through `/bin/sh -c` with stdout, stderr and stdin
-  all redirected: the closing line comes from `-o`, and what got made is the
-  difference in the outbox listing. Closing **stdin** matters too, because the
-  current CLI reads additional prompt text from stdin even when a prompt argument
-  is given, and would sit waiting on a terminal that never sends EOF.
-- Because it goes through a shell, the request is quoted with
-  `_sh_quote()` — single quotes with any embedded quote closed and reopened, the
-  same discipline `SecretStore._ps_literal()` applies to PowerShell. Paths here
-  contain both spaces (`Godot Pet`) and CJK (`文件`), so this is exercised on
-  every run rather than being a theoretical concern.
-- Windows reports unsupported, like `PresenceService` does and for a comparable
-  reason: the launcher above is `/bin/sh`, and the CLI isn't realistically
-  installed there for this purpose. Disabled in the menu rather than hidden.
-- `_on_make_submitted` makes the pet say something *before* the job starts. The
-  reply lands ten seconds later, and without a line up front the pet just walks
-  off mid-job.
+#### Four things that look like implementation detail and are not
+
+- **`exec` in the launch command is load-bearing.** Without it the pid we keep is
+  the shell's and the agent is its child, so 停下來 killed the shell and left the
+  agent running — orphaned, still spending tokens, still able to write to the
+  repository, its output going to a file nobody was reading. Measured exactly
+  that way, then fixed by `cd … && exec claude …`, which is also verifiable:
+  the agent's parent is now the Godot process itself.
+- **`acceptEdits` does not cover Bash.** The first real run fixed the bug and was
+  then refused when it tried to run the file to check itself —
+  *"This command requires approval"*, to a terminal with nobody at it. An
+  assistant that cannot verify its own work is worth far less than one that can,
+  so `--allowed-tools` is passed explicitly rather than left to the mode to
+  imply. Read-only workspaces instead restrict `--tools` to `Read,Grep,Glob`:
+  enforcement by *capability*, since a job nobody is watching must never be
+  sitting on a question.
+- **The pet's jobs run on the project's configuration, never the user's.**
+  Without `--strict-mcp-config --setting-sources project,local`, a one-line fix
+  loaded whatever the user has installed globally — the measured run called
+  `Skill(superpowers:systematic-debugging)` on a two-line file and cost $0.21;
+  with them it used Read/Edit/Glob/Bash and cost $0.11. Personal hooks and MCP
+  servers are the user's; a pet running errands must not be a way to fire them.
+  The repo's own `CLAUDE.md` still applies, which is what makes the agent useful
+  *in* a project rather than a stranger to it.
+- **What changed comes from git, not from the agent's account of itself** — the
+  same call `MakerService` made when it diffed the outbox rather than trusting
+  `file_change` events. `changes()` drops `--stat`'s trailing summary line, which
+  is a sentence *about* the list rather than a member of it and made a
+  single-file change report as 「改了 2 項」, and adds untracked files by name,
+  which `diff` alone never shows — an agent asked to add a file would otherwise
+  report having changed nothing at all.
+
+#### The guard that protects the level the user chose
+
+Editing in place is the default because it was chosen deliberately, having been
+shown what it means. The one thing standing between that and losing work git
+cannot recover is `_setup_dirty_warning_dialog()`: asked **per job**, not per
+folder, because the answer changes every time, and only where it means something
+— an editable workspace, in a git repo, with something uncommitted in it. It is a
+question with two named outcomes (我先去存 / 就這樣開始) rather than a notice,
+because a warning you cannot act on is noise.
+
+`dirty_count()` counts staged, unstaged and untracked alike: the question being
+asked is "is there work here git cannot get back for you", and an untracked file
+answers yes just as loudly as a modified one.
+
+#### Things the pet has to say, and when
+
+- `_on_work_submitted` speaks *before* the job starts. The result lands minutes
+  later, and without a line up front the pet just walks off mid-job.
+- `_on_work_progress` carries the occasional 還在弄 line, driven off the progress
+  signal rather than a timer of its own — steps arrive continuously, so it needs
+  no new process loop. It is left `unprompted`, unlike everything else in this
+  flow: a "still working" line has nothing worth talking over a reply or an open
+  input, which is exactly the case that guard exists for.
 - **`_on_pet_nudged` takes `unprompted`, and it is a different question from
-  `record`.** The guard at the top of it — refuse while a bubble is up or the
-  input is open — exists so `Nudger` never talks over what the user is doing. A
-  line answering something the user just asked for has to bypass it, and this
-  flow *opens the input itself*, so both the "give me a moment" line and the
-  result ten seconds later were silently swallowed until it did. Other direct
-  responses still routed through the default (餵食, the API-key confirmation, the
-  game score, 好啦那我不看) have the same latent hole.
+  `record`.** A line answering something the user just asked for has to appear
+  even while the input is open — and this flow *opens the input itself*, so
+  everything in it passes `false, false`. Other direct responses still routed
+  through the default (餵食, the API-key confirmation, the game score,
+  好啦那我不看) have the same latent hole.
+
+Cancelling reports the damage. Stopping half way is not the same as nothing
+having happened, and an agent cancelled after rewriting three files that said
+only 「好，我停下來了」 would be the most misleading thing this service could say.
+
+Windows reports unsupported, like `PresenceService` does and for the same kind of
+reason: the launcher is `/bin/sh`, and neither CLI is realistically installed
+there for this purpose. Disabled in the menu rather than hidden.
+
+There is still no OAuth anywhere in this. `codex login` and `claude` each handle
+their own, and `~/.codex/auth.json` is the CLI's own file which nothing in this
+repo reads — the same shape as `SecretStore` shelling out to `security` /
+`secret-tool` / `powershell`. Forging a vendor client id to spend subscription
+entitlement remains out of bounds, as it was before.
+
+**Never inherit `~/.codex/config.toml`.** It pins whatever model the user last
+chose for their own work, and a stale one is rejected outright with an error that
+reads as an account problem — *"not supported when using Codex with a ChatGPT
+account"* — with no visible connection to the pet. `WorkService.CODEX_MODEL` is
+passed with `-m` every time, and the id is not guessable: there is no plain
+`gpt-5.6`; that generation is `-sol` / `-luna` / `-terra`. Claude's is the
+opposite case — `CLAUDE_MODEL` is the alias `sonnet`, because the CLI resolves it
+to the current model and a pinned id silently rots.
+
+Because both go through a shell, the request is quoted with `_sh_quote()` —
+single quotes with any embedded quote closed and reopened, the same discipline
+`SecretStore._ps_literal()` applies to PowerShell. Note the redirection targets
+have to be quoted **whole**: `2>%s.err % _sh_quote(path)` produces
+`2>'/…/stream.jsonl'.err`, which is a different filename the moment the path
+contains anything worth quoting.
 
 ### Logging Codex in, from inside the pet
 
@@ -917,8 +1022,9 @@ failures and only the second one is recoverable by asking.
 
 Four things worth knowing before editing it:
 
-- **The device code is parsed out of a regular file, never a pipe** — same rule
-  as the maker path, and here it is what makes the code reachable at all.
+- **The device code is parsed out of a regular file, never a pipe** — the same
+  rule the work path follows, and here it is what makes the code reachable at
+  all.
 - **The CLI colourises even when stdout is a file**, so the escapes have to be
   stripped before matching. Write that pattern as `\x1b`: Godot's RegEx is
   **PCRE2, which rejects `\u`**, and an invalid pattern is not loud — `sub()`
@@ -927,10 +1033,11 @@ Four things worth knowing before editing it:
 - `is_logged_in()` is cached. `codex login status` costs 60-90ms, which is a
   visible hitch every time the menu is built. Every login attempt drops the
   cache; the only thing it can go stale against is a login made outside the app.
-- Both this and `MakerService` kill their child in `_exit_tree()`.
+- Both this and `WorkService` kill their child in `_exit_tree()`.
   `OS.create_process` children outlive the app, and an abandoned `codex login`
   keeps holding its port, so the next attempt would fail to bind with nothing on
-  screen explaining why.
+  screen explaining why. `WorkService`'s case is worse — see the `exec` note
+  above, without which the pid being killed isn't even the right process.
 
 The login dialog's primary button gets `primary_button_styles`, not the ghost
 treatment. Ghosting it made both routes read as equally optional and the main one

@@ -1,7 +1,7 @@
 extends Node
 
 ## Everything this app knows about the Codex CLI: where the binary is, whether it
-## has an account, and how to give it one. MakerService drives the work; this owns
+## has an account, and how to give it one. WorkService drives the work; this owns
 ## the account.
 ##
 ## **No OAuth is implemented here and no token is ever read.** Both login paths

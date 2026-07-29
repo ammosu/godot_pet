@@ -18,16 +18,17 @@ const DRAG_IMPACT_DURATION := 0.06
 const DRAG_LANDING_DURATION := 0.28
 
 ## Menu ids above these offsets select an installed pet pack / a body size /
-## an LLM backend / a mini-game / a model.
+## an LLM backend / a mini-game / a model / a workspace to go and work in.
 ##
 ## Every test against these in `_on_menu_pressed` is "at or above", so they must
-## be checked highest-first — a model id at 500 also satisfies all four tests
+## be checked highest-first — a workspace id at 600 also satisfies all five tests
 ## below it.
 const PET_ID_BASE := 100
 const SIZE_BASE := 200
 const PROVIDER_BASE := 300
 const GAME_BASE := 400
 const MODEL_BASE := 500
+const WORKSPACE_BASE := 600
 
 ## Multipliers on the display scale. Pixel art prefers integers, but on a 2x
 ## display the odd ones land on a whole physical pixel often enough to look fine.
@@ -57,7 +58,7 @@ const PET_GALLERY_URL := "https://codex-pets.net/"
 
 enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, SPEAK, ROAM, CALIBRATE,
-	RECENTRE, SET_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, MAKE, QUIT,
+	RECENTRE, SET_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, QUIT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -67,12 +68,14 @@ enum MenuId {
 @onready var _menu: PopupMenu = $Menu
 @onready var _consent: ConfirmationDialog = $Consent
 @onready var _presence_consent: ConfirmationDialog = $PresenceConsent
-@onready var _maker_consent: ConfirmationDialog = $MakerConsent
+@onready var _work_consent: ConfirmationDialog = $WorkConsent
+@onready var _dirty_warning: ConfirmationDialog = $DirtyWarning
 @onready var _codex_login: ConfirmationDialog = $CodexLogin
 @onready var _memory: MemoryPanel = $Memory
 @onready var _chat_log: ChatLogPanel = $ChatLog
 @onready var _game: GamePanel = $Game
 @onready var _outbox: OutboxPanel = $Outbox
+@onready var _work: WorkPanel = $Work
 
 var _installed_pets := PackedStringArray()
 ## Submenus, kept between rebuilds — PopupMenu.clear() empties the items but
@@ -99,6 +102,13 @@ var _squash_tween: Tween = null
 ## Set once the user has been told a login is still in flight, so the next click
 ## on the same entry cancels it instead of repeating the message.
 var _login_cancel_armed := false
+## The workspace a job is being set up for, carried across the consent dialog, the
+## uncommitted-work warning and the login prompt — any of which can interrupt the
+## walk from "幫我做事" to a typed request.
+var _pending_space := {}
+## When the pet may next say something while a job runs. Reset per job; the point
+## is one reassuring line every couple of minutes, not a running commentary.
+var _work_chatter_at := 0.0
 
 
 func _ready() -> void:
@@ -114,6 +124,9 @@ func _ready() -> void:
 	_chat_log.conversation_cleared.connect(_on_conversation_cleared)
 	_chat_log.exported.connect(_on_exported)
 	_game.played.connect(_on_game_played)
+	# The panel is where a workspace is added or dropped, and the 幫我做事 submenu
+	# is built off that list.
+	_work.workspaces_changed.connect(_build_menu)
 
 	_brain.state_changed.connect(_on_brain_state)
 	_brain.facing_changed.connect(_visual.set_facing)
@@ -130,9 +143,10 @@ func _ready() -> void:
 
 	_chat.submitted.connect(_on_chat_submitted)
 	_chat.secret_submitted.connect(_on_secret_submitted)
-	_chat.make_submitted.connect(_on_make_submitted)
-	MakerService.finished.connect(_on_made)
-	MakerService.failed.connect(_on_make_failed)
+	_chat.work_submitted.connect(_on_work_submitted)
+	WorkService.finished.connect(_on_work_finished)
+	WorkService.failed.connect(_on_work_failed)
+	WorkService.progress.connect(_on_work_progress)
 	_chat.input_toggled.connect(_on_input_toggled)
 	_chat.bubble_hidden.connect(_on_bubble_hidden)
 	EventBus.reply_chunk.connect(_on_reply_chunk)
@@ -143,7 +157,8 @@ func _ready() -> void:
 	EventBus.screen_look_requested.connect(_on_screen_look_requested)
 	_setup_consent_dialog()
 	_setup_presence_consent_dialog()
-	_setup_maker_consent_dialog()
+	_setup_work_consent_dialog()
+	_setup_dirty_warning_dialog()
 	_setup_codex_login_dialog()
 	CodexCli.login_finished.connect(_on_codex_login_finished)
 	CodexCli.login_hint.connect(_on_codex_login_hint)
@@ -429,11 +444,42 @@ func _on_input_toggled(open: bool) -> void:
 func _on_files_dropped_on_window(files: PackedStringArray, at: Vector2) -> void:
 	if files.is_empty() or not _pet_box.has_point(at):
 		return
+	# A dropped *folder* is not something to read out, it is somewhere to work.
+	# FileDropService's own answer to one is 「你應該打不開」, which was true when
+	# reading files was all the pet could do with a path.
+	if DirAccess.dir_exists_absolute(files[0].replace("\\", "/")):
+		_offer_workspace(files[0])
+		return
 	# One turn at a time, same as typing — extra files in the same drop are
 	# silently ignored rather than queued or concatenated.
 	_chat.begin_reply()
 	_brain.on_talk_started()
 	FileDropService.handle_drop(files[0])
+
+
+## Dropping a folder on the pet is the shortest path from "I want help with this
+## project" to the pet being allowed to touch it, so it adds the workspace
+## outright rather than opening a dialog about it — adding one changes nothing on
+## its own, and the level it lands at is visible and reversible in the panel.
+##
+## The refusals still have to be spoken. WorkspaceService turns down a hidden
+## folder or the whole home directory for good reasons, and a drop that silently
+## did nothing would read as the pet failing to notice.
+func _offer_workspace(path: String) -> void:
+	var reason := WorkspaceService.add(path)
+	if not reason.is_empty():
+		_on_pet_nudged("sad", reason, false, false)
+		return
+	var space := WorkspaceService.get_space(path)
+	_build_menu()
+	_work.refresh_if_open()
+	_on_pet_nudged("excited", "好，「%s」我記下來了，你要我在裡面做什麼？"
+		% str(space.get("name", "")), false, false)
+	# Through _begin_work, never straight to the input. Going direct skipped every
+	# gate at once — the consent dialog, the busy check, the Codex login prompt and
+	# the uncommitted-work warning — which made dropping a folder the one way to
+	# reach an agent without ever being asked.
+	_begin_work(space)
 
 
 func _on_chat_submitted(text: String) -> void:
@@ -544,11 +590,14 @@ func _build_menu() -> void:
 	_menu.add_submenu_node_item("遊戲", _build_games_menu())
 	_menu.add_item("看一下我的螢幕…", MenuId.LOOK)
 	_menu.set_item_disabled(_menu.get_item_index(MenuId.LOOK), not VisionService.is_supported())
-	_menu.add_item("幫我做個東西…", MenuId.MAKE)
+	# A submenu rather than an item, because "做事" always has a *where*, and
+	# picking it up front is what keeps the pet from having to guess between
+	# however many projects the user keeps.
+	_menu.add_submenu_node_item("幫我做事", _build_work_menu())
 	# Disabled rather than hidden: an entry that vanishes on a machine without the
 	# CLI is a feature nobody discovers exists, the same call the 依你的節奏搭話
 	# row makes where PresenceService reports unsupported.
-	_menu.set_item_disabled(_menu.get_item_index(MenuId.MAKE), not MakerService.is_supported())
+	_menu.set_item_disabled(_menu.get_item_count() - 1, not WorkService.is_supported())
 	_menu.add_item("回到角落", MenuId.RECENTRE)
 	# Above 記憶與資料 because it is the shallower of the two: this one is what
 	# we just said, that one is what the pet has kept.
@@ -557,6 +606,8 @@ func _build_menu() -> void:
 	# Third of the same kind: a window listing something the pet holds, where each
 	# line can be dropped on its own.
 	_menu.add_item("我做的東西…", MenuId.OUTBOX)
+	# Fourth, and the only one that also shows something happening *now*.
+	_menu.add_item("工作…", MenuId.WORK)
 
 	_menu.add_separator()
 	_menu.add_item("結束", MenuId.QUIT)
@@ -652,6 +703,32 @@ func _build_behaviour_menu(current: PetPack) -> PopupMenu:
 	return menu
 
 
+## The folders the pet may work in, straight off WorkspaceService — so this menu
+## is the allowlist and can't drift from it.
+##
+## An empty list is the normal first-run state, not an error: nothing is added
+## until the user adds it. So the submenu explains itself rather than being
+## disabled, and offers the way in.
+func _build_work_menu() -> PopupMenu:
+	var menu := _submenu("Work")
+	var spaces := WorkspaceService.list()
+	for i in spaces.size():
+		var space := spaces[i]
+		menu.add_item("在 %s…" % str(space["name"]), WORKSPACE_BASE + i)
+		var index := menu.get_item_index(WORKSPACE_BASE + i)
+		# The level belongs on the row that starts the job, since it is the single
+		# most important thing about what is about to happen.
+		menu.set_item_tooltip(index, "%s ・ %s"
+			% [str(space["path"]), WorkspaceService.level_label(str(space["level"]))])
+		menu.set_item_disabled(index, not bool(space["exists"]))
+	if spaces.is_empty():
+		menu.add_separator("還沒指定我可以動的資料夾")
+	menu.add_separator()
+	menu.add_item("加一個資料夾…", MenuId.ADD_SPACE)
+	_index_items(menu)
+	return menu
+
+
 ## Ids come off GAME_BASE rather than the enum, so the list is whatever
 ## GamePanel says it is — adding a fourth game touches no code here at all.
 func _build_games_menu() -> PopupMenu:
@@ -693,6 +770,12 @@ func _open_menu() -> void:
 func _on_menu_pressed(id: int) -> void:
 	# Highest base first: every one of these tests is "at or above", so a game id
 	# at 400 also satisfies the provider test at 300.
+	if id >= WORKSPACE_BASE:
+		var spaces := WorkspaceService.list()
+		var index := id - WORKSPACE_BASE
+		if index < spaces.size():
+			_begin_work(spaces[index])
+		return
 	if id >= MODEL_BASE:
 		LLMService.select_model(str(LLMService.list_models()[id - MODEL_BASE]["id"]))
 		# The provider row shows the model name too, so both rows need redrawing.
@@ -736,8 +819,11 @@ func _on_menu_pressed(id: int) -> void:
 			_ask_for_api_key()
 		MenuId.LOOK:
 			EventBus.screen_look_requested.emit(VisionService.DEFAULT_QUESTION, true)
-		MenuId.MAKE:
-			_ask_what_to_make()
+		MenuId.WORK:
+			_work.open(_window_ctl.get_ui_scale())
+		MenuId.ADD_SPACE:
+			_work.open(_window_ctl.get_ui_scale())
+			_work.pick_folder()
 		MenuId.CHAT_LOG:
 			_chat_log.open(_window_ctl.get_ui_scale())
 		MenuId.MEMORY:
@@ -916,48 +1002,113 @@ func _toggle_presence() -> void:
 		_presence_consent.popup_centered()
 
 
-# --- Making things ------------------------------------------------------------
+# --- Doing work ---------------------------------------------------------------
 
 ## The third consent shape in this app, and the questions are different again.
 ## A screenshot's are how much, to whom, how long. A background poll's are what is
-## sampled and where it goes. This one's are: where does the file land, can it
-## overwrite something of mine, and can I take it back — answered by one visible
-## folder, no, and yes.
+## sampled and where it goes. This one's are the ones a folder full of your own
+## work raises: which folder, what can it change in there, and can I stop it.
 ##
-## Which is also why there is no per-file dialog after this one: a write into a
-## folder that exists for it sends nothing anywhere and destroys nothing, so the
-## standing answer is the only one worth asking for.
-func _setup_maker_consent_dialog() -> void:
+## Note what this dialog does *not* promise. The screen-look one can say "只有這
+## 一次"; this one cannot, because an agent editing files is exactly the thing that
+## has to be allowed to write. So the honest answer is the allowlist itself —
+## nothing is touched but the folder you named — plus a stop button that works.
+func _setup_work_consent_dialog() -> void:
 	var scale := _window_ctl.get_ui_scale()
-	_maker_consent.dialog_text = "\n".join(PackedStringArray([
-		"你可以叫我做東西 —— 一張筆記、一份清單、一張簡單的圖。我會請 Codex 幫忙，用你已經登入的那個帳號。",
+	_work_consent.dialog_text = "\n".join(PackedStringArray([
+		"你可以叫我做事，我會請 %s 實際動手，用你已經登入的那個帳號。"
+			% WorkService.runner_label(WorkService.runner()),
 		"",
-		"・做出來的檔案只會放進「%s」" % OutboxService.folder_path(),
-		"・我不會蓋掉已經在裡面的檔案，同名就另外取一個",
-		"・只會做 md、txt、csv、json、svg 這幾種，不會產生可以執行的東西",
-		"・每一個檔案都能在「我做的東西」裡單獨刪掉",
-		"・這會用掉你的 ChatGPT 額度，一次大概十秒",
+		"・我只在你指定的資料夾裡開工，一次一個，你沒加的資料夾我看不到",
+		"・標成「可以改」的，它會真的改檔案、也會執行指令來驗證自己做對了",
+		"・執行指令這件事，Codex 有系統層級的沙箱擋住資料夾以外；Claude Code 沒有，靠的是它自己守規矩",
+		"・改壞了要靠版本控制救，所以資料夾裡有沒存的東西我會先提醒你",
+		"・每個資料夾都能單獨改成「只能看」，那樣它連寫入和執行的工具都沒有",
+		"・做到一半隨時可以在「工作」視窗按停下來，做完我會告訴你哪些檔案動過",
+		"・這會用掉你的訂閱或 API 額度，一次可能要好幾分鐘",
 	]))
-	_maker_consent.exclusive = false
-	_maker_consent.theme = PetStyle.dialog_theme(scale)
-	_maker_consent.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	PetStyle.make_ghost_button(_maker_consent.get_ok_button(), scale)
-	_maker_consent.confirmed.connect(_on_maker_consent_confirmed)
+	_work_consent.exclusive = false
+	_work_consent.theme = PetStyle.dialog_theme(scale)
+	_work_consent.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PetStyle.make_ghost_button(_work_consent.get_ok_button(), scale)
+	_work_consent.confirmed.connect(_on_work_consent_confirmed)
 
 
-func _on_maker_consent_confirmed() -> void:
-	MakerService.grant_consent()
-	_ask_what_to_make()
+## The one guard that stands between the level the user chose — edit in place —
+## and losing work git can't get back. Deliberately a question, not a notice: a
+## warning you can't act on is noise, and this one has an obvious action.
+##
+## Per job rather than per folder, because the answer changes every time. It is
+## only asked where it means something: an editable workspace, in a git repo, with
+## something uncommitted in it.
+func _setup_dirty_warning_dialog() -> void:
+	var scale := _window_ctl.get_ui_scale()
+	_dirty_warning.exclusive = false
+	_dirty_warning.theme = PetStyle.dialog_theme(scale)
+	_dirty_warning.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PetStyle.make_ghost_button(_dirty_warning.get_ok_button(), scale)
+	_dirty_warning.confirmed.connect(_on_dirty_warning_confirmed)
+	_dirty_warning.canceled.connect(func() -> void: _pending_space = {})
 
 
-func _ask_what_to_make() -> void:
-	if not MakerService.has_consented():
-		_maker_consent.reset_size()
-		_maker_consent.popup_centered()
+func _on_work_consent_confirmed() -> void:
+	WorkService.grant_consent()
+	_begin_work(_pending_space)
+
+
+func _on_dirty_warning_confirmed() -> void:
+	var space := _pending_space
+	_pending_space = {}
+	if not space.is_empty():
+		_open_work_input(space)
+
+
+## The walk from picking a folder to typing a request. Every step that can
+## interrupt it stashes the workspace in `_pending_space` and comes back here.
+func _begin_work(space: Dictionary) -> void:
+	if space.is_empty():
 		return
-	if MakerService.is_busy():
-		_on_pet_nudged("neutral", "我還在做上一個啦，等我一下。", false, false)
+	_pending_space = space
+
+	if not WorkService.has_consented():
+		_work_consent.reset_size()
+		_work_consent.popup_centered()
 		return
+	if WorkService.is_busy():
+		_on_pet_nudged("neutral", "我還在做上一件事啦，等我弄完。", false, false)
+		return
+
+	# Only the codex runner needs an account of its own; claude carries its own
+	# login and is either working or not.
+	if WorkService.runner() == WorkService.RUNNER_CODEX and not _codex_ready():
+		return
+
+	var path := str(space.get("path", ""))
+	var editable := str(space.get("level", "")) == WorkspaceService.LEVEL_EDIT
+	if editable:
+		var dirty := WorkspaceService.dirty_count(path)
+		if dirty > 0:
+			_dirty_warning.title = "%s 還有沒存進版本控制的東西" % str(space.get("name", ""))
+			_dirty_warning.dialog_text = "\n".join(PackedStringArray([
+				"「%s」裡有 %d 個檔案改了還沒 commit。" % [str(space.get("name", "")), dirty],
+				"",
+				"我等一下會直接改這個資料夾裡的檔案。萬一改壞了，已經 commit 的東西 git 救得回來，這 %d 個救不回來。" % dirty,
+				"",
+				"要先去存一下，還是就這樣開始？",
+			]))
+			_dirty_warning.ok_button_text = "就這樣開始"
+			_dirty_warning.cancel_button_text = "我先去存"
+			_dirty_warning.reset_size()
+			_dirty_warning.popup_centered()
+			return
+
+	_pending_space = {}
+	_open_work_input(space)
+
+
+## Returns false when a login is in the way and has been dealt with — the caller
+## stops, and whatever the user does next comes back through _on_codex_login_*.
+func _codex_ready() -> bool:
 	if CodexCli.is_logging_in():
 		# The armed-button idiom the panels already use, in the only place a menu
 		# entry can hold it: told once, and acted on the second time. Without this
@@ -966,16 +1117,23 @@ func _ask_what_to_make() -> void:
 		if not _login_cancel_armed:
 			_login_cancel_armed = true
 			_on_pet_nudged("neutral", "還在等你登入喔。再點一次就取消。", false, false)
-			return
+			return false
 		CodexCli.cancel_browser_login()
-		return
+		return false
 	# Having the CLI is checked when the menu is built; having an *account* is
 	# recoverable, so it is asked about here rather than disabling the entry.
 	if not CodexCli.is_logged_in():
 		_codex_login.reset_size()
 		_codex_login.popup_centered()
-		return
-	_chat.ask_what_to_make("要我做什麼？Enter 送出")
+		return false
+	return true
+
+
+func _open_work_input(space: Dictionary) -> void:
+	_pending_space = space
+	var suffix := "" if str(space.get("level", "")) == WorkspaceService.LEVEL_EDIT \
+		else "（只能看）"
+	_chat.ask_what_to_do("要我在 %s 做什麼？%s" % [str(space.get("name", "")), suffix])
 
 
 # --- Codex login --------------------------------------------------------------
@@ -1039,7 +1197,7 @@ func _start_browser_login() -> void:
 func _login_with_stored_key() -> void:
 	if CodexCli.login_with_api_key(Config.get_secret(OPENAI_KEY)):
 		_on_pet_nudged("happy", "用你的 API key 登好了，那我開始做。", false, false)
-		_ask_what_to_make()
+		_begin_work(_pending_space)
 		return
 	_on_pet_nudged("sad", "那把 key 好像不能用來登入 Codex，要不要改用瀏覽器？", false, false)
 
@@ -1054,42 +1212,75 @@ func _on_codex_login_finished(ok: bool, message: String) -> void:
 	if ok:
 		# Straight on to the thing they actually asked for. The line above stays
 		# in the bubble; opening the input doesn't clear it.
-		_ask_what_to_make()
+		_begin_work(_pending_space)
 
 
-func _on_make_submitted(text: String) -> void:
-	if not MakerService.make(text):
-		_on_pet_nudged("sad", "咦，我叫不動 codex 欸。", false, false)
+func _on_work_submitted(text: String) -> void:
+	var space := _pending_space
+	_pending_space = {}
+	if space.is_empty():
 		return
+	if not WorkService.start(space, text):
+		_on_pet_nudged("sad", "咦，我叫不動 %s 欸。"
+			% WorkService.runner_label(WorkService.runner()), false, false)
+		return
+	_work_chatter_at = WORK_CHATTER_EVERY
 	# The brain would otherwise wander off mid-job, and the line below arrives
-	# ten seconds later with the pet somewhere else entirely.
-	_on_pet_nudged("excited", "好，我去做，等我一下下。", false, false)
+	# minutes later with the pet somewhere else entirely.
+	_on_pet_nudged("excited", "好，我去弄，可能要一下子。", false, false)
+
+
+## How long between the pet mentioning that it is still working. Long enough that
+## it reads as company rather than as a progress bar with a voice.
+const WORK_CHATTER_EVERY := 120.0
+
+const WORK_CHATTER := [
+	"還在弄，別急。",
+	"這個有點麻煩欸，再等我一下。",
+	"快了快了。",
+]
+
+
+## Driven off the progress signal rather than a timer of its own: steps arrive
+## continuously while a job runs, so this needs no new process loop.
+##
+## Left `unprompted`, unlike everything else in this flow — a "still working" line
+## has nothing to say that is worth talking over a reply or an open input, which is
+## exactly the case the guard in _on_pet_nudged exists for.
+func _on_work_progress(_entry: Dictionary) -> void:
+	var job := WorkService.current()
+	if job.is_empty():
+		return
+	var seconds := float(job["seconds"])
+	if seconds < _work_chatter_at:
+		return
+	_work_chatter_at = seconds + WORK_CHATTER_EVERY
+	_on_pet_nudged("neutral", WORK_CHATTER[randi() % WORK_CHATTER.size()], false)
 
 
 ## Not recorded, for the same reason the export line isn't: this is the pet
 ## narrating an action rather than answering anything, and a history whose newest
 ## turn is that would be re-sent with the next real question for nothing.
-func _on_made(files: PackedStringArray, message: String) -> void:
-	var line := message if not message.is_empty() else "做好了！"
-	# The agent is asked to say what it did, and it almost always names the file
-	# itself — appending the list unconditionally produced 「…裝在「冷笑話.txt」
-	# 裡囉！（冷笑話.txt）」. So it is only added when the line doesn't already
-	# carry it, which in practice means the fallback above.
-	if not files.is_empty() and not _mentions_any(line, files):
-		line += "（%s）" % ", ".join(files)
-	_on_pet_nudged("happy", line, false, false)
+##
+## What changed comes from git, not from the agent's own account of itself. An
+## agent that believes it edited a file and didn't is a real failure mode, and the
+## working tree is the truth either way.
+func _on_work_finished(result: Dictionary) -> void:
+	var line := str(result.get("message", ""))
+	if line.is_empty():
+		line = "弄完了！"
+	var changes: PackedStringArray = result.get("changes", PackedStringArray())
+	if changes.is_empty():
+		line += "（沒有動到檔案）"
+	else:
+		line += "（動了 %d 個檔案，詳細在「工作」裡）" % changes.size()
+	_on_pet_nudged("happy" if bool(result.get("ok", false)) else "sad", line, false, false)
+	_work.refresh_if_open()
 
 
-func _mentions_any(line: String, files: PackedStringArray) -> bool:
-	for name in files:
-		if line.contains(name):
-			return true
-	return false
-	_outbox.refresh_if_open()
-
-
-func _on_make_failed(reason: String) -> void:
+func _on_work_failed(reason: String) -> void:
 	_on_pet_nudged("sad", reason, false, false)
+	_work.refresh_if_open()
 
 
 ## Memory that can't be inspected is memory you can't trust, and a pet quietly
@@ -1121,6 +1312,9 @@ func _on_exported(file_name: String) -> void:
 		_on_pet_nudged("sad", "欸，寫不出來……資料夾可能沒權限。", false, false)
 		return
 	_on_pet_nudged("happy", "寫好了！叫「%s」，在「我做的東西」裡面。" % file_name, false, false)
+	# The panel can be open while the transcript window exports into it. This used
+	# to sit after a `return` in a helper, so it never ran at all.
+	_outbox.refresh_if_open()
 
 
 func _feed() -> void:

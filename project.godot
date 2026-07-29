@@ -26,7 +26,8 @@ PresenceService="*res://autoload/presence_service.gd"
 FileDropService="*res://autoload/file_drop_service.gd"
 OutboxService="*res://autoload/outbox_service.gd"
 CodexCli="*res://autoload/codex_cli.gd"
-MakerService="*res://autoload/maker_service.gd"
+WorkspaceService="*res://autoload/workspace_service.gd"
+WorkService="*res://autoload/work_service.gd"
 
 [audio]
 

@@ -11,19 +11,19 @@ class_name ChatPanel
 signal submitted(text: String)
 ## A value typed into the masked input — a key, not something to say.
 signal secret_submitted(text: String)
-## A request for the pet to make something, which goes to MakerService rather
-## than into the conversation.
-signal make_submitted(text: String)
+## A job for the pet to hand to a coding-agent CLI, which goes to WorkService
+## rather than into the conversation.
+signal work_submitted(text: String)
 signal input_toggled(open: bool)
 ## The line finished being read and faded away.
 signal bubble_hidden
 
 const CHAT_PLACEHOLDER := "跟我說說話…"
 
-## MAKE is unmasked and styled like chat — the only thing separating it is the
+## WORK is unmasked and styled like chat — the only thing separating it is the
 ## placeholder and where the text is sent, which is what `secret` is checked for
 ## rather than the mode itself.
-enum InputMode { CHAT, SECRET, MAKE }
+enum InputMode { CHAT, SECRET, WORK }
 
 ## Design-unit sizes; everything is multiplied by the display scale.
 const BUBBLE_MAX_WIDTH := 300.0
@@ -461,11 +461,12 @@ func ask_for_secret(placeholder: String) -> void:
 		set_input_open(true)
 
 
-## Open the input for a "make me something" request. Reverts to chat on submit or
+## Open the input for a "go and do this" request. Reverts to chat on submit or
 ## dismissal for the same reason ask_for_secret does — a field that quietly stayed
-## in a special mode would send the next ordinary sentence somewhere surprising.
-func ask_what_to_make(placeholder: String) -> void:
-	_set_input_mode(InputMode.MAKE, placeholder)
+## in a special mode would send the next ordinary sentence somewhere surprising,
+## and here "somewhere surprising" is an agent loose in a repository.
+func ask_what_to_do(placeholder: String) -> void:
+	_set_input_mode(InputMode.WORK, placeholder)
 	if _input.visible:
 		_input.grab_focus()
 	else:
@@ -574,9 +575,9 @@ func _on_submitted(text: String) -> void:
 	if _input_mode == InputMode.SECRET:
 		_set_input_mode(InputMode.CHAT)
 		secret_submitted.emit(trimmed)
-	elif _input_mode == InputMode.MAKE:
+	elif _input_mode == InputMode.WORK:
 		_set_input_mode(InputMode.CHAT)
-		make_submitted.emit(trimmed)
+		work_submitted.emit(trimmed)
 	else:
 		submitted.emit(trimmed)
 
