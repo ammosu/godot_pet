@@ -257,14 +257,40 @@ func _add_row(message: Dictionary) -> void:
 		PetStyle.chat_log_bubble_style(_scale, mine))
 	column.add_child(bubble)
 
-	var label := Label.new()
+	# A RichTextLabel rather than a Label purely so the text can be selected —
+	# Godot's Label has no selection at all, and a transcript you cannot copy a
+	# line out of is only half a transcript.
+	var label := RichTextLabel.new()
+	# **BBCode stays off.** These strings are whatever the user typed and whatever
+	# the model wrote, and a dropped file's contents come through here too. With
+	# parsing on, a stray "[b]" would silently restyle the rest of the message and
+	# an unclosed one could eat it — the text has to be shown, not interpreted.
+	label.bbcode_enabled = false
 	label.text = text
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	label.add_theme_color_override("font_color", PetStyle.chat_log_text_color(mine))
-	label.add_theme_font_size_override("font_size", roundi(14.0 * _scale))
+	label.selection_enabled = true
+	# The right-click 複製 entry, which works without the label having to hold
+	# focus first — the reliable half of copying.
+	label.context_menu_enabled = true
+	# Ctrl+C only reaches a control that holds focus, and RichTextLabel already
+	# takes it — but the default is FOCUS_ALL, which makes every bubble a tab
+	# stop, so Tab walks the whole transcript one message at a time. FOCUS_CLICK
+	# keeps the copy shortcut working and drops the keyboard nav nobody wants.
+	label.focus_mode = Control.FOCUS_CLICK
+	# It lives inside a ScrollContainer, so it must grow to its content rather
+	# than scroll within itself — otherwise every bubble becomes its own little
+	# scrolling box.
+	label.fit_content = true
+	label.scroll_active = false
+	# RichTextLabel names these differently from Label: default_color rather than
+	# font_color, normal_font_size rather than font_size, line_separation rather
+	# than line_spacing. Getting one wrong is silent — the override simply never
+	# applies — which is why these match ChatPanel's bubble exactly.
+	label.add_theme_color_override("default_color", PetStyle.chat_log_text_color(mine))
+	label.add_theme_font_size_override("normal_font_size", roundi(14.0 * _scale))
 	# Chinese sits in a solid block without it — the same reason the speech
 	# bubble opens its lines up.
-	label.add_theme_constant_override("line_spacing", roundi(4.0 * _scale))
+	label.add_theme_constant_override("line_separation", roundi(4.0 * _scale))
 	bubble.add_child(label)
 	# Only once it is in the tree: the width is measured off the theme's font,
 	# and the theme is the window's.
@@ -290,12 +316,15 @@ func _add_row(message: Dictionary) -> void:
 ## Measured off the font rather than off the laid-out label, the same way the
 ## speech bubble does it: asking the label would feed its own width back into
 ## the answer.
-func _measure(label: Label, text: String) -> float:
+func _measure(label: RichTextLabel, text: String) -> float:
 	var limit := _bubble_limit() - PetStyle.LOG_BUBBLE_PADDING * 2.0 * _scale
-	var font := label.get_theme_font("font")
+	# "normal_font", not "font" — a RichTextLabel has no theme item by that name,
+	# so the old lookup would return null here and hand back the full limit,
+	# making every bubble as wide as the panel allows.
+	var font := label.get_theme_font("normal_font")
 	if font == null:
 		return limit
-	var font_size := label.get_theme_font_size("font_size")
+	var font_size := label.get_theme_font_size("normal_font_size")
 	var wrapped := font.get_multiline_string_size(
 		text, HORIZONTAL_ALIGNMENT_LEFT, limit, font_size)
 	# A hair of slack: landing exactly on the measured width wraps the last

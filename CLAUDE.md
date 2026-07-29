@@ -489,6 +489,40 @@ keeping a copy, and both are real OS windows — subwindow embedding is off
 project-wide. A useful side effect: neither touches the pet window's passthrough
 mask, so the Windows "the mask clips rendering" rule below doesn't reach them.
 
+The transcript's bubbles are `RichTextLabel`, not `Label`, for one reason:
+**Godot's `Label` has no text selection at all**, and a transcript you cannot copy
+a line out of is only half a transcript. Four things that swap forces, none of
+which announce themselves when wrong:
+
+- **BBCode stays off.** These strings are whatever the user typed and whatever the
+  model wrote, and a dropped file's contents arrive here too. With parsing on a
+  stray `[b]` silently restyles the rest of the message and an unclosed one can
+  eat it. Verified with a real 「[ERROR] Traceback…」 turn, which renders literally.
+- **The theme item names differ from `Label`'s** — `default_color` not
+  `font_color`, `normal_font_size` not `font_size`, `line_separation` not
+  `line_spacing` — and a wrong override name is *silent*: it simply never
+  applies. These match `ChatPanel`'s bubble exactly, which is the working
+  reference.
+- `_measure()` looks up `"normal_font"`, not `"font"`. A `RichTextLabel` has no
+  theme font by the latter name, so the old lookup would return null, take the
+  early return, and hand back the full limit — making every bubble as wide as the
+  panel allows and losing the only thing that says who spoke.
+- `fit_content = true` with `scroll_active = false`, because it lives inside a
+  `ScrollContainer`; left alone, every bubble becomes its own little scrolling
+  box.
+
+Copying works two ways. `context_menu_enabled` gives the right-click 複製, which
+needs no focus at all. Ctrl+C needs focus, which `RichTextLabel` already takes —
+but its default is `FOCUS_ALL`, making every bubble a tab stop so Tab walks the
+transcript one message at a time; `FOCUS_CLICK` keeps the shortcut and drops the
+navigation. Selection cannot cross bubbles, since each is its own control, so
+whole-transcript copying stays 存成檔案's job.
+
+Measured on the isolated display: dragging selects across wrapped lines, the
+highlight is legible on **both** bubble styles (light paper and the dark
+persimmon one), and Ctrl+C followed by Ctrl+V into the pet's own chat input
+returns exactly the highlighted span.
+
 Clearing the transcript drops the verbatim turns and **keeps the summary and the
 facts** — forget what we were just talking about, not who you are. Wiping both is
 still 全部忘掉, one window along. Two things this forces:
