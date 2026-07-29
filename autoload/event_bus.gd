@@ -67,3 +67,10 @@ signal file_content_said(text: String)
 ## Nothing carried here may be logged or written to disk; see
 ## PresenceService for the consent gate.
 signal presence_sampled(app_name: String, seconds_in_app: float)
+
+# --- Work ---
+## The model decided the user is asking for something to be *done* in one of the
+## pet's workspaces rather than answered in the bubble. `space_name` is whatever
+## the model named, empty when it didn't (which is fine when there is only one).
+## pet.gd owns what happens next — nothing launches from here.
+signal work_requested(space_name: String, request: String)

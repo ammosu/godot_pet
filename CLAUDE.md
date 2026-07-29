@@ -934,6 +934,51 @@ than promising a containment that isn't there.
   which `diff` alone never shows — an agent asked to add a file would otherwise
   report having changed nothing at all.
 
+#### Two triggers, because the menu alone left it unreachable
+
+The menu is a three-level walk (幫我做事 → a workspace → type). That is the right
+shape when you know what you want, and it is useless when you just say the thing.
+Asked 「這個專案在做什麼？stats.py 裡有沒有寫錯的地方？」 in ordinary chat, the pet
+had **no path to the workspace at all**: `persona.md` told it flatly
+「你看不到使用者電腦上的檔案」, so it reached for `[look]` instead, screenshotted
+the desktop, and reported it couldn't see the file. Measured, on the user's own
+first attempt.
+
+So `[work]` joins `[look]` in the mood-tag slot, the same two-trigger shape the
+screen look already proves. Three things this forces:
+
+- **The workspace list is built per request** (`LLMService._work_block()`), never
+  written into `prompts/persona.md`. Folders are added and removed while the app
+  runs, and a persona loaded once at startup goes stale the moment they are. The
+  block is empty when there is nothing to work in, so the persona's flat denial
+  stands unmodified on a fresh install — it only became *untrue* once a workspace
+  existed.
+- **The tag carries the folder**, as `[work:名字]`, because an unnamed tag is only
+  unambiguous when there is exactly one. `_resolve_space()` falls back to
+  containment matching, since a model paraphrases a name it half-remembers.
+- **Nothing launches from the tag.** Unlike a screenshot, this spends money and
+  can edit files, so `pet.gd` puts it to the user first — quoting what they said
+  and naming the folder and its level, because that dialog is the only place they
+  can see what the model concluded before it acts. Accepting goes through
+  `_begin_work`, so consent, the busy check, the login prompt and the
+  uncommitted-work warning all still apply: a second way in, not a way around.
+
+Measured after the change, `gpt-5.4-mini`, 6/6: all three workspace questions
+produced `[work:pet-playground]`, a screen question still produced `[look]`, and
+ordinary chat still produced a mood tag. The two triggers do not fight.
+
+Backing out of a job has to answer the question anyway — the same repair
+`answer_without_looking()` makes, and for the same reason. `_work_declined` and
+cutting the 做事 section for that one turn are both needed: the persona tells the
+model to answer such a request with nothing but the tag, and a small model
+follows the character sheet over an appended footnote. That is exactly how the
+`[look]` refusal path once ended up saying nothing at all.
+
+`_abandon_pending_work()` is the single exit for every refusal. Besides speaking,
+it clears `_pending_space` — or a later menu-driven job inherits it — and
+`_queued_request`, or the next folder the user picks silently runs the sentence
+they just abandoned.
+
 #### The guard that protects the level the user chose
 
 Editing in place is the default because it was chosen deliberately, having been

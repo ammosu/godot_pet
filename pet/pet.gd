@@ -69,6 +69,7 @@ enum MenuId {
 @onready var _consent: ConfirmationDialog = $Consent
 @onready var _presence_consent: ConfirmationDialog = $PresenceConsent
 @onready var _work_consent: ConfirmationDialog = $WorkConsent
+@onready var _work_offer: ConfirmationDialog = $WorkOffer
 @onready var _dirty_warning: ConfirmationDialog = $DirtyWarning
 @onready var _codex_login: ConfirmationDialog = $CodexLogin
 @onready var _memory: MemoryPanel = $Memory
@@ -109,6 +110,11 @@ var _pending_space := {}
 ## When the pet may next say something while a job runs. Reset per job; the point
 ## is one reassuring line every couple of minutes, not a running commentary.
 var _work_chatter_at := 0.0
+## A job the model proposed, held while the user decides.
+var _pending_work := {}
+## A request the user has already typed, so the walk through _begin_work's gates
+## ends by starting the job rather than asking them to type it a second time.
+var _queued_request := ""
 
 
 func _ready() -> void:
@@ -155,9 +161,11 @@ func _ready() -> void:
 	EventBus.emotion_changed.connect(_on_emotion_changed)
 	EventBus.pet_nudged.connect(_on_pet_nudged)
 	EventBus.screen_look_requested.connect(_on_screen_look_requested)
+	EventBus.work_requested.connect(_on_work_requested)
 	_setup_consent_dialog()
 	_setup_presence_consent_dialog()
 	_setup_work_consent_dialog()
+	_setup_work_offer_dialog()
 	_setup_dirty_warning_dialog()
 	_setup_codex_login_dialog()
 	CodexCli.login_finished.connect(_on_codex_login_finished)
@@ -1032,6 +1040,11 @@ func _setup_work_consent_dialog() -> void:
 	_work_consent.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	PetStyle.make_ghost_button(_work_consent.get_ok_button(), scale)
 	_work_consent.confirmed.connect(_on_work_consent_confirmed)
+	# Declining used to do nothing at all — no line, and `_pending_space` left
+	# set. The pet went quiet, the input stayed in chat mode, and the next thing
+	# the user typed became an ordinary conversation turn with no sign that the
+	# job had been dropped. That is exactly how this feature looked broken.
+	_work_consent.canceled.connect(_abandon_pending_work.bind("好，那我不動你的資料夾。"))
 
 
 ## The one guard that stands between the level the user chose — edit in place —
@@ -1048,7 +1061,22 @@ func _setup_dirty_warning_dialog() -> void:
 	_dirty_warning.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	PetStyle.make_ghost_button(_dirty_warning.get_ok_button(), scale)
 	_dirty_warning.confirmed.connect(_on_dirty_warning_confirmed)
-	_dirty_warning.canceled.connect(func() -> void: _pending_space = {})
+	_dirty_warning.canceled.connect(
+		_abandon_pending_work.bind("好，那你先去存，弄好再叫我。"))
+
+
+## Every way of backing out of a job, in one place. Two things have to happen
+## besides saying so: the stashed workspace goes, or a later menu-driven job
+## inherits it, and a request queued from chat goes with it — otherwise the next
+## folder the user picks silently runs the sentence they abandoned.
+func _abandon_pending_work(line: String) -> void:
+	var was_typed := not _queued_request.is_empty()
+	_pending_space = {}
+	_queued_request = ""
+	_on_pet_nudged("neutral", line, false, false)
+	if was_typed:
+		# Their question is still in history unanswered. Answer it in words.
+		LLMService.answer_without_working()
 
 
 func _on_work_consent_confirmed() -> void:
@@ -1129,11 +1157,102 @@ func _codex_ready() -> bool:
 	return true
 
 
+## The end of every route in. When the request is already known — the model
+## proposed it and the user agreed — start straight away; making them retype what
+## they just typed is the one thing that would make the chat trigger pointless.
 func _open_work_input(space: Dictionary) -> void:
 	_pending_space = space
+	if not _queued_request.is_empty():
+		var request := _queued_request
+		_queued_request = ""
+		_on_work_submitted(request)
+		return
 	var suffix := "" if str(space.get("level", "")) == WorkspaceService.LEVEL_EDIT \
 		else "（只能看）"
 	_chat.ask_what_to_do("要我在 %s 做什麼？%s" % [str(space.get("name", "")), suffix])
+
+
+## The model decided a typed message was a job. It is put to the user rather than
+## launched: unlike a screenshot, this spends money and can edit files, so a
+## misread sentence must not be able to start one on its own.
+##
+## Naming the workspace and the request back to them is the whole point of the
+## dialog — it is the only place they can see what the model concluded before it
+## acts on it.
+func _on_work_requested(space_name: String, request: String) -> void:
+	var space := _resolve_space(space_name)
+	if space.is_empty() or request.strip_edges().is_empty():
+		# The model named a folder that isn't there. Don't leave the question
+		# hanging — answer it in words.
+		LLMService.answer_without_working()
+		return
+	_pending_work = {"space": space, "request": request.strip_edges()}
+	_work_offer.title = "要我去做這件事嗎？"
+	_work_offer.dialog_text = "\n".join(PackedStringArray([
+		"你剛剛說：「%s」" % request.strip_edges(),
+		"",
+		"這件事我可以請 %s 進「%s」去做（%s）。"
+			% [WorkService.runner_label(WorkService.runner()), str(space["name"]),
+				WorkspaceService.level_label(str(space["level"]))],
+		"",
+		"要的話我就開工，可能要幾分鐘；不要的話我就直接用講的回你。",
+	]))
+	_work_offer.reset_size()
+	_work_offer.popup_centered()
+
+
+## Whichever folder the model named, or the only one there is. An unnamed tag is
+## unambiguous exactly when there is a single workspace, which is the common case
+## and the one worth not making the user disambiguate.
+func _resolve_space(space_name: String) -> Dictionary:
+	var spaces := WorkspaceService.list()
+	var usable: Array[Dictionary] = []
+	for space in spaces:
+		if bool(space["exists"]):
+			usable.append(space)
+	if usable.is_empty():
+		return {}
+	var wanted := space_name.strip_edges().to_lower()
+	if wanted.is_empty():
+		return usable[0] if usable.size() == 1 else {}
+	for space in usable:
+		if str(space["name"]).to_lower() == wanted:
+			return space
+	# The model tends to paraphrase a name it half-remembers, so fall back to a
+	# containment match before giving up.
+	for space in usable:
+		var name := str(space["name"]).to_lower()
+		if wanted.contains(name) or name.contains(wanted):
+			return space
+	return usable[0] if usable.size() == 1 else {}
+
+
+func _setup_work_offer_dialog() -> void:
+	var scale := _window_ctl.get_ui_scale()
+	_work_offer.exclusive = false
+	_work_offer.theme = PetStyle.dialog_theme(scale)
+	_work_offer.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_work_offer.ok_button_text = "好，去做"
+	_work_offer.cancel_button_text = "不用，用講的就好"
+	PetStyle.make_ghost_button(_work_offer.get_ok_button(), scale)
+	_work_offer.confirmed.connect(_on_work_offer_accepted)
+	# Backing out still owes them an answer: the question is already sitting in
+	# history, and leaving it there reads as the pet having ignored them.
+	_work_offer.canceled.connect(func() -> void:
+		_pending_work = {}
+		LLMService.answer_without_working())
+
+
+func _on_work_offer_accepted() -> void:
+	var job := _pending_work
+	_pending_work = {}
+	if job.is_empty():
+		return
+	# Through _begin_work so the consent dialog, the busy check, the Codex login
+	# prompt and the uncommitted-work warning all still apply — this is a second
+	# way in, not a way around.
+	_queued_request = str(job["request"])
+	_begin_work(job["space"])
 
 
 # --- Codex login --------------------------------------------------------------

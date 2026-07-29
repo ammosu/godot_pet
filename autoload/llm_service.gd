@@ -29,6 +29,21 @@ const EMOTIONS := ["neutral", "happy", "excited", "sad", "greeting", "sleepy"]
 ## 是什麼意思" typed with the error still on screen.
 const LOOK_TAG := "look"
 
+## Also in that slot: the user wants something *done* in a folder the pet has
+## been given, not answered in a bubble.
+##
+## This exists because the menu alone left the feature unreachable from where
+## people actually type. Asked 「stats.py 裡有沒有寫錯的地方？」 in chat, the pet
+## has no path to the workspace at all — it reached for `[look]` instead,
+## screenshotted the desktop, and reported it couldn't see the file. The same
+## two-trigger shape `[look]` already proves: a menu for when you know what you
+## want, and the model for when you just say it.
+##
+## Optionally carries which folder, as `[work:name]`. Naming it matters as soon
+## as there is more than one, and the workspace list is in the system prompt so
+## the model knows what to write.
+const WORK_TAG := "work"
+
 ## Heading of the persona section that teaches `[look]`, dropped for one turn
 ## after the user says no. Must match `prompts/persona.md`.
 const LOOK_SECTION := "看螢幕"
@@ -58,6 +73,9 @@ var _reply_is_ephemeral := false
 var _in_vision_pass := false
 ## Set when the user turned a screenshot down, so the model can't just ask again.
 var _look_declined := false
+## Same, for a job the user backed out of — otherwise the next thing they type
+## gets offered to the agent all over again.
+var _work_declined := false
 ## Kept so a [look] can re-ask the same thing with a screenshot attached.
 var _last_question := ""
 
@@ -180,12 +198,53 @@ func request_background(system: String, prompt: String, on_done: Callable) -> bo
 
 func build_system_prompt(allow_look := true) -> String:
 	var sections := PackedStringArray([_persona if allow_look else _persona_without_looking()])
+	var work := _work_block()
+	if not work.is_empty():
+		sections.append(work)
 	var memories := MemoryStore.context_block()
 	if not memories.is_empty():
 		sections.append(memories)
 	sections.append("## 你現在的狀態\n%s\n\n讓這些狀態影響你的語氣，但**不要直接把它們念出來**，也不要說「我的心情是普通」這種話。"
 		% PetState.describe())
 	return "\n\n".join(sections)
+
+
+## What the pet may be asked to *do*, and where.
+##
+## Built per request rather than written into `prompts/persona.md`, because the
+## folder list is runtime state — the user adds and removes them while the app is
+## open, and a persona loaded once at startup would go stale the moment they did.
+##
+## Empty when there is nothing to work in, which also means the persona's flat
+## "你看不到使用者電腦上的檔案" stands unmodified on a fresh install. That line is
+## what made the failure so confusing: with a workspace configured it was simply
+## untrue, and the model reached for a screenshot to compensate.
+func _work_block() -> String:
+	if _work_declined or not WorkService.is_supported():
+		return ""
+	var spaces := WorkspaceService.list()
+	var names := PackedStringArray()
+	for space in spaces:
+		if bool(space["exists"]):
+			names.append("- %s（%s）"
+				% [str(space["name"]), WorkspaceService.level_label(str(space["level"]))])
+	if names.is_empty():
+		return ""
+	return "\n".join(PackedStringArray([
+		"## 做事",
+		"使用者給了你幾個資料夾，你可以請一個工程師工具進去讀檔案、改東西、跑指令：",
+		"",
+		"\n".join(names),
+		"",
+		"如果使用者要的是**在這些資料夾裡做事或看裡面的檔案**（改 bug、補功能、看某個檔案寫了什麼、",
+		"問這個專案在幹嘛），就**只輸出 `[work:資料夾名]` 這一個標記，不要說任何其他話**。",
+		"系統會去問使用者要不要真的做。",
+		"",
+		"- 資料夾名要照上面寫的，不要自己編",
+		"- 標成「只能看」的資料夾只能讀，不要答應會改東西",
+		"- 只有真的跟這些資料夾有關才用。一般聊天、你答得出來的問題、問螢幕上的東西都不要用",
+		"- 這些資料夾裡的檔案你**沒有**直接看到，是那個工具去看的，所以不要憑空描述內容",
+	]))
 
 
 ## The persona with its screen section cut out, for the turn after the user says
@@ -269,6 +328,7 @@ func _start_user_turn(text: String, check_look: bool) -> void:
 	_reply_is_ephemeral = false
 	_in_vision_pass = false
 	_look_declined = false
+	_work_declined = false
 
 	# Ask for the screen *before* answering, when the question plainly needs it.
 	# Waiting for the model to request it costs a wasted round-trip at best, and
@@ -350,6 +410,13 @@ func _on_chunk(text: String) -> void:
 	if tag == LOOK_TAG and not _in_vision_pass and not _look_declined:
 		_take_a_look()
 		return
+	# `[work]` or `[work:資料夾名`. Never during a vision pass: the model is
+	# looking at a screenshot there, and the question has already been answered
+	# once by that route.
+	if tag.begins_with(WORK_TAG) and not _in_vision_pass and not _work_declined:
+		var colon := tag.find(":")
+		_go_to_work(tag.substr(colon + 1).strip_edges() if colon >= 0 else "")
+		return
 	if EMOTIONS.has(tag):
 		EventBus.emotion_changed.emit(tag)
 	_release_tag_buffer(head.substr(close + 1).lstrip(" \n"))
@@ -371,6 +438,45 @@ func _take_a_look() -> void:
 func _request_look() -> void:
 	_provider.cancel()
 	EventBus.screen_look_requested.emit(_last_question, false)
+
+
+## The model decided this is a job rather than a question. Same shape as
+## `_take_a_look()` and deferred for the same reason — this runs inside the
+## provider's own chunk signal, and cancelling it mid-poll leaves `_poll_body`
+## reading from a client that's gone.
+##
+## The half-formed reply is thrown away. What the user gets instead is pet.gd
+## putting the job to them; nothing launches from here.
+func _go_to_work(space_name: String) -> void:
+	_tag_resolved = true
+	_tag_buffer = ""
+	_request_work.call_deferred(space_name)
+
+
+func _request_work(space_name: String) -> void:
+	_provider.cancel()
+	EventBus.work_requested.emit(space_name, _last_question)
+
+
+## The user said no to the job. The question is still sitting in history
+## unanswered, so answer it in words instead — the same repair
+## `answer_without_looking()` makes, and for the same reason: leaving it there
+## looks like the pet ignored them.
+##
+## `_work_declined` is what stops the model offering again on the retry, and the
+## 做事 section is cut for that one turn rather than merely contradicted: the
+## persona tells it to answer such a request with nothing but the tag, and a
+## small model follows the character sheet over an appended footnote — which is
+## exactly how the `[look]` refusal path ended up saying nothing at all.
+func answer_without_working() -> void:
+	if _provider == null or _last_question.is_empty():
+		return
+	_clean_reply = ""
+	_tag_resolved = false
+	_tag_buffer = ""
+	_reply_is_ephemeral = false
+	_work_declined = true
+	_provider.send(MemoryStore.recent_messages(), build_system_prompt())
 
 
 func _release_tag_buffer(text: String) -> void:

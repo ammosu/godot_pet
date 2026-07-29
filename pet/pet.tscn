@@ -72,6 +72,11 @@ title = "讓我在你的資料夾裡做事"
 ok_button_text = "好，開始吧"
 cancel_button_text = "先不要"
 
+[node name="WorkOffer" type="ConfirmationDialog" parent="."]
+title = "要我去做這件事嗎？"
+ok_button_text = "好，去做"
+cancel_button_text = "不用，用講的就好"
+
 [node name="DirtyWarning" type="ConfirmationDialog" parent="."]
 title = "這個資料夾有沒存好的東西"
 ok_button_text = "就這樣開始"
