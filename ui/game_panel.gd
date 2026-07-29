@@ -37,6 +37,8 @@ const MEMORY_GAME := preload("res://ui/games/memory_game.gd")
 const VOLLEYBALL_GAME := preload("res://ui/games/volleyball_game.gd")
 const DESCENT_GAME := preload("res://ui/games/descent_game.gd")
 const BREAKOUT_GAME := preload("res://ui/games/breakout_game.gd")
+const SOKOBAN_GAME := preload("res://ui/games/sokoban_game.gd")
+const ONE_STROKE_GAME := preload("res://ui/games/one_stroke_game.gd")
 
 const GAMES: Array[Dictionary] = [
 	{"id": "catch", "label": "接東西", "script": CATCH_GAME},
@@ -45,6 +47,8 @@ const GAMES: Array[Dictionary] = [
 	{"id": "volleyball", "label": "排球對決", "script": VOLLEYBALL_GAME},
 	{"id": "descent", "label": "下樓梯", "script": DESCENT_GAME},
 	{"id": "breakout", "label": "敲磚塊", "script": BREAKOUT_GAME},
+	{"id": "sokoban", "label": "推箱子尋零食", "script": SOKOBAN_GAME},
+	{"id": "one_stroke", "label": "一筆畫", "script": ONE_STROKE_GAME},
 ]
 
 var _scale := 1.0

@@ -503,6 +503,21 @@ const GAME_BREAKOUT_PERSIMMON := Color("dc7b56")
 const GAME_BREAKOUT_GREEN := Color("83a968")
 const GAME_BREAKOUT_BALL := Color("f4ecdd")
 const GAME_BREAKOUT_PADDLE := Color("dc7b56")
+## Warehouse tiles for 推箱子尋零食. The treat on a box is the saturated detail;
+## walls and floor stay quiet enough that targets remain visible underneath.
+const GAME_SOKOBAN_FLOOR := Color("201916")
+const GAME_SOKOBAN_FLOOR_ALT := Color("241c19")
+const GAME_SOKOBAN_WALL := Color("53453e")
+const GAME_SOKOBAN_WALL_INNER := Color("8d7568")
+const GAME_SOKOBAN_TARGET := Color("5fb0ad")
+const GAME_SOKOBAN_BOX := Color("b87958")
+const GAME_SOKOBAN_BOX_DONE := Color("83a968")
+## Lines for 一筆畫. Unused routes stay legible but recede; the path already
+## travelled takes the same persimmon accent as the active controls.
+const GAME_ONE_STROKE_UNUSED := Color("f1e7da", 0.25)
+const GAME_ONE_STROKE_USED := Color("dc7b56")
+const GAME_ONE_STROKE_NODE := Color("d8cfc1")
+const GAME_ONE_STROKE_ENDPOINT := Color("f0c05a")
 
 
 ## A card in 翻翻看. Face down it is chrome; face up it is paper, which is the
