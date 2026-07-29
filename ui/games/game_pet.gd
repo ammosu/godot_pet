@@ -3,10 +3,10 @@ class_name GamePet
 
 ## The pet, as the games draw it.
 ##
-## Three games now put the same character on screen, and the awkward part is not
+## Several games now put the same character on screen, and the awkward part is not
 ## drawing it — it is that the pack declares nothing. Which row is "happy", how
-## much of its cell the character fills, what to play when a pack has no art for
-## a state: all three are decided by PetVisual for the desktop pet, and all three
+## much of its cell the character fills, and what to play when a pack has no art
+## for a state are all decided by PetVisual for the desktop pet, and all of them
 ## have to come out the same here or the pet in the game is visibly a different
 ## size or wearing the wrong expression from the one on the desktop.
 ##

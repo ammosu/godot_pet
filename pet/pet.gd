@@ -738,7 +738,7 @@ func _build_work_menu() -> PopupMenu:
 
 
 ## Ids come off GAME_BASE rather than the enum, so the list is whatever
-## GamePanel says it is — adding a fourth game touches no code here at all.
+## GamePanel says it is — adding another game touches no code here at all.
 func _build_games_menu() -> PopupMenu:
 	var menu := _submenu("Games")
 	for i in GamePanel.game_count():

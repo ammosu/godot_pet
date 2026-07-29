@@ -17,7 +17,7 @@ class_name GamePanel
 
 ## A run played out to its end. `record` rides along because beating your own
 ## best is the one result worth a different line, and only this file knows the
-## table; `game` because with three of them the pet naming the one you just
+## table; `game` because with several of them the pet naming the one you just
 ## played is the difference between it having been there and it having been told.
 signal played(game: String, score: int, treats: int, record: bool)
 
@@ -25,7 +25,7 @@ signal played(game: String, score: int, treats: int, record: bool)
 ## the saved difficulty, so it must not change once anyone has a score.
 ##
 ## A plain table rather than static methods on the game classes: this is the one
-## place that has to know all three, adding a fourth is one line, and the menu
+## place that has to know all of them, adding another is one line, and the menu
 ## can be built without instantiating anything.
 ##
 ## `preload()` rather than the global class names — a `class_name` is not a
@@ -34,11 +34,15 @@ signal played(game: String, score: int, treats: int, record: bool)
 const CATCH_GAME := preload("res://ui/games/catch_game.gd")
 const JUMP_GAME := preload("res://ui/games/jump_game.gd")
 const MEMORY_GAME := preload("res://ui/games/memory_game.gd")
+const VOLLEYBALL_GAME := preload("res://ui/games/volleyball_game.gd")
+const DESCENT_GAME := preload("res://ui/games/descent_game.gd")
 
 const GAMES: Array[Dictionary] = [
 	{"id": "catch", "label": "接東西", "script": CATCH_GAME},
 	{"id": "jump", "label": "跳過去", "script": JUMP_GAME},
 	{"id": "memory", "label": "翻翻看", "script": MEMORY_GAME},
+	{"id": "volleyball", "label": "排球對決", "script": VOLLEYBALL_GAME},
+	{"id": "descent", "label": "下樓梯", "script": DESCENT_GAME},
 ]
 
 var _scale := 1.0
@@ -214,8 +218,8 @@ func _build_footer() -> Control:
 	for i in MiniGame.LEVEL_COUNT:
 		var button := Button.new()
 		# Nothing in this window may hold focus: a focused Button turns the arrow
-		# keys into focus navigation, and the arrow keys are how two of the three
-		# games are played. See MiniGame._unhandled_key_input().
+		# keys into focus navigation, and several games use them. See
+		# MiniGame._unhandled_key_input().
 		button.focus_mode = Control.FOCUS_NONE
 		button.pressed.connect(_on_level_pressed.bind(i))
 		footer.add_child(button)
