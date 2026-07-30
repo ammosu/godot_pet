@@ -52,9 +52,10 @@ const EMOTION_STATES := {
 
 const OPENAI_KEY := "OPENAI_API_KEY"
 
-## Where the sprite packs come from. No artwork ships with this project — see
-## pets/pet_pack.gd for why.
+## Community sprite packs come from the gallery. The project-owned default uses
+## the same format from res://pets/default.
 const PET_GALLERY_URL := "https://codex-pets.net/"
+const DEFAULT_PET_SELECTION := "__default__"
 
 enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, SPEAK, ROAM, CALIBRATE,
@@ -285,24 +286,35 @@ func _rect_points(box: Rect2) -> PackedVector2Array:
 func _load_selected_pack() -> void:
 	_installed_pets = PetPack.list_installed()
 	var wanted: String = Config.get_value("pet", "id", "")
-	# First run with something installed: adopt it rather than showing the blob.
+	# First run with something installed: adopt it. Otherwise use the bundled
+	# v2 pet; later explicit default selections persist as DEFAULT_PET_SELECTION.
 	if wanted.is_empty() and not _installed_pets.is_empty():
 		wanted = _installed_pets[0]
+	elif wanted.is_empty():
+		wanted = DEFAULT_PET_SELECTION
 	_apply_pack(wanted)
 
 
 func _apply_pack(pet_id: String) -> void:
 	var pack: PetPack = null
-	if not pet_id.is_empty():
+	var selection := pet_id
+	if pet_id.is_empty() or pet_id == DEFAULT_PET_SELECTION:
+		selection = DEFAULT_PET_SELECTION
+		pack = PetPack.load_builtin()
+		if pack == null:
+			push_warning("Pet: bundled default art failed to load, using emergency blob")
+	else:
 		pack = PetPack.load_installed(pet_id)
 		if pack == null:
-			push_warning("Pet: '%s' failed to load, falling back to default art" % pet_id)
+			push_warning("Pet: '%s' failed to load, falling back to bundled default art" % pet_id)
+			selection = DEFAULT_PET_SELECTION
+			pack = PetPack.load_builtin()
 	_visual.load_pack(pack)
 	# The pack carries its own size correction, so the scale has to be reapplied
 	# before anything is measured off the visual.
 	_layout_visual()
 	_refresh_hit_region()
-	Config.set_value("pet", "id", pack.id if pack != null else "")
+	Config.set_value("pet", "id", selection)
 
 
 # --- Brain --------------------------------------------------------------------
@@ -625,15 +637,16 @@ func _build_menu() -> void:
 		_menu.id_pressed.connect(_on_menu_pressed)
 
 
-func _build_looks_menu(current: PetPack) -> PopupMenu:
+func _build_looks_menu(_current: PetPack) -> PopupMenu:
 	var menu := _submenu("Looks")
-	var current_id := current.id if current != null else ""
+	var current_id: String = Config.get_value("pet", "id", DEFAULT_PET_SELECTION)
 	for i in _installed_pets.size():
 		var pet_id := _installed_pets[i]
 		menu.add_radio_check_item(pet_id, PET_ID_BASE + i)
 		menu.set_item_checked(menu.get_item_index(PET_ID_BASE + i), pet_id == current_id)
-	menu.add_radio_check_item("預設造型", MenuId.FALLBACK)
-	menu.set_item_checked(menu.get_item_index(MenuId.FALLBACK), current_id.is_empty())
+	menu.add_radio_check_item("預設造型（芽尾）", MenuId.FALLBACK)
+	menu.set_item_checked(menu.get_item_index(MenuId.FALLBACK),
+		current_id.is_empty() or current_id == DEFAULT_PET_SELECTION)
 	menu.add_separator()
 	menu.add_item("找更多造型…", MenuId.GET_PETS)
 	if _installed_pets.is_empty():
@@ -805,7 +818,7 @@ func _on_menu_pressed(id: int) -> void:
 		return
 	match id:
 		MenuId.FALLBACK:
-			_switch_pack("")
+			_switch_pack(DEFAULT_PET_SELECTION)
 		MenuId.GET_PETS:
 			OS.shell_open(PET_GALLERY_URL)
 		MenuId.FEED:

@@ -126,12 +126,13 @@ func _ready() -> void:
 > - 顯卡驅動若不支援 Vulkan，Godot 會自動退到 Direct3D 12，透明與 passthrough 都照常運作。
 
 ### Phase 2 — 動畫狀態機（1–2 天）
-**改用 Codex Pets 的素材生態**，不自己畫也不在 repo 放任何美術：
+**改用 Codex Pets 的素材生態**：
 
 - 格式（跨 codex-pets.net / petdex 通用）：`pet.json` + `spritesheet.webp`，8 欄、每格 192×208，**每列 = 一個動畫狀態**（列數不固定，見下）
 - 執行時讀 `~/.codex/pets/{pet-id}/`，也就是 `npx codex-pets add <id>` 的安裝位置
-- 授權：CLI／網站／格式是 MIT，但**素材不是**。原創預設 CC BY-NC-SA 4.0；第三方角色同人只允許非商業個人使用。所以美術絕不進 repo，授權責任留在使用者端
-- 沒安裝任何 pet 時 fallback 回程式繪製的預設造型
+- 專案自己擁有的原創預設「芽尾」以相同 v2 格式放在 `res://pets/default`；社群素材仍絕不進 repo
+- 授權：CLI／網站／格式是 MIT，但**社群素材不是**。原創預設 CC BY-NC-SA 4.0；第三方角色同人只允許非商業個人使用，所以社群造型的授權責任留在使用者端
+- 沒安裝或沒選其他 pet 時載入芽尾；只有內建圖集損壞才 fallback 到程式繪製的緊急造型
 
 格式的坑：
 - **列數會變，絕對不能寫死**。舊 sheet 是 9 列，`spriteVersionNumber: 2` 的是 11 列（1536×2288），而 `pet.json` 對此隻字未提。原本 `ROWS := 9` 寫死，整除檢查就把所有 v2 pack 擋在門外——而且失敗方式很糟：只 push_warning 然後**默默退回程式繪製的預設造型**，使用者看到的是「下載的造型沒有生效」，不會聯想到格式版本。
@@ -145,7 +146,8 @@ func _ready() -> void:
   - 被拖曳 → `DRAG`；放開 → 掉落回 `IDLE`
   - 收到 `reply_chunk` → `TALK`；`reply_finished` 後回 `IDLE`
   - 精力低 → `SLEEP`
-- 動畫朝向：走左邊時 `flip_h = true`
+- v2 動畫朝向：右走用 row 1、左走用 row 2，不鏡像；legacy pack 走左邊仍用 `flip_h = true`
+- v2 row 9–10 是 16 個順時針視線方向，待機時把游標角度量化成 22.5° 切格；游標太近、太遠或寵物正在做其他事就回正常待機
 
 **驗收**：寵物自己在桌面上晃、會發呆、抓起來會掙扎、放開會回地面。
 

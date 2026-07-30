@@ -2,15 +2,14 @@ extends Node2D
 class_name PetVisual
 
 ## The pet's body. Plays logical states ("idle", "walk", …) without callers
-## needing to know whether a Codex pet pack is loaded or we're falling back to
-## the procedural blob.
+## needing to know whether a Codex pet pack is loaded or the emergency
+## procedural fallback is in use.
 
 ## Logical state -> spritesheet row.
 ##
-## The format declares no row semantics and the two ecosystems that use it
-## disagree, so this is read off a real sheet rather than from any spec. Rows 0-5
-## are consistent enough to rely on; 6-8 are whatever the artist felt like, and
-## no pack seen so far has a genuine sleep animation.
+## Legacy packs declare no row semantics and the two ecosystems that use them
+## disagree, so their defaults are based on real sheets. V2 packs use the
+## current stable contract below.
 ##
 ## Correct it per pet without touching code by adding to user://config.cfg:
 ##     [pet_rows]
@@ -28,6 +27,20 @@ const DEFAULT_STATE_ROWS := {
 	&"sleep": 6,
 	&"excited": 7,
 	&"happy": 8,
+}
+## Current Codex Pets v2 rows have stable meanings. More app states than atlas
+## rows exist, so emotional states intentionally reuse the closest standard
+## action instead of inventing a second, incompatible built-in layout.
+const V2_STATE_ROWS := {
+	&"idle": 0,
+	&"walk": 1,
+	&"run": 7,
+	&"wave": 3,
+	&"talk": 8,
+	&"sad": 5,
+	&"sleep": 6,
+	&"excited": 4,
+	&"happy": 3,
 }
 
 ## Padding added around the character's bounding box when building the hit region.
@@ -60,6 +73,9 @@ const CURSOR_LEAN_MAX := 3.0          # sprite-local px, same space as _base_off
 const CURSOR_PERK_MAX := 0.035        # squash-amount units, same scale as set_squash()
 const CURSOR_REACT_RATE := 10.0       # exponential per-second catch-up, not a snap
 const CURSOR_FACING_DEADZONE := 24.0  # design px, hysteresis so facing doesn't flicker
+const LOOK_STEP_DEGREES := 22.5
+const LOOK_ROW_START := 9
+const LOOK_DIRECTIONS_PER_ROW := 8
 
 @onready var _sprite: AnimatedSprite2D = $Sprite
 @onready var _fallback: Node2D = $Fallback
@@ -86,6 +102,9 @@ var _cursor_facing_dir := 0
 var _cursor_lean := 0.0
 var _cursor_perk := 0.0
 var _drag_lean := 0.0
+## -1 means the normal state animation is active; 0-15 select the two v2 look
+## rows clockwise from up.
+var _look_index := -1
 
 var _calibrating := false
 var _calibration_row := 0
@@ -136,24 +155,58 @@ func _update_cursor_reaction(delta: float) -> void:
 			var falloff := pow(1.0 - dist / radius, 2.0)
 			lean_target = (offset.x / radius) * CURSOR_LEAN_MAX * falloff
 			perk_target = -CURSOR_PERK_MAX * falloff
-			if absf(offset.x) > CURSOR_FACING_DEADZONE * scale:
+			if _pack != null and _pack.has_look_directions() \
+					and dist > CURSOR_FACING_DEADZONE * scale:
+				_cursor_facing_dir = 0
+				_show_look_direction(offset)
+			elif absf(offset.x) > CURSOR_FACING_DEADZONE * scale:
+				_clear_look_direction()
 				_cursor_facing_dir = 1 if offset.x > 0.0 else -1
+			else:
+				_clear_look_direction()
+				_cursor_facing_dir = 0
 		else:
+			_clear_look_direction()
 			_cursor_facing_dir = 0
 	else:
 		var was_overriding := _cursor_facing_dir != 0
+		var was_looking := _look_index >= 0
 		_cursor_facing_dir = 0
+		_clear_look_direction()
 		# Walking, talking, asleep or held — where the pet spends most of its
 		# life, and where there is nothing to aim at. Once the two channels have
 		# finished easing back there is no pose left to write, so don't spend a
 		# frame writing the same one again.
-		if not was_overriding and is_zero_approx(_cursor_lean) and is_zero_approx(_cursor_perk):
+		if not was_overriding and not was_looking \
+				and is_zero_approx(_cursor_lean) and is_zero_approx(_cursor_perk):
 			return
 
 	var t := clampf(delta * CURSOR_REACT_RATE, 0.0, 1.0)
 	_cursor_lean = lerpf(_cursor_lean, lean_target, t)
 	_cursor_perk = lerpf(_cursor_perk, perk_target, t)
 	_apply_pose()
+
+
+func _show_look_direction(offset: Vector2) -> void:
+	# Viewer coordinates: 000 is up and angles advance clockwise, while screen Y
+	# grows downward.
+	var degrees := fposmod(rad_to_deg(atan2(offset.x, -offset.y)), 360.0)
+	var index := roundi(degrees / LOOK_STEP_DEGREES) % 16
+	if index == _look_index:
+		return
+	_look_index = index
+	var row := LOOK_ROW_START + index / LOOK_DIRECTIONS_PER_ROW
+	_sprite.animation = PetPack.row_anim(row)
+	_sprite.frame = index % LOOK_DIRECTIONS_PER_ROW
+	_sprite.pause()
+
+
+func _clear_look_direction() -> void:
+	if _look_index < 0:
+		return
+	_look_index = -1
+	if _pack != null and not _calibrating:
+		_sprite.play(PetPack.row_anim(_playback_row(_state)))
 
 
 func _display_facing() -> int:
@@ -172,7 +225,11 @@ func _display_facing() -> int:
 ## of whether that formula learned to read one.
 func _apply_pose() -> void:
 	var facing := _display_facing()
-	var flipped := facing < 0
+	# V2 supplies explicit left/right locomotion and look art. Mirroring either
+	# would reverse the semantic direction a generated frame was drawn for.
+	var uses_directional_art := _look_index >= 0 \
+		or (_pack != null and _pack.sprite_version_number >= 2 and _state == &"walk")
+	var flipped := facing < 0 and not uses_directional_art
 	_sprite.flip_h = flipped
 	# flip_h mirrors within the drawn rect, so an off-centre offset would swing
 	# the character sideways. Negate it to keep them planted; lean is a plain
@@ -190,9 +247,10 @@ func _apply_pose() -> void:
 
 # --- Pack ---------------------------------------------------------------------
 
-## Pass null to fall back to the procedural blob.
+## Pass null only when no selected or bundled pack could be loaded.
 func load_pack(pack: PetPack) -> void:
 	_pack = pack
+	_look_index = -1
 	if pack == null:
 		_sprite.visible = false
 		_sprite.sprite_frames = null
@@ -202,12 +260,15 @@ func load_pack(pack: PetPack) -> void:
 		_pack_scale = 1.0
 		return
 
-	_state_rows = DEFAULT_STATE_ROWS.duplicate()
+	_state_rows = V2_STATE_ROWS.duplicate() \
+		if pack.sprite_version_number >= 2 else DEFAULT_STATE_ROWS.duplicate()
 	var overrides: Dictionary = Config.get_value("pet_rows", pack.id, {})
 	for state in overrides:
 		_state_rows[StringName(state)] = int(overrides[state])
 
 	_sprite.sprite_frames = pack.frames
+	_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR \
+		if pack.smooth_filter else CanvasItem.TEXTURE_FILTER_NEAREST
 	# Measure the resting pose, not the whole sheet. Action frames fling limbs and
 	# props well outside the idle silhouette, and sizing off those would leave the
 	# pet hovering a long way from any screen edge with an oversized click box.
@@ -269,13 +330,22 @@ static func _normalised_scale(pack: PetPack, rest: Rect2i) -> float:
 
 func play_state(state: StringName) -> void:
 	_state = state
+	_look_index = -1
 	# Re-sync facing/lean/squash for the new state's eligibility on the transition
 	# frame itself, not just the next _process() tick — closing a one-callback-order
 	# race where PetBrain's facing_changed can fire one line before state_changed.
 	_apply_pose()
 	if _pack == null or _calibrating:
 		return
-	_sprite.play(PetPack.row_anim(_resolve_row(state)))
+	_sprite.play(PetPack.row_anim(_playback_row(state)))
+
+
+func _playback_row(state: StringName) -> int:
+	if state == &"walk" and _pack != null and _pack.sprite_version_number >= 2:
+		var directional_row := 1 if _brain_facing >= 0 else 2
+		if _pack.has_row(directional_row):
+			return directional_row
+	return _resolve_row(state)
 
 
 ## Fall back to idle when a pack simply doesn't have art for a state.
@@ -289,6 +359,9 @@ func _resolve_row(state: StringName) -> int:
 
 func set_facing(facing: int) -> void:
 	_brain_facing = facing
+	if _pack != null and _pack.sprite_version_number >= 2 and _state == &"walk" \
+			and not _calibrating:
+		_sprite.play(PetPack.row_anim(_playback_row(_state)))
 	_apply_pose()
 
 
