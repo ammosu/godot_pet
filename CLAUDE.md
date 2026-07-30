@@ -336,12 +336,43 @@ row — that union has to cover a whole walk cycle, and this only ever shows one
 pose. `smooth_filter` decides the resample, so the icon can never disagree with
 the sprite about whether it is pixel art.
 
-`tools/make_app_icon.sh` still exists and is **not** redundant. The two answer
-different questions: a macOS Dock icon is read from the `.app` bundle and no
-running process can change it, so that one is post-export surgery; everywhere
-else the icon is a live window property and can simply be set again the moment
-the user picks a different pet. Derived art goes to `user://`, never into the
-repo — the licensing note in that script applies unchanged.
+It writes two things, because no single mechanism covers all three platforms:
+`DisplayServer.set_icon()` for the live window property, and a PNG at
+`user://app_icon.png` for anything that reads an icon off disk. Derived art goes
+to `user://`, never into the repo — the licensing note in `make_app_icon.sh`
+applies unchanged. That script is **not** redundant: a macOS Dock icon is read
+from the `.app` bundle and no running process can change it, so it stays
+post-export surgery.
+
+#### Setting the window icon is not enough on GNOME
+
+**Mutter no longer reads `_NET_WM_ICON`.** Measured on GNOME Shell 46 / mutter 46
+(Ubuntu 24.04): `set_icon()` puts the property on the window, `xprop` reads it
+back correctly, and the dash still draws Yaru's `application-x-executable` cog —
+a window matching no desktop entry becomes a *window-backed app*, and GNOME has
+nothing to show for it. The property is still worth setting, since Windows and
+the lighter X11 window managers do use it, but on GNOME it is inert.
+
+What works there is being matched to a desktop entry, by `StartupWMClass`.
+`tools/install_linux_desktop_entry.sh` writes one, pointing `Icon=` at the PNG
+above — so the entry is installed once and the icon then follows the selected pet
+by itself. Three things it has to get right:
+
+- **`StartupWMClass` is read out of `project.godot`, not written down.** The
+  window's WM_CLASS class comes from `application/config/name`, and a copy here
+  would stop matching the day that setting is edited. The failure is silent: the
+  cog simply comes back.
+- GNOME matches a window to an entry **once**, so a pet that was already running
+  has to be restarted before the icon appears.
+- The entry goes in `~/.local/share/applications`. The app writes neither it nor
+  the autostart entry in `~/.config/autostart` — those are the user's, not
+  something a pet edits, which is why this is a script you run rather than
+  something startup does.
+
+This was originally documented here as "the icon is a live window property, so
+Linux is covered". It was not: what had been verified was that the property was
+set, never that anything drew it. Worth remembering as the shape of the mistake —
+measuring the mechanism instead of the observable.
 
 **`DisplayServer.set_icon()` silently does nothing above a certain size on X11**,
 and it is the icon that is too big, not the image. No error, nothing in the log;
@@ -360,11 +391,8 @@ Two traps for anyone verifying this:
   the property is set — 64x64 dumps ~86k of text and 128x128 prints 58 bytes,
   and both worked. Grep for `Icon (`, and treat a bare `_NET_WM_ICON(CARDINAL) =`
   as the only genuine failure.
-- The PNG at `user://app_icon.png` is a **file**, subject to none of the above, so
-  it is written at 256. That is the Linux launcher's half: a desktop entry's
-  `Icon=` points at that stable path once and then follows the selected pet by
-  itself. The app deliberately does not write the `.desktop` file — an autostart
-  entry is the user's, not something a pet edits.
+- The PNG is a **file**, subject to none of this, so it is written at 256 —
+  which is just as well, since on GNOME it is the one of the two that gets drawn.
 
 ### Every pose channel goes through `_apply_pose()`
 

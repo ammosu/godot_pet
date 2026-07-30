@@ -308,9 +308,15 @@ tools/make_app_icon.sh   # 選用：Dock 圖示換成目前那隻寵物
 不跑這個腳本的話就維持專案自己的 `icon.png`（芽尾）。
 
 這支腳本現在只負責 **macOS 的 bundle**。Dock 圖示是從 `.app` 裡讀的，執行中的 process
-改不動它，所以只能事後動刀。其他平台的圖示是**活的視窗屬性**，於是改由
-`pet/app_icon.gd` 在換寵物的當下直接設定 —— 不用匯出、不用記得跑腳本。詳見
-CLAUDE.md「The app icon is cut from the selected pack」。
+改不動它，所以只能事後動刀。
+
+其他平台改由 `pet/app_icon.gd` 在換寵物的當下處理，它同時做兩件事：設定視窗屬性
+（`_NET_WM_ICON`），以及把 PNG 寫到 `user://app_icon.png`。**兩件都需要**——
+GNOME 的 mutter 已經不讀 `_NET_WM_ICON` 了（在 GNOME Shell 46 上實測：屬性設得好好的，
+dash 照樣畫預設的齒輪），所以 Linux 上要跑一次
+`tools/install_linux_desktop_entry.sh`，靠 `StartupWMClass` 讓視窗比對到一個
+desktop entry，`Icon=` 指向那個 PNG。裝一次之後圖示就自己跟著寵物走。
+詳見 CLAUDE.md「The app icon is cut from the selected pack」。
 
 - **`rendering/textures/vram_compression/import_etc2_astc` 必須開**，否則 arm64／universal 匯出直接被擋
 - `export_presets.cfg` **有進版控**：它帶著透明視窗和隱私權說明等設定，而 Godot 的簽章／公證機密是放在另一個 `export_credentials.cfg`（那個才要 ignore）
