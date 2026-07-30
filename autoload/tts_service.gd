@@ -16,7 +16,14 @@ const FLUSH_AFTER := 40
 ## Traditional Chinese, so those come before the machine's own locale; rewrite
 ## prompts/persona.md in another language and you'll want to set `voice` under
 ## `[tts]` in config.cfg to match.
-const LANGUAGES := ["zh-TW", "zh-HK", "yue-HK", "zh-CN", "zh"]
+##
+## The last two are not BCP 47 typos. macOS reports Chinese voices as `zh-TW`
+## and friends, but Linux goes through speech-dispatcher and espeak-ng, which
+## names its languages with ISO 639-3 codes — Mandarin is `cmn`, Cantonese is
+## `yue`, and there is no `zh` anything. Measured on Ubuntu 24.04: of 13362
+## voices, `zh-TW`, `zh-HK`, `yue-HK`, `zh-CN` and `zh` all matched **zero**, and
+## `cmn` matched 204. See _pick_voice() for what that silently cost.
+const LANGUAGES := ["zh-TW", "zh-HK", "yue-HK", "zh-CN", "zh", "cmn", "yue"]
 
 ## A little above natural pitch reads as small and animated.
 const PITCH := 1.15
@@ -135,11 +142,18 @@ func _pick_voice() -> String:
 		var voices := DisplayServer.tts_get_voices_for_language(language)
 		if not voices.is_empty():
 			return voices[0]
-	# Nothing matched, so the voice almost certainly can't pronounce the pet's
-	# language — but a wrong voice still beats silence, and it's one config key
-	# to fix.
-	var any := DisplayServer.tts_get_voices()
-	return "" if any.is_empty() else str(any[0].get("id", ""))
+	# Nothing matched, so nothing installed here can pronounce the pet's language.
+	# This used to fall back to whichever voice came first, on the grounds that a
+	# wrong voice beats silence. It does not: the first of speech-dispatcher's
+	# 13362 voices is *Afrikaans*, and an Afrikaans voice fed Traditional Chinese
+	# emits a continuous run of gibberish syllables out of nowhere every time the
+	# pet nudges — which reads as the app malfunctioning, not as a bad accent. The
+	# menu row said 說話出聲（Afrikaans）the whole time and nobody looked.
+	if not DisplayServer.tts_get_voices().is_empty():
+		var wanted := ", ".join(_preferred_languages())
+		push_warning(("TTSService: no installed voice speaks %s, so speech is "
+			+ "off. Set `voice` under [tts] in config.cfg to override.") % wanted)
+	return ""
 
 
 ## Godot reports voice languages as BCP 47 with a hyphen ("zh-TW") and matches

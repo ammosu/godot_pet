@@ -726,9 +726,34 @@ sentences run together on their own.
 Voice languages are reported as BCP 47 with a **hyphen** (`zh-TW`), while
 `OS.get_locale()` uses an underscore (`zh_TW`), and
 `tts_get_voices_for_language()` matches on a plain prefix. An underscore
-silently matches nothing and the fallback then picks whichever voice happens to
-be first in a 180-entry list — which will read Chinese in an English voice on
-most machines.
+silently matches nothing.
+
+**And on Linux the hyphenated form matches nothing either.** speech-dispatcher
+exposes espeak-ng, which names its languages with **ISO 639-3** codes: Mandarin
+is `cmn`, Cantonese is `yue`, and there is no `zh` anything. Godot also reports
+the field as `<language>_<variant>` (`cmn_none`, `af_none`), so it is not BCP 47
+on this platform at all. Measured on Ubuntu 24.04 / Godot 4.7.1: of 13362 voices,
+`zh-TW`, `zh-HK`, `yue-HK`, `zh-CN` and `zh` matched **zero** and `cmn` matched
+204. `cmn`/`yue` are therefore in `LANGUAGES` alongside the macOS spellings.
+
+The failure that hid behind it is the more useful lesson. `_pick_voice()` used to
+end in "any voice beats silence" and take `tts_get_voices()[0]` — which on that
+list is **Afrikaans**, first alphabetically. So the pet read Traditional Chinese
+in an Afrikaans voice: an intermittent, continuous run of gibberish syllables
+every time `Nudger` fired, with nothing in the log, and the menu row cheerfully
+reading 說話出聲（Afrikaans）the whole time. A voice that cannot pronounce the
+language is not a degraded feature, it is a malfunctioning one, so there is no
+last-resort pick any more — no match means speech is off and the menu says so.
+
+Note what "verified" had meant here: that speech-dispatcher was installed. That
+is the mechanism, not the observable — the same shape of mistake as the GNOME
+icon note above.
+
+Only three things actually reach TTS: `reply_chunk`/`reply_finished`, and
+`pet_nudged` — which just `Nudger` and the vision refusal emit. Every other line
+the pet says (餵食, game scores, 還在弄, work results, monitor alerts) goes
+through `pet.gd::_on_pet_nudged()` as a **direct call**, never onto EventBus, so
+it is shown and never spoken. Deliberate or not, that is the current contract.
 
 ### Needs and unprompted speech
 

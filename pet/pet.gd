@@ -1582,7 +1582,10 @@ func _on_game_played(game: String, score: int, treats: int, record: bool) -> voi
 ## Naming the voice saves adding a whole picker just to see which one is in use.
 func _voice_label() -> String:
 	if not TTSService.is_available():
-		return "說話出聲（這台機器沒有語音）"
+		# Covers both "no voices at all" and "voices, but none that can read the
+		# pet's language" — the second is the common one on Linux, and offering
+		# the toggle anyway just means noise. See TTSService._pick_voice().
+		return "說話出聲（這台機器沒有合適的語音）"
 	return "說話出聲（%s）" % TTSService.get_voice_name()
 
 

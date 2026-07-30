@@ -422,6 +422,16 @@ Godot 4.7.1 官方 Linux build，`--headless --import` 全過，執行走 Vulkan
 - TTS 的 `speech-dispatcher` 這台預設就有（`speech-dispatcher-espeak-ng`）。原本那條
   「沒裝是無聲失敗」的風險仍然成立，只是 Ubuntu 桌面預設不會踩到
 
+  **這條當時只驗到「裝了」，沒驗到「念出來的是什麼」**，2026-07-30 才發現代價：
+  espeak-ng 的語言代碼是 ISO 639-3，官話是 `cmn`、粵語是 `yue`，**沒有任何 `zh`**，
+  而且 Godot 在 Linux 把欄位拼成 `<語言>_<變體>`（`cmn_none`）。所以
+  `LANGUAGES` 那五個 `zh-*` 全部比對不到，退路 `tts_get_voices()[0]` 拿到清單裡
+  字母排第一的 **Afrikaans**，寵物就用南非語念中文 —— 每次 `Nudger` 開口就是一串
+  聽不出是什麼的音節，log 完全乾淨，選單那排還一直老實寫著「說話出聲（Afrikaans）」。
+  13362 個聲音裡 `zh-TW`/`zh-HK`/`yue-HK`/`zh-CN`/`zh` 命中 0 個，`cmn` 命中 204 個。
+  修法是 `LANGUAGES` 補 `cmn`/`yue`，並且**拿掉那條退路** —— 念不出這個語言的聲音
+  不是「將就」，是壞掉，比對不到就關掉語音並在選單說明
+
 ### 2026-07-28 —— 四個功能一起進來
 
 游標反應與拖曳手感／拖檔案給寵物／會提到記憶的搭話／照使用者節奏挑搭話時機。四個各自
