@@ -320,6 +320,10 @@ func _apply_pack(pet_id: String) -> void:
 	# before anything is measured off the visual.
 	_layout_visual()
 	_refresh_hit_region()
+	# The taskbar should show whoever is on the desktop. Takes the *resolved* idle
+	# row for the same reason the mini-game does — this file is the only place the
+	# per-pet row corrections have already been applied.
+	AppIcon.apply(pack, int(_visual.state_rows().get(&"idle", 0)))
 	Config.set_value("pet", "id", selection)
 
 

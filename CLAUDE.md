@@ -325,6 +325,47 @@ The manifest declares neither the grid, nor frame counts, nor row semantics:
   correction is clamped, since a mis-detected idle row would otherwise scale the
   pet by whatever a blank or prop-only row happens to measure.
 
+### The app icon is cut from the selected pack
+
+`pet/app_icon.gd` makes the app's icon out of whoever is on the desktop, driven
+from the one place that already knows a pack changed — `pet.gd::_apply_pack()`.
+It takes the **resolved** idle row from `PetVisual.state_rows()`, for the same
+reason the mini-game does: an icon cut from a raw row guess is a pet mid-pounce
+or a bare prop. Frame 0's own bounding box, not `rect_for_row`'s union over the
+row — that union has to cover a whole walk cycle, and this only ever shows one
+pose. `smooth_filter` decides the resample, so the icon can never disagree with
+the sprite about whether it is pixel art.
+
+`tools/make_app_icon.sh` still exists and is **not** redundant. The two answer
+different questions: a macOS Dock icon is read from the `.app` bundle and no
+running process can change it, so that one is post-export surgery; everywhere
+else the icon is a live window property and can simply be set again the moment
+the user picks a different pet. Derived art goes to `user://`, never into the
+repo — the licensing note in that script applies unchanged.
+
+**`DisplayServer.set_icon()` silently does nothing above a certain size on X11**,
+and it is the icon that is too big, not the image. No error, nothing in the log;
+`_NET_WM_ICON` just stays empty, which reads as the call having been forgotten
+rather than refused. Measured on Xvfb with Godot 4.7.1: 64, 96, 128, 192 and 224
+square all set the property, while 254, 255 and 256 all leave it empty. The cliff
+is somewhere in between and **its cause was not established** — the obvious
+candidate, the X protocol's 65535-unit request length, puts the limit at
+`2 + 254*254 = 64518` elements, which is under it and still fails. So `WM_SIZE`
+is 128, which is what a taskbar or alt-tab switcher actually draws anyway.
+
+Two traps for anyone verifying this:
+
+- **`xprop` renders a large icon as `Icon (N x N): (not shown)`** instead of
+  dumping the numbers, so a byte count of its output is not a measure of whether
+  the property is set — 64x64 dumps ~86k of text and 128x128 prints 58 bytes,
+  and both worked. Grep for `Icon (`, and treat a bare `_NET_WM_ICON(CARDINAL) =`
+  as the only genuine failure.
+- The PNG at `user://app_icon.png` is a **file**, subject to none of the above, so
+  it is written at 256. That is the Linux launcher's half: a desktop entry's
+  `Icon=` points at that stable path once and then follows the selected pet by
+  itself. The app deliberately does not write the `.desktop` file — an autostart
+  entry is the user's, not something a pet edits.
+
 ### Every pose channel goes through `_apply_pose()`
 
 Five separate things move or select the sprite now: which way it faces, the v2
