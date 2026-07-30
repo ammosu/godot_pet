@@ -28,7 +28,11 @@ const FOLDER_NAME := "GodotPet"
 ## write scripts you would then execute — that is the same line persona.md draws
 ## when it says the pet isn't an assistant, and it means a planted instruction
 ## cannot turn "write me a note" into "drop a shell script".
-const ALLOWED_EXTENSIONS := ["md", "txt", "csv", "json", "svg"]
+##
+## `wav` is on it for the recorder, and passes the same test: audio is inert, and
+## the panel opens it with the system player exactly as it opens a note with the
+## system editor.
+const ALLOWED_EXTENSIONS := ["md", "txt", "csv", "json", "svg", "wav"]
 
 const DEFAULT_EXTENSION := "md"
 
@@ -127,6 +131,26 @@ func write(raw_name: String, content: String) -> String:
 	file.store_buffer(bytes)
 	file.close()
 	return name
+
+
+## Claim a filename for content this app writes itself, and hand back both the
+## name and the path to write it to. Empty on failure.
+##
+## `write()` takes a String and refuses past a megabyte, which is right for a note
+## and wrong for audio — a minute of 16-bit stereo is ten times that. And
+## `AudioStreamWAV.save_to_wav()` wants somewhere to write rather than handing
+## back bytes, so there is nothing for `write()` to receive.
+##
+## The name still goes through the same sanitiser and the same never-overwrite
+## rule. The recorder composes its own names and could skip both; keeping them
+## means the folder's guarantees hold for every path into it rather than for most.
+func reserve(raw_name: String) -> Dictionary:
+	if not ensure_folder():
+		return {}
+	var name := _free_name(sanitise_name(raw_name))
+	if name.is_empty():
+		return {}
+	return {"name": name, "path": folder_path().path_join(name)}
 
 
 ## Never overwrite. The model picking the same obvious name twice must not eat the

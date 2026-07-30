@@ -1101,13 +1101,107 @@ to clutter is being able to see it: `ui/outbox_panel.gd` is the third window of
 the same shape as the memory and transcript panels, where every line can be
 deleted on its own.
 
-**The transcript export** (`ChatLogPanel._on_export`) is now the only producer.
-It involves no model at all, which makes it the one thing in this app that can
-produce a file with the LLM switched off entirely — and it is what made the
-folder testable before any agent existed. Ephemeral turns keep their
-「這則關掉就忘了」 footnote in the Markdown, because a transcript that quietly
-promoted a screen-look reply to a permanent record would break the one promise
-ephemeral turns exist to make.
+**The transcript export** (`ChatLogPanel._on_export`) was for a long time the only
+producer, and is still the only *text* one. It involves no model at all, which
+makes it one of two things in this app that can produce a file with the LLM
+switched off entirely — and it is what made the folder testable before any agent
+existed. Ephemeral turns keep their 「這則關掉就忘了」 footnote in the Markdown,
+because a transcript that quietly promoted a screen-look reply to a permanent
+record would break the one promise ephemeral turns exist to make.
+
+`OutboxService.reserve()` exists because `write()` cannot serve the other one.
+That takes a `String` and refuses past a megabyte, which is right for a note and
+wrong for audio — a minute of 16-bit stereo is ten times the cap — and
+`AudioStreamWAV.save_to_wav()` wants a path rather than handing back bytes, so
+there is nothing for `write()` to receive. `reserve()` still runs the same
+sanitiser and the same never-overwrite rule, so the folder's guarantees hold for
+every path into it rather than for most.
+
+### The pet records, and that is all it does with a microphone
+
+`autoload/recorder_service.gd` captures the microphone to a `.wav` in the outbox
+folder. Deliberately **not** the voice input PLAN.md's Phase 8 designed: nothing
+is transcribed, no provider is involved, and nothing reaches the network — which
+is why it is the second thing here that works with the LLM switched off, and why
+it needs none of `VisionService`'s consent machinery.
+
+Two things about the audio graph, both of which fail silently if wrong:
+
+- **Muting the record bus does not mute the recording.** The microphone has to be
+  *played* to reach an effect chain at all, and a live microphone routed to the
+  speakers is feedback — so the bus is muted. A bus's mute is its output fader,
+  applied after its effects, so `AudioEffectRecord` is unaffected. Measured
+  rather than assumed, because the failure mode is a silent WAV with no error:
+  fed a 440 Hz tone through a virtual source, muted and unmuted both captured
+  peak amplitude **0.088379**, identical to what `parecord` measured off the same
+  source.
+- **The capture device is opened on demand, not at startup.** `enable_input` in
+  `project.godot` only *permits* capture; `AudioStreamPlayback` opens the device
+  when it starts. Measured with `pactl list short source-outputs`: one client
+  with the pet idle, two while recording, back to one after. A desk pet that sat
+  holding the microphone open would light the system's in-use indicator all day.
+
+Verifying this needs a controllable input, and **Godot filters monitor sources
+out of `get_input_device_list()`** — a null sink's `.monitor` is invisible to it,
+so `module-null-sink` alone is not enough. `module-remap-source` over that
+monitor presents a real source, which Godot does list. `AudioServer.input_device`
+also only sticks *after* capture is open; set before `play()` it silently does
+nothing and reads back empty.
+
+There is no consent dialog, and the reasoning is worth keeping because a
+microphone looks like it should have one. Every consent dialog in this app guards
+something that happens without a fresh human action right now: a background poll
+(`PresenceService`), or something the model asked for (`VisionService`, `[work]`).
+This is neither — it happens because the user just clicked 錄一段話, it announces
+itself for as long as the device is open, and stopping is one click where
+starting was. What was genuinely missing is *where it went*, and that is answered
+once, at the moment the file exists, in the line the pet says.
+
+#### The indicator is the speech bubble, held open
+
+A recording with no persistent sign of itself is the one thing this feature must
+not be, and the bubble already solves the hard parts — it clamps to the visible
+area, follows the pet, and on Windows is already inside the passthrough mask.
+`ChatPanel.show_holding()` reuses `_streaming`, which is *already* "more is
+coming, don't start the fade countdown", rather than racing it with a second
+timer. Repeat calls only rewrite the text: replaying the appear animation would
+make a bubble that jumps once a second.
+
+**The clock cannot tick from `pet.gd::_process`.** That is switched off except
+where the passthrough mask clips rendering — `_ready()` ends with
+`set_process(WindowController.passthrough_clips_rendering())` — so on Linux and
+macOS it would simply never run. `RecorderService` emits `tick` on whole-second
+boundaries instead, and only has `_process` enabled while the microphone is open.
+
+#### The sixth verb, and the row that lied
+
+CLAUDE.md names a sixth verb as the point to stop and think, so: 錄音 is something
+you ask the pet to do *for* you and the result is something it then holds — the
+shape of 幫我做事, not of a window. It could have been a button in 我做的東西's
+footer, in the group that is allowed to grow and free of charge, but then you
+would be talking to a window rather than handing something to the pet, which is
+the premise of the app. It is one row, not two, because the row carries its own
+stop. Measured at 14 rows: 392px on a 1080p desktop, still short of the 476px
+that forced Godot to shove the flat menu upward.
+
+That stateful label then found a real bug. **`_build_menu()` does not run on every
+open** — `_open_menu()` rebuilds only when the installed pack list changed — so
+the row still read 錄一段話 while the pet was visibly recording, and following the
+indicator's own instruction did nothing. `_set_item_text()` refreshes just that
+row on open, which is also why the clock in it is a snapshot rather than live: the
+menu covers the bubble that has the running one.
+
+macOS needs both halves or the failure is silent, as PLAN.md warned: the export
+preset carries `codesign/entitlements/audio_input=true` **and** a microphone usage
+description, and the description is shown to the user, so it says what actually
+happens rather than something vaguer.
+
+One trap for anyone writing a probe for this: a `SceneTree` script cannot call
+`play()` from `_initialize()` — the node is not inside the tree yet and the engine
+refuses with *"Playback can only happen when a node is inside the scene tree"*.
+Two measurement rounds were spent reading that as "the microphone produced
+silence". `RecorderService` never hits it, being an autoload whose `_ready()` runs
+in the tree.
 
 ### The pet as an assistant: it drives a coding-agent CLI
 

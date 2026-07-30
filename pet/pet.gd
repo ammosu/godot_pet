@@ -60,7 +60,7 @@ const DEFAULT_PET_SELECTION := "__default__"
 enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, MONITOR, SPEAK, ROAM, CALIBRATE,
 	RECENTRE, SET_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
-	QUIT,
+	RECORD, QUIT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -177,6 +177,9 @@ func _ready() -> void:
 	_setup_codex_login_dialog()
 	CodexCli.login_finished.connect(_on_codex_login_finished)
 	CodexCli.login_hint.connect(_on_codex_login_hint)
+	RecorderService.tick.connect(_on_recording_tick)
+	RecorderService.saved.connect(_on_recording_saved)
+	RecorderService.failed.connect(_on_recording_failed)
 
 	# Only worth ticking where the mask clips rendering; elsewhere the bubble is
 	# outside it by design and moving is free.
@@ -636,6 +639,18 @@ func _build_menu() -> void:
 	# CLI is a feature nobody discovers exists, the same call the 依你的節奏搭話
 	# row makes where PresenceService reports unsupported.
 	_menu.set_item_disabled(_menu.get_item_count() - 1, not WorkService.is_supported())
+	# The sixth verb, which CLAUDE.md names as the point to stop and think. The
+	# thinking: 錄音 is something you ask the pet to do *for* you and the result is
+	# something it then holds — the same shape as 幫我做事, not the shape of a
+	# window. It could have been a button in 我做的東西's footer, one group along
+	# and free of charge, but then you would be talking to a window rather than
+	# handing something to the pet, which is the entire premise of the app. So it
+	# is a verb, and it is one row rather than two because the row carries its own
+	# stop. Measured: 14 rows, 392px on this 1080p desktop — still short of the
+	# 476px that forced Godot to shove the flat menu upward.
+	_menu.add_item(_record_label(), MenuId.RECORD)
+	_menu.set_item_disabled(_menu.get_item_index(MenuId.RECORD),
+		not RecorderService.is_supported())
 	_menu.add_item("回到角落", MenuId.RECENTRE)
 
 	# Its own block, because it is a different kind of thing from everything above
@@ -827,6 +842,16 @@ func _set_checked(id: int, on: bool) -> void:
 		menu.set_item_checked(index, on)
 
 
+## Same, for a row whose label is state rather than a name.
+func _set_item_text(id: int, text: String) -> void:
+	var menu: PopupMenu = _item_menus.get(id)
+	if menu == null:
+		return
+	var index := menu.get_item_index(id)
+	if index >= 0:
+		menu.set_item_text(index, text)
+
+
 func _open_menu() -> void:
 	# Packs are installed by an external CLI while the app is running, so rescan
 	# on every open rather than making the user restart to see a new pet.
@@ -834,6 +859,13 @@ func _open_menu() -> void:
 	if found != _installed_pets:
 		_installed_pets = found
 		_build_menu()
+	# The only row whose text changes without anything rebuilding the menu, so it
+	# is refreshed here rather than by making every open pay for a full rebuild.
+	# Missing this left the row reading 錄一段話 while the pet was visibly
+	# recording — following the indicator's own instruction did nothing, which is
+	# the one failure a stop control cannot have. The clock in it is a snapshot
+	# taken as the menu opens; the live one is the bubble, which the menu covers.
+	_set_item_text(MenuId.RECORD, _record_label())
 	_menu.reset_size()
 	_menu.popup(Rect2i(DisplayServer.mouse_get_position(), _menu.size))
 
@@ -885,6 +917,8 @@ func _on_menu_pressed(id: int) -> void:
 			_toggle_roaming()
 		MenuId.CALIBRATE:
 			_toggle_calibration()
+		MenuId.RECORD:
+			_toggle_recording()
 		MenuId.RECENTRE:
 			_window_ctl.park_at_default_spot()
 			_brain.set_home_here()
@@ -1592,6 +1626,70 @@ func _voice_label() -> String:
 func _toggle_speech() -> void:
 	TTSService.set_enabled(not TTSService.is_enabled())
 	_set_checked(MenuId.SPEAK, TTSService.is_enabled())
+
+
+# --- Recording ----------------------------------------------------------------
+
+## One row carrying both halves, so stopping is where starting was rather than a
+## second row that is dead most of the time.
+func _record_label() -> String:
+	if not RecorderService.is_supported():
+		return "錄一段話（這台機器不能錄音）"
+	if RecorderService.is_recording():
+		return "停止錄音（%s）" % RecorderService.elapsed_text()
+	return "錄一段話"
+
+
+## No dialog, and the reasoning is worth keeping because a microphone looks like
+## it should have one. The consent dialogs in this app all guard something that
+## happens *without* a fresh human action right now: a background poll
+## (PresenceService), or something the model asked for (VisionService, the work
+## tag). This is none of those — it happens because the user just clicked 錄一段話,
+## it announces itself with an indicator that stays up for as long as the
+## microphone is open, nothing is sent anywhere, and stopping is one click in the
+## place they started it. Asking "are you sure?" about the thing they just chose
+## is the shape of consent, not the substance.
+##
+## What was genuinely missing is *where it went*, and the honest place to answer
+## that is when the file exists — see _on_recording_saved().
+func _toggle_recording() -> void:
+	if RecorderService.is_recording():
+		RecorderService.stop()
+		return
+	if not RecorderService.start():
+		return
+	# Stand still and attend. TALK is held open by the indicator being up and ends
+	# when the closing line finally fades, so nothing has to remember to undo it.
+	_brain.on_talk_started()
+	_on_recording_tick(RecorderService.elapsed_text())
+
+
+## The indicator. It has to answer two questions for as long as it is up — that
+## the microphone is live, and how to make it stop — because between those two it
+## is the only thing on screen saying so.
+func _on_recording_tick(elapsed_text: String) -> void:
+	_chat.show_holding("● 錄音中 %s\n（選單裡再點一次就停）" % elapsed_text)
+
+
+func _on_recording_saved(file_name: String, seconds: float) -> void:
+	var line := "錄好了！叫「%s」，在「我做的東西」裡面。" % file_name
+	if seconds >= RecorderService.MAX_SECONDS - 1.0:
+		# Otherwise a recording that hit the cap reads as the app having crashed
+		# out of it.
+		line = "錄滿 %d 分鐘我就先停了，存成「%s」，在「我做的東西」裡面。" \
+			% [int(RecorderService.MAX_SECONDS / 60.0), file_name]
+	if not bool(Config.get_value("recorder", "told_where", false)):
+		# Once, at the moment it means something: the file exists and they are
+		# about to go looking for it. Not a dialog before the fact, which would be
+		# asking a question that has one answer.
+		line += "只會存在你自己的電腦，不會送去任何地方喔。"
+		Config.set_value("recorder", "told_where", true)
+	_on_pet_nudged("happy", line, false, false)
+	_outbox.refresh_if_open()
+
+
+func _on_recording_failed(reason: String) -> void:
+	_on_pet_nudged("sad", reason, false, false)
 
 
 func _toggle_nudges() -> void:

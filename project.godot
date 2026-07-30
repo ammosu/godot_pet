@@ -29,10 +29,15 @@ OutboxService="*res://autoload/outbox_service.gd"
 CodexCli="*res://autoload/codex_cli.gd"
 WorkspaceService="*res://autoload/workspace_service.gd"
 WorkService="*res://autoload/work_service.gd"
+RecorderService="*res://autoload/recorder_service.gd"
 
 [audio]
 
 general/text_to_speech=true
+; Permits audio capture at all. The device itself is opened on demand, when an
+; AudioStreamMicrophone starts playing — not at startup — so the pet does not sit
+; holding the microphone open. See autoload/recorder_service.gd.
+driver/enable_input=true
 
 [display]
 

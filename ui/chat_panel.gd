@@ -103,6 +103,9 @@ var _shown := 0.0
 var _streaming := false
 var _hold := 0.0
 var _fade: Tween = null
+## A bubble that must not time out, because it is reporting something still
+## happening rather than something the pet said. See show_holding().
+var _holding := false
 var _appear := 1.0
 ## Widest the bubble has needed to be during this reply. Text only ever grows, so
 ## holding the maximum stops the bubble from breathing in and out as it wraps.
@@ -223,6 +226,9 @@ func begin_reply() -> void:
 	_full_text = ""
 	_shown = 0.0
 	_streaming = true
+	# Anything the pet actually says replaces the indicator and gets to fade
+	# normally; only show_holding() sets this back.
+	_holding = false
 	_hold = 0.0
 	_natural_width = 0.0
 	_text.text = ""
@@ -258,11 +264,38 @@ func show_notice(message: String) -> void:
 	_streaming = false
 
 
+## A line that stays up until something takes it down, and can be rewritten in
+## place — the recording indicator, which has to be true for as long as the
+## microphone is open. A bubble that fades after twenty-two seconds is the pet
+## having said something; this is the pet still doing something.
+##
+## `_streaming` is already exactly "more is coming, don't start the fade
+## countdown" (see _advance_typing), so this is that flag used honestly rather
+## than a second timer racing it. Repeat calls only rewrite the text: they must
+## not replay the appear animation or re-run the typewriter, or a clock ticking
+## once a second would make the bubble jump once a second.
+func show_holding(message: String) -> void:
+	if not _holding:
+		begin_reply()
+		_apply_bubble_style(true)
+		_holding = true
+	_streaming = true
+	_full_text = message
+	_text.text = message
+	_shown = float(message.length())
+	_text.visible_characters = -1
+
+
+func is_holding() -> bool:
+	return _holding and _bubble.visible
+
+
 func hide_bubble() -> void:
 	if not _bubble.visible:
 		return
 	_kill_fade()
 	_streaming = false
+	_holding = false
 	_bubble.visible = false
 	bubble_hidden.emit()
 
