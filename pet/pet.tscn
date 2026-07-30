@@ -30,6 +30,7 @@ script = ExtResource("4_visual")
 visible = false
 
 [node name="Fallback" type="Node2D" parent="Visual"]
+visible = false
 script = ExtResource("5_blob")
 
 [node name="CalibrationLabel" type="Label" parent="Visual"]

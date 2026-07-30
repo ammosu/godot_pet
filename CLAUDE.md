@@ -283,14 +283,15 @@ The two consequences:
 
 ### Sprite packs
 
-Art is the Codex Pets / petdex format, loaded at runtime from
-`~/.codex/pets/{id}/` (installed by `npx codex-pets add <id>`): `pet.json` plus
-8 columns of 192x208 cells, one animation state per row.
+Art is the Codex Pets / petdex format: `pet.json` plus 8 columns of 192x208
+cells, one animation state per row. The project-owned default pack is loaded
+from `res://pets/default`; community packs are loaded at runtime from
+`~/.codex/pets/{id}/` (installed by `npx codex-pets add <id>`).
 
-**No artwork ships in this repo, ever.** The format and tooling are MIT but the
-packs are not — originals default to CC BY-NC-SA and fan works of third-party
-characters are personal, non-commercial use only. Reading packs from the user's
-own install keeps licensing between them and the pet's author.
+Only the original built-in default artwork ships in this repo. Community packs
+do not — originals default to CC BY-NC-SA and fan works of third-party
+characters are personal, non-commercial use only. Reading those packs from the
+user's own install keeps licensing between them and the pet's author.
 
 The manifest declares neither the grid, nor frame counts, nor row semantics:
 
@@ -301,11 +302,15 @@ The manifest declares neither the grid, nor frame counts, nor row semantics:
   check reject every v2 pack outright — with the pet silently falling back to the
   procedural blob, which reads as "the download didn't work".
 - Frame counts are detected by scanning each row for its first blank cell.
-- Row meanings are a built-in guess in `PetVisual.DEFAULT_STATE_ROWS`, read off a
-  real sheet rather than any spec, overridable per pet via a `[pet_rows]`
-  section in `config.cfg`. The right-click menu has a calibration mode that
-  cycles rows with their index on screen. No pack seen so far has a genuine
-  sleep animation.
+- V2 rows use the current Codex contract in `PetVisual.V2_STATE_ROWS`, including
+  distinct right/left locomotion and the task/review rows. Legacy row meanings
+  remain a built-in guess in `DEFAULT_STATE_ROWS`, overridable per pet via a
+  `[pet_rows]` section in `config.cfg`. The right-click menu has a calibration
+  mode that cycles rows with their index on screen.
+- V2 rows 9-10 are the 16 clockwise look directions. At idle, `PetVisual`
+  quantises the cursor angle to 22.5-degree steps, shows the matching frame
+  without mirroring it, and returns to the idle loop inside the pointer
+  deadzone or outside the notice radius.
 - Anything positioning the pet against a screen edge, or sizing its click box,
   must measure the **idle row** (`rect_for_row`), not the whole-sheet union —
   action frames fling limbs and props far outside the resting silhouette.
@@ -322,9 +327,10 @@ The manifest declares neither the grid, nor frame counts, nor row semantics:
 
 ### Every pose channel goes through `_apply_pose()`
 
-Four separate things move the sprite now: which way it faces, the lean and perk
-it does when the cursor comes near, the squash of being held or tapped, and the
-lean of a body still catching up with the grab point. They used to be written
+Five separate things move or select the sprite now: which way it faces, the v2
+look direction, the lean and perk it does when the cursor comes near, the squash
+of being held or tapped, and the lean of a body still catching up with the grab
+point. They used to be written
 straight to `_sprite.flip_h` / `offset` / `scale` by whichever setter ran last,
 which meant the last caller silently erased the others — `set_facing()` rewrote
 the offset the cursor lean had just put there.

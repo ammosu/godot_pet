@@ -6,10 +6,10 @@
 #   godot --headless --path . --export-release "macOS" "build/Godot Pet.app"
 #   tools/make_app_icon.sh
 #
-# The sprite is NOT copied into the repo. Packs are third-party art licensed for
-# personal, non-commercial use, so the icon it produces belongs to your local
-# build only — don't hand the .app to anyone else with a pet's face on it.
-# Without this script the app keeps the project's own icon.svg, which does ship.
+# The bundled default uses the project-owned Sprig Tail icon. Community-pack
+# sprites are never copied into the repo; an icon derived from one belongs only
+# to the user's local build and should not be redistributed with that artwork.
+# Without this script every exported app keeps the bundled mascot icon.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -20,21 +20,40 @@ PETS="$HOME/.codex/pets"
 [ -d "$APP" ] || { echo "No app at $APP — export it first." >&2; exit 1; }
 
 PET_ID=$(sed -n 's/^id="\(.*\)"$/\1/p' "$CONFIG" 2>/dev/null | head -1)
-[ -n "$PET_ID" ] || { echo "No pet selected; the app keeps icon.svg." >&2; exit 0; }
+[ -n "$PET_ID" ] || PET_ID="__default__"
 
-SHEET="$PETS/$PET_ID/spritesheet.webp"
-[ -f "$SHEET" ] || { echo "No spritesheet for '$PET_ID' at $SHEET" >&2; exit 1; }
+if [ "$PET_ID" = "__default__" ]; then
+	SOURCE="icon.png"
+	SOURCE_KIND="icon"
+	[ -f "$SOURCE" ] || { echo "No bundled mascot icon at $SOURCE" >&2; exit 1; }
+else
+	SOURCE="$PETS/$PET_ID/spritesheet.webp"
+	SOURCE_KIND="sheet"
+	[ -f "$SOURCE" ] || { echo "No spritesheet for '$PET_ID' at $SOURCE" >&2; exit 1; }
+fi
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-python3 - "$SHEET" "$WORK/icon_1024.png" <<'PY'
+python3 - "$SOURCE" "$WORK/icon_1024.png" "$SOURCE_KIND" <<'PY'
 import sys
 from PIL import Image
 
-sheet = Image.open(sys.argv[1]).convert("RGBA")
-cols, rows = 8, 9
-cw, ch = sheet.width // cols, sheet.height // rows
+source = Image.open(sys.argv[1]).convert("RGBA")
+if sys.argv[3] == "icon":
+    source.resize((1024, 1024), Image.Resampling.LANCZOS).save(sys.argv[2])
+    raise SystemExit
+
+sheet = source
+cols = 8
+if sheet.width % cols:
+    raise SystemExit(f"spritesheet width {sheet.width} is not divisible by {cols}")
+cw = sheet.width // cols
+if cw * 208 % 192:
+    raise SystemExit(f"cell width {cw} cannot produce a whole 192:208 cell")
+ch = cw * 208 // 192
+if sheet.height % ch:
+    raise SystemExit(f"spritesheet height {sheet.height} is not divisible by cell height {ch}")
 
 # Row 0 is idle everywhere this format is used; frame 0 is the resting pose.
 frame = sheet.crop((0, 0, cw, ch))
@@ -66,4 +85,8 @@ codesign --force --sign - --timestamp=none "$APP" 2>/dev/null
 
 # The Dock caches by path and mtime; touching the bundle makes it re-read.
 touch "$APP"
-echo "Icon rebuilt from '$PET_ID'."
+if [ "$PET_ID" = "__default__" ]; then
+	echo "Icon rebuilt from the bundled Sprig Tail mascot."
+else
+	echo "Icon rebuilt from '$PET_ID'."
+fi

@@ -36,9 +36,9 @@ var _squash := 0.0
 var _state := &"idle"
 
 
-## Pass a null pack to play with the procedural blob. Safe to call again: the
-## game window is reopened with whatever pack is current, which may not be the
-## one it was built with last time.
+## Pass a null pack only for the procedural emergency body. Safe to call again:
+## the game window is reopened with whatever pack is current, which may not be
+## the one it was built with last time.
 func build(ui_scale: float, pack: PetPack, rows: Dictionary,
 		design_height := DEFAULT_HEIGHT) -> void:
 	if _sprite != null:
@@ -66,7 +66,8 @@ func build(ui_scale: float, pack: PetPack, rows: Dictionary,
 	var idle_row := int(_rows.get(&"idle", 0))
 	var rest := pack.rect_for_row(idle_row)
 	_sprite = AnimatedSprite2D.new()
-	_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR \
+		if pack.smooth_filter else CanvasItem.TEXTURE_FILTER_NEAREST
 	_sprite.sprite_frames = pack.frames
 	# Fit the character, never the cell. Packs pad their cells by wildly
 	# different amounts — 76% to 95% of the height across the four to hand — so

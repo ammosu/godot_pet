@@ -15,19 +15,34 @@ class_name PetPack
 ## map, because the two ecosystems using this format disagree on the row order.
 ##
 ## The row count is measured rather than assumed because the format grew: the
-## original sheets were 9 rows, and `spriteVersionNumber: 2` packs are 11, with
-## nothing in the manifest to say so. Hard-coding 9 rejected every v2 pack
-## outright, on the divisibility check below.
+## original sheets were 9 rows and `spriteVersionNumber: 2` packs are 11.
+## Measuring the actual sheet keeps malformed or older manifests from making a
+## hard-coded row count reject otherwise usable art.
 ##
-## No artwork ships with this project. Packs are read from wherever
-## `npx codex-pets add <id>` installed them, which keeps asset licensing between
-## the user and the pet's author.
+## The project-owned default pack ships at res://pets/default. Community packs
+## are still read from wherever `npx codex-pets add <id>` installed them, which
+## keeps their licensing between the user and the pet's author.
 
 const COLS := 8
+const BUILTIN_DIR := "res://pets/default"
 ## Shape of one cell. Only the ratio is used — a pack drawn at 2x keeps it — and
 ## it's what lets the row count be derived from the sheet's height.
 const CELL_ASPECT := Vector2i(192, 208)
 const DEFAULT_FPS := 8.0
+## Codex Pets v2's state-specific frame timing. SpriteFrames durations are in
+## seconds when animation speed is 1.0; look rows are selected directly and do
+## not need playback timing.
+const V2_FRAME_DURATIONS := {
+	0: [0.280, 0.110, 0.110, 0.140, 0.140, 0.320],
+	1: [0.120, 0.120, 0.120, 0.120, 0.120, 0.120, 0.120, 0.220],
+	2: [0.120, 0.120, 0.120, 0.120, 0.120, 0.120, 0.120, 0.220],
+	3: [0.140, 0.140, 0.140, 0.280],
+	4: [0.140, 0.140, 0.140, 0.140, 0.280],
+	5: [0.140, 0.140, 0.140, 0.140, 0.140, 0.140, 0.140, 0.240],
+	6: [0.150, 0.150, 0.150, 0.150, 0.150, 0.260],
+	7: [0.120, 0.120, 0.120, 0.120, 0.120, 0.220],
+	8: [0.150, 0.150, 0.150, 0.150, 0.150, 0.280],
+}
 
 ## A cell whose drawn content is smaller than this in either axis counts as blank.
 ## Guards against stray semi-transparent pixels reading as a real frame.
@@ -36,6 +51,8 @@ const MIN_CONTENT_PX := 4
 var id := ""
 var display_name := ""
 var description := ""
+var sprite_version_number := 1
+var smooth_filter := false
 var frames: SpriteFrames
 var cell_size := Vector2i.ZERO
 ## Tight bounding box of the drawn character inside a cell, unioned over every
@@ -85,6 +102,15 @@ static func load_installed(pet_id: String) -> PetPack:
 	return load_from_dir(root.path_join(pet_id))
 
 
+static func load_builtin() -> PetPack:
+	var pack := load_from_dir(BUILTIN_DIR)
+	if pack != null:
+		# The bundled original is hand-drawn rather than pixel art. Keep the
+		# standard pet.json schema and make this renderer-only choice here.
+		pack.smooth_filter = true
+	return pack
+
+
 static func load_from_dir(dir: String) -> PetPack:
 	var manifest_path := dir.path_join("pet.json")
 	var raw := FileAccess.get_file_as_string(manifest_path)
@@ -97,7 +123,7 @@ static func load_from_dir(dir: String) -> PetPack:
 		return null
 
 	var sheet_path := dir.path_join(data.get("spritesheetPath", "spritesheet.webp"))
-	var image := Image.load_from_file(sheet_path)
+	var image := _load_sheet_image(sheet_path)
 	if image == null:
 		push_warning("PetPack: cannot load spritesheet %s" % sheet_path)
 		return null
@@ -114,6 +140,7 @@ static func load_from_dir(dir: String) -> PetPack:
 	pack.id = data.get("id", dir.get_file())
 	pack.display_name = data.get("displayName", pack.id)
 	pack.description = data.get("description", "")
+	pack.sprite_version_number = int(data.get("spriteVersionNumber", 1))
 	pack.cell_size = cell
 	pack._slice(image)
 
@@ -121,6 +148,16 @@ static func load_from_dir(dir: String) -> PetPack:
 		push_warning("PetPack: %s has no usable frames" % sheet_path)
 		return null
 	return pack
+
+
+static func _load_sheet_image(sheet_path: String) -> Image:
+	# Project-owned images must use Godot's imported resource path so they remain
+	# available after export. Community packs live outside res:// and continue
+	# to use direct file loading.
+	if sheet_path.begins_with("res://"):
+		var texture := load(sheet_path) as Texture2D
+		return texture.get_image() if texture != null else null
+	return Image.load_from_file(sheet_path)
 
 
 ## Cell size implied by the sheet's width, or zero if the sheet isn't a whole
@@ -157,6 +194,11 @@ func has_row(row: int) -> bool:
 	return row >= 0 and row < row_frame_counts.size() and row_frame_counts[row] > 0
 
 
+func has_look_directions() -> bool:
+	return sprite_version_number >= 2 and has_row(9) and has_row(10) \
+		and row_frame_counts[9] >= COLS and row_frame_counts[10] >= COLS
+
+
 ## Bounding box of one row's frames, falling back to the whole-sheet union.
 func rect_for_row(row: int) -> Rect2i:
 	if has_row(row) and row < row_rects.size() and row_rects[row].size != Vector2i.ZERO:
@@ -177,7 +219,9 @@ func _slice(image: Image) -> void:
 		var anim := row_anim(row)
 		frames.add_animation(anim)
 		frames.set_animation_loop(anim, true)
-		frames.set_animation_speed(anim, DEFAULT_FPS)
+		var durations: Array = V2_FRAME_DURATIONS.get(row, []) \
+			if sprite_version_number >= 2 else []
+		frames.set_animation_speed(anim, 1.0 if not durations.is_empty() else DEFAULT_FPS)
 
 		var used_frames := 0
 		var row_box := Rect2i()
@@ -190,7 +234,9 @@ func _slice(image: Image) -> void:
 			var atlas := AtlasTexture.new()
 			atlas.atlas = sheet
 			atlas.region = Rect2(region)
-			frames.add_frame(anim, atlas)
+			var duration := float(durations[used_frames]) \
+				if used_frames < durations.size() else 1.0
+			frames.add_frame(anim, atlas, duration)
 			used_frames += 1
 			row_box = drawn if row_box.size == Vector2i.ZERO else row_box.merge(drawn)
 		row_frame_counts[row] = used_frames
