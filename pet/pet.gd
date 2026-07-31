@@ -64,7 +64,7 @@ const DEFAULT_PET_SELECTION := "__default__"
 enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, MONITOR, SPEAK, ROAM, CALIBRATE,
 	RECENTRE, SET_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
-	RECORD, CLEAR_VOICE, MANAGE_VOICES, QUIT,
+	RECORD, CLEAR_VOICE, MANAGE_VOICES, FETCH_MODELS, QUIT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -78,6 +78,7 @@ enum MenuId {
 @onready var _work_offer: ConfirmationDialog = $WorkOffer
 @onready var _dirty_warning: ConfirmationDialog = $DirtyWarning
 @onready var _codex_login: ConfirmationDialog = $CodexLogin
+@onready var _model_download: ConfirmationDialog = $ModelDownload
 @onready var _memory: MemoryPanel = $Memory
 @onready var _chat_log: ChatLogPanel = $ChatLog
 @onready var _game: GamePanel = $Game
@@ -127,6 +128,10 @@ var _pending_work := {}
 ## A request the user has already typed, so the walk through _begin_work's gates
 ## ends by starting the job rather than asking them to type it a second time.
 var _queued_request := ""
+## Fetches the local voice's model files. Built here rather than living in
+## Qwen3Voice because the download is a thing the *user* is asked about and shown
+## — a dialog and an indicator — and this is the only place that owns UI.
+var _fetcher: ModelFetcher = null
 
 
 func _ready() -> void:
@@ -186,6 +191,7 @@ func _ready() -> void:
 	_setup_work_offer_dialog()
 	_setup_dirty_warning_dialog()
 	_setup_codex_login_dialog()
+	_setup_model_download()
 	CodexCli.login_finished.connect(_on_codex_login_finished)
 	CodexCli.login_hint.connect(_on_codex_login_hint)
 	RecorderService.tick.connect(_on_recording_tick)
@@ -781,6 +787,14 @@ func _build_speech_menu() -> PopupMenu:
 		menu.set_item_disabled(index, not reason.is_empty())
 		menu.set_item_tooltip(index, reason)
 
+	# Directly under the backend it repairs, so the disabled row and the way to
+	# undisable it read as one thing. Shown only when the download would actually
+	# help: the models are the last gap, or one is being fetched right now. On a
+	# machine with no engine at all this stays hidden, because 1.7 GB would leave
+	# that machine exactly as mute as it started — see Qwen3Voice.needs_models().
+	if TTSService.needs_models() or (_fetcher != null and _fetcher.is_running()):
+		menu.add_item(_model_download_label(), MenuId.FETCH_MODELS)
+
 	# Which voice, once there is a choice. The model's own voice is always in the
 	# list and always first: it is the one that needs no file and cannot go
 	# missing, so it is what every other row is measured against.
@@ -1026,6 +1040,8 @@ func _on_menu_pressed(id: int) -> void:
 			# *is* its name in the menu, so renaming and deleting are things the
 			# file manager already does better than anything worth writing here.
 			OS.shell_open(TTSService.voices_folder())
+		MenuId.FETCH_MODELS:
+			_toggle_model_download()
 		MenuId.ROAM:
 			_toggle_roaming()
 		MenuId.CALIBRATE:
@@ -1773,6 +1789,101 @@ func _on_voice_named(name: String) -> void:
 ## thing that broke is how a failure notice becomes silence.
 func _on_voice_remarked(text: String) -> void:
 	_on_pet_nudged("neutral", text, false, false)
+
+
+# --- Fetching the local voice's models ----------------------------------------
+
+## A dialog, unlike the recording it sits next to, because this one *does* meet
+## the bar the others are held to: it spends something the user has not already
+## agreed to spend — most of two gigabytes of their bandwidth, and a slice of
+## their disk — and it does so by talking to a third party over the network. The
+## recorder asks nothing because the click *was* the answer; here the click only
+## says "tell me more".
+##
+## So the text answers the three questions a download actually raises, the same
+## shape the screen-look dialog uses: how much, from where, and where it lands.
+## Naming the source is not decoration — these weights are a third-party
+## conversion, not Qwen's own file, and that is a thing someone may reasonably
+## want to check before agreeing.
+func _setup_model_download() -> void:
+	var scale := _window_ctl.get_ui_scale()
+	_model_download.dialog_text = "\n".join(PackedStringArray([
+		"本機語音的引擎已經裝好了，只差模型檔。我可以直接幫你抓下來。",
+		"",
+		"・大小是 %s，分成兩個檔案" % ModelFetcher.size_text(ModelFetcher.TOTAL_BYTES),
+		"・來源是 %s" % ModelFetcher.SOURCE_LABEL,
+		"・會存在 %s" % TTSService.models_dir(),
+		"・下載好之後就完全在這台電腦上跑，不會再連網路",
+		"",
+		"看網速大概要幾分鐘。中途可以在選單裡叫我停。",
+	]))
+	_model_download.exclusive = false
+	_model_download.theme = PetStyle.dialog_theme(scale)
+	_model_download.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# The loud treatment, not the ghost one: this is the thing the user came here
+	# to do, and the same call CodexLogin's primary button records making.
+	var ok := _model_download.get_ok_button()
+	var primary := PetStyle.primary_button_styles(scale)
+	for state in primary:
+		ok.add_theme_stylebox_override(state, primary[state])
+	ok.add_theme_color_override("font_color", PetStyle.INK)
+	ok.add_theme_color_override("font_hover_color", PetStyle.INK)
+	ok.add_theme_color_override("font_pressed_color", PetStyle.INK)
+	_model_download.confirmed.connect(_start_model_download)
+
+	_fetcher = ModelFetcher.new()
+	_fetcher.progress.connect(_on_model_progress)
+	_fetcher.finished.connect(_on_model_finished)
+	add_child(_fetcher)
+
+
+## The menu row, which carries its own stop for the same reason 錄音 does: while
+## this runs it is the only other place the job is visible, and a progress
+## indicator whose instructions point at a row that doesn't exist is worse than
+## no instructions.
+func _model_download_label() -> String:
+	if _fetcher != null and _fetcher.is_running():
+		return "停止下載語音模型"
+	return "下載語音模型（%s）…" % ModelFetcher.size_text(ModelFetcher.TOTAL_BYTES)
+
+
+func _toggle_model_download() -> void:
+	if _fetcher != null and _fetcher.is_running():
+		_fetcher.cancel()
+		return
+	_model_download.reset_size()
+	_model_download.popup_centered()
+
+
+func _start_model_download() -> void:
+	var dir := TTSService.models_dir()
+	if dir.is_empty():
+		return
+	if not _fetcher.start(dir):
+		return
+	# Not on_talk_started(), unlike the recorder: this runs for minutes, and a pet
+	# frozen in place for all of them reads as the app having hung. The bubble
+	# follows the pet perfectly well while it wanders.
+	_on_model_progress("開始下載語音模型…")
+
+
+## The indicator, held open by ChatPanel's existing "more is coming" state — the
+## same one the recorder's clock uses, and for the same reason: it already
+## clamps to the visible area, follows the pet, and on Windows already sits
+## inside the passthrough mask.
+func _on_model_progress(text: String) -> void:
+	_chat.show_holding(text)
+
+
+func _on_model_finished(ok: bool, message: String) -> void:
+	if ok:
+		# Discovery is cached until something asks for it again, and the download
+		# landed in the first place _find_models() looks — so this one call is the
+		# whole of the wiring, and the voice is usable without a restart.
+		TTSService.rediscover()
+		if not TTSService.is_enabled():
+			message += "去「說話」選單把「說話出聲」打開，就能聽到了。"
+	_on_pet_nudged("happy" if ok else "sad", message, false, false)
 
 
 # --- Recording ----------------------------------------------------------------

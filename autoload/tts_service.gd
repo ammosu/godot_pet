@@ -224,6 +224,20 @@ func _on_backend_broke(reason: String) -> void:
 	remarked.emit(reason + next)
 
 
+# --- The downloadable half of the local engine --------------------------------
+
+## Whether the local voice is one download away from working — engine present,
+## weights absent. False on a machine missing anything else, since fetching
+## models would not make the voice usable there. See ModelFetcher.
+func needs_models() -> bool:
+	return _qwen3 != null and _qwen3.needs_models()
+
+
+## Where those models should land. Empty when there is no local backend at all.
+func models_dir() -> String:
+	return _qwen3.models_dir() if _qwen3 != null else ""
+
+
 # --- The cloned voice ---------------------------------------------------------
 
 func can_clone_voice() -> bool:

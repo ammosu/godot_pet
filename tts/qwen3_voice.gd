@@ -96,8 +96,28 @@ var _outstanding := 0
 var _player: AudioStreamPlayer
 var _queue: Array[AudioStreamWAV] = []
 
+## Which check failed, as something other code can branch on. `_reason` is a
+## sentence for a person and must stay one — matching on its wording is how a
+## reworded message silently turns a feature off.
+##
+## Only `GAP_MODELS` is actionable from inside the app: the models can be
+## downloaded, and nothing else here can. See ModelFetcher for why the library
+## is not on that list.
+const GAP_NONE := ""
+const GAP_PLATFORM := "platform"
+const GAP_DAEMON := "daemon"
+const GAP_PYTHON := "python"
+const GAP_LIBRARY := "library"
+const GAP_MODELS := "models"
+## The models are missing *and* the user has not pointed at a folder of their
+## own. A stated path that is wrong is a different problem with a different fix,
+## and downloading into `user://` would leave that path still wrong while
+## appearing to work.
+const GAP_MODELS_STATED := "models-stated"
+
 var _checked := false
 var _reason := ""
+var _gap := GAP_NONE
 var _library := ""
 var _models := ""
 var _python := ""
@@ -151,6 +171,25 @@ func refresh() -> void:
 	_slow_reported = false
 
 
+## Whether the models are the *only* thing missing, which is the one gap the app
+## can close by itself.
+##
+## Deliberately not "are the models absent": `_check()` returns at the first
+## failure, so on a machine with no engine at all this is false — and it has to
+## be, or the pet would offer a 1.7 GB download that leaves the voice exactly as
+## unavailable as it was. The library has to be there first.
+func needs_models() -> bool:
+	_check()
+	return _gap == GAP_MODELS
+
+
+## Where a download should land. The first candidate `_find_models()` tries, so
+## nothing has to be told about it afterwards — `refresh()` finds it on the next
+## menu build.
+func models_dir() -> String:
+	return _work_path("models")
+
+
 func voice_name() -> String:
 	var name := active_voice()
 	return "Qwen3・%s" % (name if not name.is_empty() else "預設嗓音")
@@ -165,17 +204,21 @@ func _check() -> void:
 	_library = ""
 	_models = ""
 	_python = ""
+	_gap = GAP_NONE
 
 	if not _platform_supported():
 		# Windows has no /bin/sh to launch through, which is the same wall
 		# WorkService and PresenceService hit. Disabled, never hidden.
+		_gap = GAP_PLATFORM
 		_reason = "這個系統上還不能用本機語音。"
 		return
 	if FileAccess.get_file_as_bytes(DAEMON_SOURCE).is_empty():
+		_gap = GAP_DAEMON
 		_reason = "找不到 %s，這個版本可能沒把它打包進去。" % DAEMON_SOURCE
 		return
 	_python = _find_python()
 	if _python.is_empty():
+		_gap = GAP_PYTHON
 		# Naming the setting matters here more than anywhere else in this list: a
 		# pet launched from the GNOME dash or from Finder inherits a thin PATH
 		# that never sourced a shell profile, so a pyenv/asdf/conda/nix python is
@@ -192,12 +235,14 @@ func _check() -> void:
 	var stated := _stated("qwen3_lib", "GODOT_PET_QWEN3_LIB")
 	if not stated.is_empty():
 		if not FileAccess.file_exists(stated):
+			_gap = GAP_LIBRARY
 			_reason = "設定裡指定的 %s 不在那裡。" % stated
 			return
 		_library = stated
 	else:
 		_library = _find_library()
 		if _library.is_empty():
+			_gap = GAP_LIBRARY
 			# Two routes, and they are not equivalent — which is exactly why both
 			# are named. Dropping the file into the pet's own folder is picked up
 			# the next time this menu opens; writing the path into config.cfg is
@@ -210,15 +255,21 @@ func _check() -> void:
 	stated = _stated("qwen3_models", "GODOT_PET_QWEN3_MODELS")
 	if not stated.is_empty():
 		if not _holds_models(stated):
+			_gap = GAP_MODELS_STATED
 			_reason = "設定裡指定的 %s 裡沒有模型檔。" % stated
 			return
 		_models = stated
 	else:
 		_models = _find_models()
 		if _models.is_empty():
-			_reason = ("找不到模型（%s 和 %s）。放到 %s，或把資料夾路徑寫進 config.cfg 的 "
-				+ "[tts] qwen3_models 再重開我一次。") \
-				% [WEIGHT_FILES[0], TOKENIZER_FILE, _work_path("models")]
+			_gap = GAP_MODELS
+			# The one gap in this list the app can close by itself, so the message
+			# says so first and keeps the manual routes for the machine that would
+			# rather not spend the bandwidth.
+			_reason = ("還缺語音模型（%s 和 %s）。可以在「說話」選單裡叫我下載，"
+				+ "或自己放到 %s，或把資料夾路徑寫進 config.cfg 的 [tts] qwen3_models "
+				+ "再重開我一次。") \
+				% [WEIGHT_FILES[1], TOKENIZER_FILE, _work_path("models")]
 			return
 	_reason = ""
 
