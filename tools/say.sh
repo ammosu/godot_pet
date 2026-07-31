@@ -40,19 +40,11 @@ else
 	set --
 fi
 
-# The same table the app applies, longest key first for the same reason.
-SPOKEN=$(python3 - "$REPO/prompts/pronunciation.json" "$TEXT" <<'PY'
-import json, sys
-try:
-    table = json.load(open(sys.argv[1], encoding="utf-8")).get("replacements", {})
-except Exception:
-    table = {}
-line = sys.argv[2]
-for src in sorted(table, key=len, reverse=True):
-    line = line.replace(src, str(table[src]))
-print(line)
-PY
-)
+# The same table the app applies, through the same code hear.sh uses. Not a
+# copy of the substitution inline here: two listening tools that respell
+# differently from each other, or from the pet, would send you looking for a
+# rule that is already right.
+SPOKEN=$(printf '%s' "$TEXT" | python3 "$REPO/tools/respell.py")
 
 echo "寫的：$TEXT"
 [ "$SPOKEN" != "$TEXT" ] && echo "唸的：$SPOKEN（替換過）" || echo "唸的：（沒有規則命中）"
