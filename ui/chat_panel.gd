@@ -24,6 +24,13 @@ signal input_toggled(open: bool)
 signal input_resized
 ## The line finished being read and faded away.
 signal bubble_hidden
+## A holding bubble can carry one immediate action. Recording uses it to stop
+## without sending the user back through the right-click menu.
+signal holding_action_pressed
+## The clickable part of this panel changed. On platforms where the transparent
+## window's hit region is pushed only on discrete events, the pet has to refresh
+## that region as soon as a holding action appears or disappears.
+signal hit_region_changed
 
 const CHAT_PLACEHOLDER := "跟我說說話…"
 
@@ -74,7 +81,9 @@ const CLOSE_ARM_RATIO := 0.21
 const CLOSE_STROKE := 1.6
 
 @onready var _bubble: PanelContainer = $Bubble
-@onready var _text: RichTextLabel = $Bubble/Text
+@onready var _content: VBoxContainer = $Bubble/Content
+@onready var _text: RichTextLabel = $Bubble/Content/Text
+@onready var _holding_action: Button = $Bubble/Content/Action
 ## Two fields, one visible at a time — see _field().
 ##
 ## The masked one has to stay a LineEdit: `secret` is a LineEdit property with no
@@ -126,6 +135,9 @@ func _ready() -> void:
 	_bubble.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_bubble.visible = false
+	_holding_action.visible = false
+	_holding_action.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_holding_action.pressed.connect(holding_action_pressed.emit)
 	_input.visible = false
 	_input.text_submitted.connect(_on_submitted)
 	_input.caret_blink = true
@@ -177,12 +189,14 @@ func configure(ui_scale: float, window_size: Vector2i, pet_rect: Rect2) -> void:
 	# Chinese sits in a solid block without it; a line of air between rows is the
 	# single biggest thing that makes a wall of CJK readable.
 	_text.add_theme_constant_override("line_separation", roundi(5.0 * _scale))
+	_content.add_theme_constant_override("separation", roundi(7.0 * _scale))
 	# The bubble grows upward from the pet's head, so an over-long reply would
 	# run off the top of the window and get clipped. Drive the height manually
 	# instead and let the text scroll once it hits the ceiling.
 	_text.fit_content = false
 	_text.scroll_active = true
 	_text.scroll_following = true
+	PetStyle.make_bubble_action_button(_holding_action, _scale)
 
 	_apply_input_style()
 	_relayout()
@@ -225,6 +239,8 @@ func _process(delta: float) -> void:
 func begin_reply() -> void:
 	_kill_fade()
 	_apply_bubble_style(false)
+	var had_action := _holding_action.visible
+	_holding_action.visible = false
 	_full_text = ""
 	_shown = 0.0
 	_streaming = true
@@ -241,6 +257,9 @@ func begin_reply() -> void:
 		_appear = 0.0
 	_bubble.visible = true
 	_bubble.modulate.a = 1.0
+	if had_action:
+		_reposition_bubble()
+		hit_region_changed.emit()
 
 
 func append_reply(chunk: String) -> void:
@@ -276,16 +295,23 @@ func show_notice(message: String) -> void:
 ## than a second timer racing it. Repeat calls only rewrite the text: they must
 ## not replay the appear animation or re-run the typewriter, or a clock ticking
 ## once a second would make the bubble jump once a second.
-func show_holding(message: String) -> void:
+func show_holding(message: String, action_label := "") -> void:
 	if not _holding:
 		begin_reply()
 		_apply_bubble_style(true)
 		_holding = true
+	_holding_action.text = action_label
+	_holding_action.visible = not action_label.is_empty()
 	_streaming = true
 	_full_text = message
 	_text.text = message
 	_shown = float(message.length())
 	_text.visible_characters = -1
+	# Unlike ordinary speech, this bubble is interactive. Lay it out now rather
+	# than waiting for the next frame, then let the window include its new bounds
+	# in the click-through mask before the user can reach for the button.
+	_reposition_bubble()
+	hit_region_changed.emit()
 
 
 func is_holding() -> bool:
@@ -734,13 +760,18 @@ func is_input_open() -> bool:
 	return _input.visible or _area.visible
 
 
-## Viewport-space rect that must receive clicks. Empty when the input is closed —
-## the bubble is display-only, so it stays click-through.
+## Viewport-space rect that must receive clicks. Ordinary speech bubbles remain
+## display-only and click-through; a holding bubble with an action is the one
+## exception, because its button has to be reachable without reopening a menu.
 func get_input_rect() -> Rect2:
-	if not is_input_open():
-		return Rect2()
-	var field := _field()
-	return Rect2(field.position, field.size)
+	var box := Rect2()
+	if is_input_open():
+		var field := _field()
+		box = Rect2(field.position, field.size)
+	if _bubble.visible and _holding_action.visible:
+		var bubble := Rect2(_bubble.position, _bubble.size)
+		box = bubble if not box.has_area() else box.merge(bubble)
+	return box
 
 
 ## Viewport-space rect covering everything this panel currently *draws* — the

@@ -48,11 +48,18 @@ script = ExtResource("6_chat")
 [node name="Bubble" type="PanelContainer" parent="Chat"]
 visible = false
 
-[node name="Text" type="RichTextLabel" parent="Chat/Bubble"]
+[node name="Content" type="VBoxContainer" parent="Chat/Bubble"]
+
+[node name="Text" type="RichTextLabel" parent="Chat/Bubble/Content"]
 bbcode_enabled = true
 fit_content = true
 scroll_active = false
 autowrap_mode = 2
+
+[node name="Action" type="Button" parent="Chat/Bubble/Content"]
+visible = false
+focus_mode = 0
+text = "停止錄音"
 
 [node name="Input" type="LineEdit" parent="Chat"]
 visible = false
