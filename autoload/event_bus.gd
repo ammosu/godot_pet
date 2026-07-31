@@ -87,3 +87,7 @@ signal resource_alert(kind: String, detail: Dictionary)
 ## the model named, empty when it didn't (which is fine when there is only one).
 ## pet.gd owns what happens next — nothing launches from here.
 signal work_requested(space_name: String, request: String)
+
+## A recording the user wants the pet to speak in. Carries a real filesystem
+## path; `pet.gd` asks what to call it before anything is cloned.
+signal voice_offered(wav_path: String)

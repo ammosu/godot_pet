@@ -47,6 +47,9 @@ CC BY-NC-SA，第三方角色的同人只允許個人非商業使用。程式只
 - 想真的聊天的話要一支 **OpenAI API key**。沒有 key 也跑得動，會退到 mock provider 講罐頭台詞
 - 想用「幫我做事」的話，要有 `claude` 或 `codex` CLI 而且已經登入
 - Linux 額外需要 `libsecret-tools`（憑證儲存）與 `speech-dispatcher`（語音，Ubuntu 桌面預設就有）
+- 想讓牠用**本機神經網路語音**（甚至用你自己的聲音）講話的話，要有編好的
+  [qwen3-tts.cpp](https://github.com/predict-woo/qwen3-tts.cpp) 與它的模型，外加 `python3`。沒有的話這個選項會
+  灰掉並在提示裡說少了什麼，其餘一切照舊 —— 什麼都不會壞
 
 ## 跑起來
 
@@ -140,7 +143,11 @@ npx codex-pets add <pet-id>
 - **我做的東西** —— 牠產出的檔案都放在 `~/文件/GodotPet`（刻意不放 `user://`，埋在
   `~/.local/share` 底下就違背了「你找得到、打得開」這件事）。目前唯一的產出是對話記錄匯出，
   那個完全不需要 LLM
-- **語音** —— 系統內建語音（`DisplayServer.tts_speak()`），不花錢也不需要 API。句子邊串流邊念
+- **語音** —— 兩種都不花錢也不需要 API，句子邊串流邊念。預設是系統內建語音
+  （`DisplayServer.tts_speak()`）；裝了 qwen3-tts.cpp 的話可以換成**跑在本機的神經網路語音**，
+  而且能用「錄一段話」錄下來的聲音當牠的嗓音 —— 到「我做的東西」按那個 wav 旁邊的
+  「當我的聲音」，取個名字就好。聲音可以存好幾個，在「說話」選單裡切換。
+  音訊完全不離開這台機器
 
 ### 遊戲
 

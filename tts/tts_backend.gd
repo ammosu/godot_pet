@@ -1,0 +1,61 @@
+extends Node
+class_name TTSBackend
+
+## What a voice has to look like. `TTSService` only ever sees this, so the
+## operating system's voices and a local neural model are interchangeable — the
+## same split `LLMProvider` makes between the mock and a real backend.
+##
+## The one thing this interface insists on that `LLMProvider` does not: a backend
+## that cannot run here has to say **why**, in a finished sentence. A voice
+## depends on things outside the repo — an engine, a model, a language pack — and
+## every one of them is missing on some machine. "說話出聲（不能用）" is a dead end;
+## naming the file that isn't there is something the user can act on.
+
+## The backend stopped being usable part-way through a session: the helper died,
+## the library went away, the device was taken. `reason` is a finished sentence.
+## `TTSService` falls back to the operating system's voice rather than going
+## quiet, because silence is indistinguishable from the feature being off.
+signal broke(reason: String)
+
+## Something worth saying that is *not* a reason to swap the voice out. A machine
+## that synthesizes slower than it speaks still speaks; being switched back to a
+## different voice without asking would be the more surprising outcome, so this
+## is said once and the user decides.
+signal warned(message: String)
+
+
+## Say one sentence. Called once per sentence as a reply streams in, so an
+## implementation queues rather than interrupting — consecutive sentences have to
+## run together the way `DisplayServer.tts_speak()` makes them.
+func speak(_text: String) -> void:
+	push_error("%s does not implement speak()" % get_script().resource_path)
+
+
+## Drop everything queued and stop what is being said. Must be safe when idle.
+func stop() -> void:
+	pass
+
+
+## Whether this backend can speak on this machine, right now. Called every time
+## the menu is built, so it has to be cheap and must not start anything.
+func is_available() -> bool:
+	return false
+
+
+## Empty when available; otherwise the sentence described above.
+func unavailable_reason() -> String:
+	return ""
+
+
+## For the menu row, so which voice is actually in use is visible without a
+## picker. This is how the Afrikaans bug stayed hidden for as long as it did —
+## the row said the name the whole time and it was never doubted.
+func voice_name() -> String:
+	return ""
+
+
+## Release whatever this is holding: a child process, an audio device. Called
+## when the backend is swapped away from as well as at shutdown, so it has to
+## leave the object usable if `speak()` is called again afterwards.
+func shutdown() -> void:
+	pass

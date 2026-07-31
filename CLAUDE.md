@@ -55,6 +55,13 @@ example, a `while true:` whose every exit is a `return`, which GDScript's flow
 analysis rejects) only surface when the script is first loaded at runtime, so
 also check the run log.
 
+**Two scripts declaring the same `class_name` produce no output at all** —
+measured: a byte-copy of `tts/qwen3_voice.gd` left beside it, both saying
+`class_name Qwen3Voice`, imported completely silently. Which one the global class
+resolves to is then not something the import step will ever tell you, so a stray
+copy in the tree can quietly become the one that runs. `git status` is the check
+that catches this, not `--import`.
+
 There is no test suite. Verification is empirical:
 
 ```sh
@@ -113,8 +120,20 @@ holds no behaviour itself.
 
 ### The right-click menu is grouped by kind, and one group is allowed to grow
 
-Four setting submenus, then the verbs (餵食 / 遊戲 / 看螢幕 / 幫我做事 / 回到角落),
-then one 查看 submenu holding every window, then 結束.
+Five setting submenus, then the verbs (餵食 / 遊戲 / 看螢幕 / 幫我做事 / 錄音 /
+回到角落), then one 查看 submenu holding every window, then 結束.
+
+**說話 is the fifth.** It sits next to 語言模型 because they are the same question
+asked twice — which model thinks, and which one speaks — and it took the 說話出聲
+row *out* of 行為, where the one row naming a resource never fitted among rows
+describing what the pet does. Speech stopped being one switch: there is now a
+backend, a voice and an on/off, and three questions is what a submenu is for.
+
+It does grow the root menu by one row, and the cost is measured like every other
+entry here: **15 rows, 426px** on the 1080p desktop, against 392px at 14 and the
+476px at 17 that forced Godot to shove the flat menu upward. The row it removed
+came out of 行為, not out of the root — that is a claim this file made before
+anyone measured it, and it was wrong.
 
 The second fold happened because the first one stopped being enough. Measured
 flat at seventeen rows: **476px on a 1080p desktop, which Godot had to shove
@@ -718,10 +737,23 @@ Two Godot specifics:
 
 ### Speech
 
-`autoload/tts_service.gd` uses `DisplayServer.tts_speak()` — the OS voices, so
-no API and no cost. Sentences are spoken as they stream in rather than after the
-reply completes; `tts_speak` queues rather than interrupting, so consecutive
-sentences run together on their own.
+`autoload/tts_service.gd` owns the sentence splitting and the EventBus wiring;
+*which* voice does the speaking is a backend in `tts/`, swapped the way
+`LLMService` swaps providers. `tts/os_voice.gd` is the OS voices
+(`DisplayServer.tts_speak()` — no API, no cost, nothing to install), and
+`tts/qwen3_voice.gd` is a local neural model. Sentences are spoken as they stream
+in rather than after the reply completes.
+
+That split is also what makes the neural backend possible at all: the engine has
+no streaming, so an utterance is only as fast as it is short, and a sentence is
+exactly the unit that keeps the wait under half a second.
+
+`TTSBackend` asks for one thing `LLMProvider` does not — a backend that cannot
+run here has to say **why**, in a finished sentence. A voice depends on things
+outside the repository (an engine, a model, a language pack) and every one of
+them is missing on some machine; 說話出聲（不能用）is a dead end, while naming the
+file that isn't there is something the user can act on. The 說話 submenu puts that
+sentence in the row's tooltip.
 
 Voice languages are reported as BCP 47 with a **hyphen** (`zh-TW`), while
 `OS.get_locale()` uses an underscore (`zh_TW`), and
@@ -754,6 +786,257 @@ Only three things actually reach TTS: `reply_chunk`/`reply_finished`, and
 the pet says (餵食, game scores, 還在弄, work results, monitor alerts) goes
 through `pet.gd::_on_pet_nudged()` as a **direct call**, never onto EventBus, so
 it is shown and never spoken. Deliberate or not, that is the current contract.
+
+`TTSService.remarked` follows that rule for a sharper reason than the rest: half
+of what it carries exists *because* speech just stopped working, and routing a
+"your voice broke" notice through the thing that broke turns it into silence.
+
+#### The local neural voice, and why it is written as if it will be absent
+
+`tts/qwen3_voice.gd` drives qwen3-tts.cpp — still entirely on this machine, no
+network, no cost, but depending on three things this repository cannot carry: a
+built shared library, 2.1 GB of model, and a Python to drive them. **The class is
+written around the assumption that none of it is there**, because on almost every
+machine that is true. Nothing is bundled, nothing is inferred, and a fresh clone
+behaves exactly as it did before this existed.
+
+The trade it buys is a voice that can be *the user's own*: `RecorderService`
+already produces a WAV, and `我做的東西`'s row for one grows a 當我的聲音 button.
+Measured, that works — the same sentence came out at a median F0 of **116 Hz in
+the model's own voice and 238 Hz** in a cloned one.
+
+**Voices are a named library, not one slot.** `user://qwen3_tts/voices/<name>.emb`,
+any number, listed as a radio group in the 說話 submenu next to 預設嗓音 — which is
+always there, is not a file, and is what every other row is measured against.
+Three things follow from the name being the *filename*:
+
+- Renaming the file renames the voice, and deleting it removes it. That is why
+  管理聲音… opens the folder instead of being a sixth panel: a voice is one 4 KB
+  file whose name is its whole identity, and the file manager already does both
+  better than anything worth writing here.
+- The name is typed by the user into a field one keystroke from the chat input,
+  so it goes through `sanitise_voice_name()` — `validate_filename()`, leading dots
+  stripped, length capped. The same discipline `OutboxService` applies, for a
+  sharper reason.
+- `active_voice()` re-checks the file exists on every read, so a voice deleted
+  outside the app falls back to the default rather than leaving the pet mute with
+  a tick on a row that is gone.
+
+Cloning asks for that name **before** it clones (`ChatPanel.InputMode.VOICE`,
+`voice_named`), because the only name this end could invent is the recording's
+filename — 「錄音 2026-07-31 012304」, which is a timestamp, not a voice. Like
+`SECRET` and `WORK` the mode reverts to chat on submit or dismissal; here the cost
+of not reverting would be the next thing you said to the pet becoming a voice
+name. Cloning also *selects* the voice: nobody records a take, names it, and then
+wants to go on hearing the old one.
+
+`res://voices/*.emb` is seeded into `user://` on first run, the same copy-out
+`daemon.py` gets and for the same reason — and only when absent, so a shipped name
+the user re-cloned stays theirs. It is named in `include_filter` alongside the
+helper. Two voices ship, `anna` and `yu`, taken from reference clips the project's
+author supplied and chose to distribute; the folder's README states the test every
+addition has to pass, because an embedding is derived from a real voice and this
+repository is public — the same line already drawn for community pet packs.
+
+Measured on the shipped pair, same sentence in one session: **178 Hz** in the
+model's own voice, **293 Hz** for `anna`, **154 Hz** for `yu`. Compare *within* a
+run — synthesis is stochastic at the default temperature 0.9, and the same voice
+measured 116 Hz and 178 Hz on two different days, a swing wider than the gap
+between some voices.
+
+**A helper process, not a GDExtension, and not the CLI.** Linking the library
+into Godot means shipping a per-platform binary and taking any crash inside the
+engine's own process — and this library has one: two overlapping `synthesize`
+calls **abort the process** (SIGABRT) rather than returning an error. A desk pet's
+optional voice must not be able to take the character down, so it goes in a child.
+And not `qwen3-tts-cli` per sentence, because loading the model costs 754 ms
+before a single character is synthesized, against 413 ms to say an eight-character
+line warm.
+
+Communication is `WorkService`'s shape exactly: requests over stdin (the direction
+`SecretStore` already proves safe), responses to a **regular file tailed by byte
+offset**, because `FileAccess` reads on a pipe block. The helper redirects its own
+stdout and stderr into a log, and this is not tidiness — every synthesis writes
+~22 lines to stderr that **cannot be turned off** (`print_timing` defaults true
+and `Qwen3TtsParams` has no field for it), which would fill an undrained pipe and
+wedge the helper mid-sentence.
+
+Measured on this machine, an RTX 4090: model load 754 ms once, then 383-1278 ms
+per sentence at RTF 0.24-0.49. Upstream reports ~1.7 CPU-only, i.e. slower than
+speech — so `_watch_speed()` averages the real RTF over three utterances and, past
+1.0, says so **once** and carries on. It emits `warned`, not `broke`: a machine
+that lags still speaks, and silently switching the user's chosen voice out from
+under them would be the more surprising outcome.
+
+Things that look like implementation detail and are not:
+
+- **`exec` in the launch command**, for the reason WorkService documents: without
+  it the pid we keep is the shell's. Verified here — the helper's parent is the
+  Godot process itself.
+- **The helper cannot be orphaned.** Killing Godot with `SIGKILL`, which
+  `_exit_tree()` cannot survive, still ends it: stdin is the pipe, the reader
+  thread hits EOF, and it quits. The `OS.kill` in `shutdown()` is the tidy path,
+  not the guarantee.
+- **The engine is unloaded after idle, and the process is not.** Dropping it
+  returns **2.6 GB of VRAM** on a machine the user is also working on. Exiting
+  instead would be simpler and is deliberately not done: a helper that comes and
+  goes is a pipe that breaks under us. (Godot survives writing to a dead pipe —
+  measured, 40 writes returned error 13 and nothing worse — but the write goes
+  nowhere and the pet waits for a reply that cannot come.)
+- **A crash is forgiven exactly once** (`MAX_RESTARTS`), the same shape as
+  WorkService's stale-session retry, and for a sharper reason: the SIGABRT above
+  is a thing that genuinely happens, and losing the chosen voice for the rest of
+  the session over one of them is too harsh. `_restarts` resets on `ready`, so
+  only a helper that comes back is forgiven twice.
+- **`GGML_NO_BACKTRACE=1`.** On an abort, ggml forks **gdb** and lets it print to
+  stdout. Nothing here parses stdout, so that alone is survivable — but a voice
+  that stops to run a debugger takes seconds to die, and the pet is waiting on the
+  process to disappear.
+- Errors are tagged with the **op** that produced them, and a coded `silent`, so
+  the caller never matches on the wording of a C++ exception nobody controls.
+- **Every request must be counted in `_outstanding`, and every request must be
+  answered.** `_process` switches itself off when that reaches zero and nothing is
+  playing, so a request that forgets to count itself is one whose reply is never
+  read. Cloning did exactly that: `clone_from()` turned polling on without
+  registering anything, polling stopped on the next frame, and the symptom was a
+  voice file appearing on disk while the pet said nothing at all — the feature
+  half-working in the way least likely to be noticed. The helper's side of the
+  same rule is that a `say` with empty text, and one dropped by a cancel, both
+  answer with a coded error instead of being binned.
+- **The cancel watermark applies to `say` only.** Sentences and clones share one
+  id space (`_next_id`), so a watermark over both let an ordinary "stop talking"
+  throw away a voice-clone requested a moment earlier — and the pet then blamed
+  the user's recording for it.
+- **A clone is the one request carried across a helper restart.** A lost sentence
+  is a gap in a reply; a lost clone is a button that did nothing, since
+  `voice_cloned` is the only thing the panel and the pet are waiting for. If the
+  restart itself fails, `_fail()` answers it before giving up.
+- **`_on_backend_broke` says the reason even when there is nothing to fall back
+  from.** `clone_voice_from()` starts the helper whichever backend is active, and
+  the OS voice is the shipped default — so the likeliest time this fires is a
+  當我的聲音 on a machine where the engine cannot load. Guarding the whole handler
+  on "am I on it" made exactly that case fail in complete silence.
+- **`_find_python()` requires the candidate to *run*, not merely exist.** macOS
+  ships `/usr/bin/python3` as a Command Line Tools stub that opens an install
+  dialog and exits, which `file_exists()` cannot tell from an interpreter — the
+  voice would report available, offer the row, and fail at the first thing the pet
+  tried to say. One process per candidate, at most once per session.
+- **The helper opens the ggml libraries itself** (`--lib-path`, `RTLD_GLOBAL`)
+  rather than relying on `LD_LIBRARY_PATH` reaching it. On macOS dyld strips
+  `DYLD_*` when exec'ing a restricted binary, and a system Python is exactly that,
+  so the environment variable never reaches the loader that would use it. The
+  export is still done — it is correct on Linux — but it is the belt, not the
+  braces.
+- **The helper decodes stdin as UTF-8 explicitly.** Left to the locale, a
+  `LANG=…ISO-8859-1` or Big5 desktop decodes 「你好」 as mojibake and raises
+  *nothing* — the surrounding JSON is ASCII, so it parses, and the pet then
+  articulates the mojibake. Silent corruption of the words it says is worse than a
+  crash, and every user-facing string in this project is Traditional Chinese.
+- **`reader()`'s `quit` is in a `finally`.** It is the only path by which the main
+  loop can ever be told to stop, so a reader thread that died for any reason would
+  leave a process alive with nobody able to end it.
+- The daemon is copied from `res://tools/` to `user://` before running: `res://`
+  is inside the pack in an exported build and has no path a Python interpreter
+  can open — the same thing that makes `res://.env` invisible there. It is also
+  named in `include_filter` on all three presets, since a `.py` is not a resource
+  Godot imports. **That last part is reasoned, not measured** — there are no
+  export templates on the machine this was built on. It is also why `_check()`
+  reports a missing `res://tools/qwen3_tts_daemon.py` as its own sentence: if the
+  filter turns out to be wrong, the failure is a message naming the file rather
+  than a voice that silently never starts.
+
+**A silent reference produces a voice, not an error.** Fed a 13-second recording
+of an idle room (peak 0.028), the extractor returned 1024 perfectly well-formed
+numbers and the pet then spoke in an arbitrary voice nobody chose. There is no way
+to ask the library about this, so the helper measures the reference's peak itself
+and refuses below 0.05 — real speech measured 0.26. It fails *open* on a WAV it
+cannot parse, since the check must never be the cause of the failure it prevents.
+Note this is the *clone* side only; a recording of silence still saves happily,
+which is the gap `RecorderService.stop()` still has.
+
+#### 破音字, and why the correction is a lookup table
+
+The engine is end-to-end — text tokens in, audio tokens out — so there is no
+grapheme-to-phoneme stage to hang a pronunciation dictionary on. Two things were
+measured before settling on substitution, both at `--temperature 0` so the only
+variable is the input:
+
+- **Inline annotation is read aloud, not parsed.** 「我要去銀行。」 is 1.82 s;
+  adding `(háng)` makes it 2.22 s and `(háng háng háng háng)` makes it 2.46 s.
+  The duration tracks the length of the annotation, so the model is saying it.
+  SSML produced no audio at all.
+- **A model in the speaking path is both slow and dangerous.** Asked to respell
+  four sentences: `gpt-5.4-nano` median **1245 ms**, `gpt-5.4-mini` median
+  **915 ms** — a second per sentence on top of the 0.4-1.3 s the vocoder already
+  costs. Worse, in four sentences nano turned the text **Simplified** and
+  produced 「睡覺」→「歲覺」 (歲 is suì, not jiào), and mini produced 「睡覚」 (覚
+  is the Japanese form). Roughly one line in four came back *worse*, silently,
+  because nothing downstream can tell a good respelling from a bad one. It would
+  also cost an API call per sentence for a voice that otherwise works with the
+  LLM switched off entirely.
+
+So `prompts/pronunciation.json` is a table of whole words, applied in
+`TTSService._respell()` — **the single point where text enters a backend, and the
+only place the substituted string exists.** The bubble, the transcript, the memory
+store and the exported Markdown all keep what was actually written; a pet whose
+saved conversation read 「崇新」 because that is what it had to say out loud would
+be corrupting the record to fix the speaker.
+
+Three things about the table:
+
+- **Keys are words, never single characters.** 行 is xíng nearly everywhere and
+  háng only inside particular words, so a character-level rule is wrong far more
+  often than it is right.
+- Rules are applied **longest key first**, so 「重新」 beats any rule mentioning
+  「重」 — otherwise the specific correction never fires.
+- It ships **empty**, and that is a statement about what could be verified rather
+  than about what is needed. Nothing here can hear; the entries have to come from
+  someone who can. `tools/say.sh` is the loop (it applies the same table and
+  prints what it actually sent), and `tools/build_pronunciation.py` runs a model
+  over the pet's own lines **offline** to propose candidates — the same model that
+  is unsafe per-sentence is useful when every mistake it makes is caught while it
+  is still a diff. It screens its own output for Simplified and Japanese
+  characters, which is exactly what the two measured failures were.
+
+One measured non-entry, worth keeping as the shape of the trap: 「銀行」 and
+「銀航」 synthesize to 1.82 s and 1.90 s, i.e. the engine already reads it háng.
+Adding a rule for it would have been a fix for nothing, and every unnecessary rule
+is another chance to be wrong.
+
+#### What another machine actually needs
+
+Two paths and a package. `[tts] qwen3_lib` and `qwen3_models` in `config.cfg`
+(or `GODOT_PET_QWEN3_LIB` / `_MODELS`), plus a python3. Everything else is
+discovery, and it is ordered so a person says each machine-specific thing at most
+once:
+
+- The library is looked for in `user://qwen3_tts/`, beside the executable, then
+  `~/{git_project,src,Projects,code}/qwen3-tts.cpp/build/`, then `/usr/local/lib`.
+- **The models are then found from the library**: `<library>/../models` is the
+  rule carrying the most weight, because in the upstream layout finding one finds
+  the other no matter where the clone lives. Verified — with nothing written in
+  config at all, a clone at `~/git_project/qwen3-tts.cpp` was found end to end.
+- Either weight filename is accepted. `load_models()` prefers
+  `qwen3-tts-0.6b-q8_0.gguf` over the f16 one where both exist, which neither the
+  header nor the integration guide mentions, so a directory holding only quantised
+  weights is valid and a check that knew about f16 alone would reject it.
+
+**A path the user wrote down is the answer, not a first guess.** An override that
+doesn't exist reports *that*, rather than falling through to the search — which on
+the machine this was built on hid a broken override completely, because the search
+found the real library and everything appeared to work. That was a real bug, found
+by a test that was trying to simulate a machine without the engine and quietly
+failed to.
+
+`LD_LIBRARY_PATH` has an escape hatch (`[tts] qwen3_lib_path`) because the built
+`.so` carries an **absolute RUNPATH into the tree it was built in**, so a library
+copied anywhere else cannot resolve ggml.
+
+Startup picks a backend and **never writes one back**, the same rule
+`LLMService.set_provider()` follows. Verified: with `backend="qwen3"` and the
+library missing, the pet speaks in the OS voice, the menu row is disabled carrying
+the reason, and `config.cfg` still says `qwen3` — so plugging the machine back in
+restores the choice with nothing to re-select.
 
 ### Needs and unprompted speech
 
@@ -933,9 +1216,17 @@ the menu item after turning it off doesn't re-ask something already agreed to.
 ## Tuning without code changes
 
 `prompts/persona.md` (character and reply format), `prompts/nudges.json`
-(unprompted lines, including the `{fact}` templates in the `memory` pool), and
+(unprompted lines, including the `{fact}` templates in the `memory` pool),
+`prompts/pronunciation.json` (破音字 the voice reads wrongly — see below), and
 the `DECAY` / `STARTING` constants in `autoload/pet_state.gd`. Prompt files take
 effect on restart.
+
+`config.cfg`'s `[tts]` section carries the voice: `backend` (`os` / `qwen3`),
+`voice` to pin an OS voice id, and — for the local model — `qwen3_lib`,
+`qwen3_models`, `qwen3_lib_path`, `qwen3_language`, `qwen3_idle_seconds` and
+`python`. Every one of the last six is a machine-specific path or a knob whose
+right value is a property of the machine, which is exactly why none of them is in
+code. All are optional; discovery covers the conventional layouts.
 
 `config.cfg`'s `[monitor]` section carries the load monitor's working hours
 (`start_hour`, `end_hour`, `weekdays_only`) and its three alert thresholds

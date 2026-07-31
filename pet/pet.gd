@@ -29,6 +29,10 @@ const PROVIDER_BASE := 300
 const GAME_BASE := 400
 const MODEL_BASE := 500
 const WORKSPACE_BASE := 600
+const VOICE_BASE := 700
+## Which cloned voice speaks. Above VOICE_BASE, so it is tested first — every
+## test in _on_menu_pressed is "at or above".
+const VOICE_PICK_BASE := 800
 
 ## Multipliers on the display scale. Pixel art prefers integers, but on a 2x
 ## display the odd ones land on a whole physical pixel often enough to look fine.
@@ -60,7 +64,7 @@ const DEFAULT_PET_SELECTION := "__default__"
 enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, MONITOR, SPEAK, ROAM, CALIBRATE,
 	RECENTRE, SET_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
-	RECORD, QUIT,
+	RECORD, CLEAR_VOICE, MANAGE_VOICES, QUIT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -89,6 +93,9 @@ var _submenus := {}
 ## without hunting through the tree for it.
 var _item_menus := {}
 var _size_factor := DEFAULT_SIZE_FACTOR
+## The recording waiting for a name. Cleared as soon as the name arrives, so a
+## dismissed field cannot leave one primed for whatever is typed next.
+var _pending_voice_wav := ""
 ## The pet's silhouette relative to where it stands. Measured only when the pet
 ## itself changes, so re-pushing the mask stays cheap.
 var _pet_shape := PackedVector2Array()
@@ -152,6 +159,8 @@ func _ready() -> void:
 
 	_chat.submitted.connect(_on_chat_submitted)
 	_chat.secret_submitted.connect(_on_secret_submitted)
+	_chat.voice_named.connect(_on_voice_named)
+	EventBus.voice_offered.connect(_on_voice_offered)
 	_chat.work_submitted.connect(_on_work_submitted)
 	WorkService.finished.connect(_on_work_finished)
 	WorkService.failed.connect(_on_work_failed)
@@ -180,6 +189,9 @@ func _ready() -> void:
 	RecorderService.tick.connect(_on_recording_tick)
 	RecorderService.saved.connect(_on_recording_saved)
 	RecorderService.failed.connect(_on_recording_failed)
+	TTSService.remarked.connect(_on_voice_remarked)
+	# The row names the voice in use, and every one of these changes it.
+	TTSService.voice_changed.connect(_build_menu)
 
 	# Only worth ticking where the mask clips rendering; elsewhere the bubble is
 	# outside it by design and moving is free.
@@ -622,6 +634,13 @@ func _build_menu() -> void:
 	_menu.add_submenu_node_item("造型", _build_looks_menu(current))
 	_menu.add_submenu_node_item("大小", _build_size_menu())
 	_menu.add_submenu_node_item("語言模型", _build_model_menu())
+	# Next to 語言模型 because they are the same question asked twice: which model
+	# thinks, and which one speaks. A fifth setting group rather than another row
+	# in 行為, because speech stopped being one switch — there is now a backend, a
+	# voice, and the on/off, and three questions is what a submenu is for. It also
+	# takes a row *out* of 行為, where the one naming a voice never fitted among
+	# rows describing what the pet does.
+	_menu.add_submenu_node_item("說話", _build_speech_menu())
 	_menu.add_submenu_node_item("行為", _build_behaviour_menu(current))
 
 	_menu.add_separator()
@@ -731,6 +750,59 @@ func _model_label(model: Dictionary) -> String:
 	return "%s（%s）" % [model["id"], note]
 
 
+## Which voice, whether to use it, and — once there is a local engine — whose it
+## is. The row still names the voice rather than hiding it behind a picker, which
+## is the one thing that would have made the Afrikaans bug visible: it said
+## 說話出聲（Afrikaans）for weeks and was never read.
+func _build_speech_menu() -> PopupMenu:
+	var menu := _submenu("Speech")
+	menu.add_check_item(_voice_label(), MenuId.SPEAK)
+	var speak := menu.get_item_index(MenuId.SPEAK)
+	menu.set_item_checked(speak, TTSService.is_enabled())
+	menu.set_item_disabled(speak, not TTSService.is_available())
+	if not TTSService.is_available():
+		menu.set_item_tooltip(speak, TTSService.unavailable_reason())
+
+	menu.add_separator()
+	var backends := TTSService.list_backends()
+	for i in backends.size():
+		var backend := backends[i]
+		menu.add_radio_check_item(TTSService.backend_label(backend), VOICE_BASE + i)
+		var index := menu.get_item_index(VOICE_BASE + i)
+		menu.set_item_checked(index, backend == TTSService.get_backend_name())
+		# Disabled with the reason *on the row*, rather than a bare unavailable
+		# entry. What is missing here is one path or one package, which is
+		# something the user can act on — and a local model is exactly the kind of
+		# dependency that is present on the machine it was built on and nowhere
+		# else, so this row is unavailable more often than it is available.
+		var reason := TTSService.backend_unavailable_reason(backend)
+		menu.set_item_disabled(index, not reason.is_empty())
+		menu.set_item_tooltip(index, reason)
+
+	# Which voice, once there is a choice. The model's own voice is always in the
+	# list and always first: it is the one that needs no file and cannot go
+	# missing, so it is what every other row is measured against.
+	if TTSService.can_clone_voice():
+		var voices := TTSService.list_voices()
+		menu.add_separator()
+		var active := TTSService.active_voice()
+		menu.add_radio_check_item("預設嗓音", MenuId.CLEAR_VOICE)
+		menu.set_item_checked(menu.get_item_index(MenuId.CLEAR_VOICE), active.is_empty())
+		for i in voices.size():
+			menu.add_radio_check_item(voices[i], VOICE_PICK_BASE + i)
+			menu.set_item_checked(menu.get_item_index(VOICE_PICK_BASE + i),
+				voices[i] == active)
+		if voices.is_empty():
+			# Said where the empty list is, rather than left as a bare heading:
+			# cloning belongs on the recording itself — you are choosing *which*
+			# take — so there is nothing to click here, only somewhere to be sent.
+			menu.add_separator("錄一段話，再去「我做的東西」把它設成我的聲音")
+		else:
+			menu.add_item("管理聲音…", MenuId.MANAGE_VOICES)
+	_index_items(menu)
+	return menu
+
+
 func _build_behaviour_menu(current: PetPack) -> PopupMenu:
 	var menu := _submenu("Behaviour")
 	# Several switches people flip together — closing the menu after each one turns
@@ -751,9 +823,6 @@ func _build_behaviour_menu(current: PetPack) -> PopupMenu:
 	menu.set_item_tooltip(menu.get_item_index(MenuId.MONITOR),
 		"%s 每 20 分鐘看一次系統負載，只有異常時才開口。\n那句話會提到程序名稱，並和其他對話一樣留在記錄裡。"
 			% MonitorService.hours_label())
-	menu.add_check_item(_voice_label(), MenuId.SPEAK)
-	menu.set_item_checked(menu.get_item_index(MenuId.SPEAK), TTSService.is_enabled())
-	menu.set_item_disabled(menu.get_item_index(MenuId.SPEAK), not TTSService.is_available())
 	menu.add_check_item("自由走動", MenuId.ROAM)
 	menu.set_item_checked(menu.get_item_index(MenuId.ROAM), _brain.is_roaming())
 	menu.add_separator()
@@ -856,8 +925,19 @@ func _open_menu() -> void:
 	# Packs are installed by an external CLI while the app is running, so rescan
 	# on every open rather than making the user restart to see a new pet.
 	var found := PetPack.list_installed()
-	if found != _installed_pets:
-		_installed_pets = found
+	var stale := found != _installed_pets
+	_installed_pets = found
+
+	# The same argument for the voice engine, one step sharper. The disabled row
+	# says to write a path into config.cfg — and its own cached answer was what
+	# kept it disabled after the user did exactly that. Rediscovering here is what
+	# makes that instruction true, and the menu is only rebuilt when the answer
+	# actually moved, so the ordinary open still costs a few `file_exists`.
+	var could_speak := TTSService.backend_is_available(TTSService.BACKEND_QWEN3)
+	TTSService.rediscover()
+	stale = stale or TTSService.backend_is_available(TTSService.BACKEND_QWEN3) != could_speak
+
+	if stale:
 		_build_menu()
 	# The only row whose text changes without anything rebuilding the menu, so it
 	# is refreshed here rather than by making every open pay for a full rebuild.
@@ -873,6 +953,18 @@ func _open_menu() -> void:
 func _on_menu_pressed(id: int) -> void:
 	# Highest base first: every one of these tests is "at or above", so a game id
 	# at 400 also satisfies the provider test at 300.
+	if id >= VOICE_PICK_BASE:
+		var voices := TTSService.list_voices()
+		var pick := id - VOICE_PICK_BASE
+		if pick < voices.size():
+			TTSService.select_voice(voices[pick])
+		return
+	if id >= VOICE_BASE:
+		# No _build_menu() here: select_backend emits voice_changed, which is
+		# already wired to it, and a second rebuild in the same frame would drop
+		# the submenu node this call arrived from.
+		TTSService.select_backend(TTSService.list_backends()[id - VOICE_BASE])
+		return
 	if id >= WORKSPACE_BASE:
 		var spaces := WorkspaceService.list()
 		var index := id - WORKSPACE_BASE
@@ -913,6 +1005,14 @@ func _on_menu_pressed(id: int) -> void:
 			_toggle_monitor()
 		MenuId.SPEAK:
 			_toggle_speech()
+		MenuId.CLEAR_VOICE:
+			TTSService.clear_cloned_voice()
+			_on_pet_nudged("neutral", "好，我用回原本的嗓音。", false, false)
+		MenuId.MANAGE_VOICES:
+			# The folder, not a sixth window. A voice is one 4 KB file whose name
+			# *is* its name in the menu, so renaming and deleting are things the
+			# file manager already does better than anything worth writing here.
+			OS.shell_open(TTSService.voices_folder())
 		MenuId.ROAM:
 			_toggle_roaming()
 		MenuId.CALIBRATE:
@@ -1614,18 +1714,52 @@ func _on_game_played(game: String, score: int, treats: int, record: bool) -> voi
 
 
 ## Naming the voice saves adding a whole picker just to see which one is in use.
+## The unavailable case keeps the label short and puts the reason in the row's
+## tooltip: it is a sentence now — which model file is missing, which package —
+## and a menu row is not where a sentence goes.
 func _voice_label() -> String:
 	if not TTSService.is_available():
-		# Covers both "no voices at all" and "voices, but none that can read the
-		# pet's language" — the second is the common one on Linux, and offering
-		# the toggle anyway just means noise. See TTSService._pick_voice().
-		return "說話出聲（這台機器沒有合適的語音）"
+		return "說話出聲（現在沒有可用的聲音）"
 	return "說話出聲（%s）" % TTSService.get_voice_name()
 
 
 func _toggle_speech() -> void:
 	TTSService.set_enabled(not TTSService.is_enabled())
 	_set_checked(MenuId.SPEAK, TTSService.is_enabled())
+
+
+## A recording was offered as a voice. It is not cloned yet: a voice goes in a
+## list and a radio row, so it needs a name, and the only name this end could
+## invent is the recording's filename — 「錄音 2026-07-31 012304」, which is a
+## timestamp rather than a voice.
+func _on_voice_offered(wav_path: String) -> void:
+	if not TTSService.can_clone_voice():
+		_on_voice_remarked(TTSService.backend_unavailable_reason(TTSService.BACKEND_QWEN3))
+		return
+	_pending_voice_wav = wav_path
+	_chat.ask_for_voice_name("這個聲音要叫什麼？")
+
+
+## The name came back. Cloning takes a second or two and the pet says so when it
+## lands, via TTSService.remarked.
+func _on_voice_named(name: String) -> void:
+	var wav := _pending_voice_wav
+	_pending_voice_wav = ""
+	if wav.is_empty():
+		return
+	_on_pet_nudged("happy", "好，我聽聽看「%s」是什麼樣子……" % name, false, false)
+	TTSService.clone_voice_from(wav, name)
+
+
+## Anything the voice layer has to tell the user: a backend that fell over, a
+## machine too slow for it, a cloning attempt that worked or didn't.
+##
+## A direct call rather than EventBus.pet_nudged, like every other line the pet
+## says about itself — these must be *shown*, not spoken. Half of them exist
+## precisely because speech just stopped working, and routing them through the
+## thing that broke is how a failure notice becomes silence.
+func _on_voice_remarked(text: String) -> void:
+	_on_pet_nudged("neutral", text, false, false)
 
 
 # --- Recording ----------------------------------------------------------------

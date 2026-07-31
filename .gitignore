@@ -29,5 +29,13 @@ mono_crash.*.json
 secrets.cfg
 .env
 
+# tools/ carries a Python helper (the qwen3-tts daemon); importing it for a test
+# leaves bytecode behind, and the file the app runs is a copy in user:// anyway.
+__pycache__/
+
+# The docs' screenshots grow a .import sidecar on every `--headless --import`,
+# which is derived and belongs to nobody.
+docs/images/*.import
+
 # macOS
 .DS_Store
