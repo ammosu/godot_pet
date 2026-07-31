@@ -96,6 +96,8 @@ var _size_factor := DEFAULT_SIZE_FACTOR
 ## The recording waiting for a name. Cleared as soon as the name arrives, so a
 ## dismissed field cannot leave one primed for whatever is typed next.
 var _pending_voice_wav := ""
+## The voice names the 說話 submenu was last drawn with. See _open_menu().
+var _listed_voices := PackedStringArray()
 ## The pet's silhouette relative to where it stands. Measured only when the pet
 ## itself changes, so re-pushing the mask stays cheap.
 var _pet_shape := PackedVector2Array()
@@ -784,6 +786,7 @@ func _build_speech_menu() -> PopupMenu:
 	# missing, so it is what every other row is measured against.
 	if TTSService.can_clone_voice():
 		var voices := TTSService.list_voices()
+		_listed_voices = voices
 		menu.add_separator()
 		var active := TTSService.active_voice()
 		menu.add_radio_check_item("預設嗓音", MenuId.CLEAR_VOICE)
@@ -935,7 +938,17 @@ func _open_menu() -> void:
 	# actually moved, so the ordinary open still costs a few `file_exists`.
 	var could_speak := TTSService.backend_is_available(TTSService.BACKEND_QWEN3)
 	TTSService.rediscover()
-	stale = stale or TTSService.backend_is_available(TTSService.BACKEND_QWEN3) != could_speak
+	var can_speak := TTSService.backend_is_available(TTSService.BACKEND_QWEN3)
+	stale = stale or can_speak != could_speak
+
+	# And the voices themselves, for the reason 管理聲音… exists: that row opens
+	# the folder and invites the user to rename or delete files in it, and a menu
+	# that then went on listing what used to be there would be lying about the
+	# one thing it just sent them off to change. A voice shipped by an update
+	# lands the same way. Cloning does not need this — it emits voice_changed.
+	if can_speak:
+		var voices := TTSService.list_voices()
+		stale = stale or voices != _listed_voices
 
 	if stale:
 		_build_menu()
