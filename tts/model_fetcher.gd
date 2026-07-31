@@ -4,16 +4,15 @@ class_name ModelFetcher
 ## Downloads the two GGUF files `Qwen3Voice` needs, so a machine that has the
 ## engine but not the weights can get them without a terminal.
 ##
-## **This deliberately fetches only the models.** The shared library is not
-## downloadable at all: `predict-woo/qwen3-tts.cpp` has published no release and
-## no tag, so there is no binary anywhere to fetch — the only route to one is
-## cloning and building it, which needs a C++ toolchain, the ggml submodule and
-## a CUDA or Metal SDK, and on macOS would then hit library validation refusing
-## an unsigned `.dylib` loaded by a hardened Python. A downloader that quietly
-## covered two of the three dependencies and left the third to a build would be
-## the worst of both: still no voice, and now also a 1.7 GB download spent
-## before finding that out. So `Qwen3Voice._check()` orders its checks library
-## first, and this is only ever offered once the library is already there.
+## **This deliberately fetches only the models.** A native helper now replaces
+## the loose shared library on the preferred path, but its signed/notarized
+## release bundle and manifest belong to the runtime-installer phase. Until that
+## bundle exists there is no immutable binary URL this class can safely install.
+## `Qwen3Voice._check()` therefore requires either the fixed development helper
+## or the legacy Python + library engine first, and only offers this 1.7 GB
+## download once one of those engines can consume it. Existing targets count as
+## complete only at the exact published byte lengths; a zero/truncated file is
+## downloaded to `.part`, verified, then atomically renamed over the old target.
 ##
 ## Why these two files and not the ones upstream's own README produces: those
 ## are made locally by `scripts/setup_pipeline_models.py`, which downloads ~5 GB
@@ -119,9 +118,9 @@ func _ensure_http() -> void:
 	_http.use_threads = true
 	# The default 64 KB chunk means more syscalls than a file this size needs.
 	_http.download_chunk_size = 1 << 20
-	# No cap: the default is already unlimited, but a body limit here would be a
-	# silent truncation rather than an error, so it is stated.
-	_http.body_size_limit = -1
+	# `_begin_file()` sets this to that entry's exact audited size before every
+	# request. It is not left unlimited between different-size artifacts.
+	_http.body_size_limit = 0
 	_http.request_completed.connect(_on_request_completed)
 	add_child(_http)
 
@@ -135,32 +134,65 @@ func is_running() -> bool:
 ## rename, but a truncated file that somehow got there would otherwise be taken
 ## for a finished download.
 static func has_models(dir: String) -> bool:
-	for entry in FILES:
-		var path: String = dir.path_join(entry["name"])
-		if not FileAccess.file_exists(path):
+	return has_expected_files(dir, FILES)
+
+
+static func has_expected_files(dir: String, entries: Array) -> bool:
+	for entry in entries:
+		if not file_matches_entry(dir.path_join(str(entry["name"])), entry):
 			return false
 	return true
 
 
+static func file_matches_entry(path: String, entry: Dictionary) -> bool:
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return false
+	var matches := file.get_length() == int(entry["bytes"])
+	file.close()
+	return matches
+
+
+static func remaining_bytes(dir: String, entries: Array = FILES) -> int:
+	var remaining := 0
+	for entry in entries:
+		if not file_matches_entry(dir.path_join(str(entry["name"])), entry):
+			remaining += int(entry["bytes"])
+	return remaining
+
+
+static func required_free_bytes(dir: String, entries: Array = FILES) -> int:
+	return remaining_bytes(dir, entries) + SPACE_MARGIN
+
+
+static func completed_bytes(dir: String, entries: Array = FILES) -> int:
+	var completed := 0
+	for entry in entries:
+		if file_matches_entry(dir.path_join(str(entry["name"])), entry):
+			completed += int(entry["bytes"])
+	return completed
+
+
 ## Start fetching into `dir`. Returns false when it could not begin, having
 ## already emitted `finished` with the reason — so the caller has one path.
+## Disk headroom is based only on entries that are not already exact-size; a
+## surviving talker means a tokenizer-only retry does not demand another 1.7 GB.
 func start(dir: String) -> bool:
 	if is_running():
 		return false
 	_ensure_http()
-	_dir = dir
-	_index = 0
-	_carried = 0
+	_initialise_run(dir)
 
 	if DirAccess.make_dir_recursive_absolute(_dir) != OK:
 		_fail("沒辦法建立放模型的資料夾：%s" % _dir)
 		return false
+	var required := required_free_bytes(_dir)
 	var free := _free_space(_dir)
-	if free >= 0 and free < TOTAL_BYTES + SPACE_MARGIN:
+	if free >= 0 and free < required:
 		# Said before the download rather than after it fills the disk, and with
 		# both numbers, because "空間不足" alone gives the user nothing to act on.
 		_fail("磁碟空間不夠：還要 %s，這裡只剩 %s。" \
-			% [size_text(TOTAL_BYTES), size_text(free)])
+			% [size_text(required), size_text(free)])
 		return false
 
 	_begin_file()
@@ -182,12 +214,7 @@ func cancel() -> void:
 
 
 func _begin_file() -> void:
-	while _index < FILES.size() and FileAccess.file_exists(_target(_index)):
-		# Already there — the second file surviving a failed first attempt is the
-		# ordinary case, and re-downloading it would be the rudest possible
-		# response to a retry.
-		_carried += int(FILES[_index]["bytes"])
-		_index += 1
+	_skip_completed_entries()
 	if _index >= FILES.size():
 		_succeed()
 		return
@@ -195,6 +222,7 @@ func _begin_file() -> void:
 	var entry: Dictionary = FILES[_index]
 	_discard_part()
 	_http.download_file = _part(_index)
+	_set_current_body_limit()
 	var error := _http.request(str(entry["url"]))
 	if error != OK:
 		_fail("連不上下載的網站（錯誤 %d）。" % error)
@@ -202,6 +230,28 @@ func _begin_file() -> void:
 	_phase = Phase.DOWNLOAD
 	set_process(true)
 	_report_download(0)
+
+
+func _initialise_run(dir: String, entries: Array = FILES) -> void:
+	_dir = dir
+	_index = 0
+	# Count every completed artifact, not only a prefix. A surviving tokenizer is
+	# already progress even while the missing talker (index zero) downloads.
+	_carried = completed_bytes(_dir, entries)
+
+
+func _skip_completed_entries(entries: Array = FILES) -> void:
+	while (_index < entries.size()
+			and file_matches_entry(
+				_dir.path_join(str(entries[_index]["name"])), entries[_index])):
+		# `_initialise_run()` counted it regardless of position; only advance.
+		_index += 1
+
+
+func _set_current_body_limit() -> void:
+	# Godot stores this property as signed int64; both audited sizes fit without
+	# conversion through float.
+	_http.body_size_limit = int(FILES[_index]["bytes"])
 
 
 func _process(_delta: float) -> void:
@@ -268,7 +318,8 @@ func _step_hash() -> void:
 	var size := _hash_file.get_length()
 	_close_hash()
 
-	if digest != str(FILES[_index]["sha256"]):
+	if (size != int(FILES[_index]["bytes"])
+			or digest != str(FILES[_index]["sha256"])):
 		_discard_part()
 		_fail("下載的檔案跟原本的對不起來，可能中途壞掉了。再試一次看看。")
 		return
@@ -319,13 +370,11 @@ func _part(index: int) -> String:
 
 
 ## Free bytes on the filesystem holding `path`, or -1 where that can't be
-## answered. Godot exposes no API for this, so it shells out — which is fine
-## here because the whole feature is already gated on Linux or macOS, the two
-## platforms where `df -Pk` is specified to print one parseable row.
+## answered. Godot exposes no API for this, so run `df` directly with the path as
+## one argv element. No shell quoting or interpolation participates.
 static func _free_space(path: String) -> int:
 	var output := []
-	if OS.execute("/bin/sh", ["-c", "df -Pk %s" % path.c_escape().json_escape()],
-			output) != 0:
+	if OS.execute("/bin/df", ["-Pk", path], output) != 0:
 		return -1
 	if output.is_empty():
 		return -1

@@ -196,11 +196,85 @@ uses fixed-size buffers and validates RIFF length and bounded chunk sizes
 before reading or seeking; file-provided chunk lengths never control an
 allocation.
 
-The current GDScript daemon path reads raw PCM16 from `.pcm` files. This phase
-does not alter GDScript by design, so native-helper integration must explicitly
-switch that reader to WAV (or intentionally change this helper back to raw PCM)
-before the app can consume these `audio` events. The protocol tests treat the
-WAV path as the Phase 1A contract.
+`Qwen3Voice` distinguishes the process backend that produced each `audio`
+event: native-helper output is parsed as bounded mono PCM16 RIFF/WAVE, while the
+legacy Python daemon continues to read raw PCM16 from `.pcm` files. The parser
+checks the event's rate and sample count and never passes the RIFF header to
+Godot as audio samples.
+
+Phase 2A app integration launches native code only from the fixed editor build
+path `build/tts_helper_engine/godot-pet-tts-helper`. Environment overrides and
+`user://qwen3_tts/runtime/current` are intentionally ignored: neither a filename
+nor self-reported metadata authenticates an executable. Runtime discovery stays
+disabled until Phase 2B provides a signed, hash-pinned manifest installer. Once
+the fixed development helper starts, requests remain client-side until its
+asynchronous `ready` event names protocol `1` and engine `qwen3-tts`. Native
+startup has a five-second monotonic deadline; spawn failure, incompatible ready,
+or timeout attempts the unchanged Python + shared-library backend once before
+failing pending work.
+
+Before that fixed artifact can make model download actionable, the app applies
+a cheap static viability gate: it must be a nontrivial regular, executable file
+with a Mach-O/ELF architecture matching the current process. On macOS, direct
+`/usr/bin/otool` argv calls collect each image's load dependencies and
+`LC_RPATH` entries. A visited-set DFS expands inherited and current rpaths plus
+`@loader_path`/`@executable_path`, canonicalizes every non-system dependency to
+an existing physical file, and repeats the inspection through the full closure;
+missing nested images, malformed tool output, and unresolved loads fail closed.
+System-library spellings must be absolute and traversal-free before lexical
+normalization; an existing image is canonicalized and checked to remain under
+the physical `/System/Library` or `/usr/lib` root. Strict names for libraries
+present only in macOS's dyld shared cache are verified by a direct
+`/usr/bin/dyld_info` probe rather than accepted by prefix alone.
+This is intentionally not signature or runtime trust; Phase 2B still needs the
+signed/hash-pinned manifest and installer. Before spawning either backend, the
+globalized work root, spool and voices paths (including existing parents) and
+the predictable `response.jsonl`, `engine.log`, and `daemon.py` leaves are
+rejected if any component is a symlink. Clone output and the legacy `.part`
+leaf receive the same check before startup and again immediately before send.
+Voice listing, selection, existence and deletion similarly require a physical
+voices directory and a direct, non-link, canonical lowercase `.emb` leaf;
+deletion sanitizes and exact-matches the requested name before removing it.
+A say or clone arriving while native is not ready is inserted into the
+correlated deferred set before process liveness is checked; the unified
+death/fallback snapshot therefore includes the racing request and writes each
+survivor to Python exactly once.
+
+The app correlates every say id exactly once and ignores duplicate or unknown
+audio/errors. Sentences are not replayed after a process death. A pending clone
+is replayed through the one unified pre-poll/poll death path at most twice, and
+a ready event does not replenish that budget. Audio paths must be the exact
+backend-specific `<id>.wav` or `<id>.pcm`; each existing spool ancestor and the
+leaf are checked for symlinks before and after reading. Godot `FileAccess` has no
+`O_NOFOLLOW` or descriptor-relative open, so this is not presented as protection
+against a malicious same-account race. Phase 2A trusts its fixed development
+helper and uses these checks for stale/accidental path substitution.
+
+Startup spool cleanup refuses a symlink anywhere in the globalized spool path
+and removes only direct, non-link, canonical positive-id `.wav`/`.pcm` files;
+the two owned extensions are case-sensitive, so `.WAV`/`.PCM` and unrelated
+files are preserved. Downloaded q8 talker and tokenizer files must
+match the manifest's exact byte sizes before availability or skip decisions.
+Legacy manual f16 installations remain compatible without a fabricated digest:
+both f16 talker and tokenizer must be substantial files with `GGUF` magic, and
+the real qwen loader remains authoritative for their tensors. Disk preflight is
+`remaining incomplete artifact bytes + margin`, not the full bundle on retries.
+Model download requests also set Godot's response body limit to the current
+artifact's exact audited byte count; an oversized response follows the same
+partial-file discard path as other HTTP failures. Progress starts with the sum
+of every exact-size artifact already present, even when it is not a prefix (for
+example, tokenizer present while talker is missing), and skip traversal never
+adds those bytes a second time.
+
+Response batches are tied to the pid/backend spawn generation that produced
+them. If a line tears native down or starts Python, the remaining old-source
+lines are discarded rather than interpreted as Python events. Only `op=say`
+errors consume pending sentence ids; unknown operations never alter accounting.
+Fallback snapshots correlated deferred work, unconditionally closes the owned
+pid's pipe/backend state even when the child is already dead, then restores and
+writes each surviving request once. Disk-space probing invokes `/bin/df` with
+the model directory as one argv element, so spaces and single quotes never pass
+through a shell.
 
 Supported language ids match the pinned C API and Python daemon:
 `en`, `ru`, `zh`, `ja`, `ko`, `de`, `fr`, `es`, `it`, and `pt`. Unknown values
