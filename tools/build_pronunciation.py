@@ -61,14 +61,20 @@ def load_key():
     key = os.environ.get("OPENAI_API_KEY", "")
     if key:
         return key
-    try:
-        out = subprocess.run(
-            ["secret-tool", "lookup", "service", "godot-pet", "account", "OPENAI_API_KEY"],
-            capture_output=True, text=True, timeout=10)
-        if out.returncode == 0:
-            return out.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        pass
+    # The same two stores SecretStore writes to, asked the same way it asks.
+    # Windows keeps its key as DPAPI ciphertext under user://, which nothing here
+    # can decrypt — set OPENAI_API_KEY there.
+    for args in (
+        ["secret-tool", "lookup", "service", "godot-pet", "account", "OPENAI_API_KEY"],
+        ["security", "find-generic-password", "-a", "OPENAI_API_KEY",
+         "-s", "godot-pet", "-w"],
+    ):
+        try:
+            out = subprocess.run(args, capture_output=True, text=True, timeout=10)
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            continue
     return ""
 
 

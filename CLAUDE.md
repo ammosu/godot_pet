@@ -1032,6 +1032,34 @@ failed to.
 `.so` carries an **absolute RUNPATH into the tree it was built in**, so a library
 copied anywhere else cannot resolve ggml.
 
+**macOS is the engine's better platform, and ours is where it bites.** Upstream
+ships a macOS quickstart, Metal is on by default for Apple, and there is a CoreML
+code predictor — so an Apple Silicon Mac takes the accelerated path, not the
+~1.7-RTF CPU one. Nothing here has been run there; what is known to need care:
+
+- **Use a Homebrew python3, not `/usr/bin/python3`.** The system one is a Command
+  Line Tools stub on a Mac without Xcode CLT (exists, opens an install dialog,
+  exits), which is why `_find_python()` requires a candidate to *run* rather than
+  merely be there, and why the macOS candidate order puts `/opt/homebrew` first.
+  It is also hardened, which means both that `DYLD_*` is stripped before it and
+  that library validation can refuse an unsigned `.dylib`. Two more reasons for
+  the same answer.
+- `<exe>/qwen3-tts/` resolves inside `Godot Pet.app/Contents/MacOS` in an exported
+  build — a signed bundle nobody should be writing into. Harmless as a candidate
+  that never matches; `user://` is first in the list and is the place to drop
+  things.
+- The OS fallback is *better* there than on Linux: macOS has real `zh-TW` voices,
+  so a Mac without the engine still speaks properly. The whole Afrikaans episode
+  was Linux-specific.
+
+**Windows reports unsupported, and is closer than that sounds.** The only
+structural blocker is `/bin/sh`, and the shell is there for two things: the
+redirections and `exec`. Have the helper open its own log and set
+`GGML_NO_BACKTRACE` in `os.environ` before `ctypes.CDLL`, and Godot could launch
+python directly — which also removes the orphan problem `exec` exists to solve,
+since there would be no shell to be the parent. What would remain is a `.dll`
+build and somebody to test it.
+
 Startup picks a backend and **never writes one back**, the same rule
 `LLMService.set_provider()` follows. Verified: with `backend="qwen3"` and the
 library missing, the pet speaks in the OS voice, the menu row is disabled carrying

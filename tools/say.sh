@@ -58,7 +58,10 @@ echo "寫的：$TEXT"
 [ "$SPOKEN" != "$TEXT" ] && echo "唸的：$SPOKEN（替換過）" || echo "唸的：（沒有規則命中）"
 [ $# -gt 0 ] && echo "聲音：$VOICE" || echo "聲音：預設嗓音"
 
-OUT=$(mktemp -t godot-pet-say-XXXXXX.wav)
+# Built by hand rather than `mktemp -t`: on BSD/macOS `-t` takes a *prefix* and
+# appends its own random suffix, so the file would not end in .wav and afplay
+# would be handed something it cannot identify.
+OUT="${TMPDIR:-/tmp}/godot-pet-say-$$.wav"
 trap 'rm -f "$OUT"' EXIT
 if ! "$CLI" -m "$MODELS" -l zh -t "$SPOKEN" "$@" -o "$OUT" 2>"$OUT.err" >/dev/null; then
 	echo "合成失敗：" >&2; tail -3 "$OUT.err" >&2; rm -f "$OUT.err"; exit 1
