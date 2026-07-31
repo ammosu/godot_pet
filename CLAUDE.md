@@ -1032,6 +1032,66 @@ failed to.
 `.so` carries an **absolute RUNPATH into the tree it was built in**, so a library
 copied anywhere else cannot resolve ggml.
 
+#### The pet can fetch the models, and deliberately cannot fetch the engine
+
+`tts/model_fetcher.gd` downloads the two GGUF files, offered as one row in the
+說話 submenu directly under the backend it repairs. That row appears only when
+`Qwen3Voice.needs_models()` is true — **the models are the last gap** — which is
+why `_check()` orders its tests library-first and why `_gap` exists as something
+other code can branch on. `_reason` stays a sentence for a person; matching on
+its wording is how a reworded message silently turns a feature off.
+
+**The library is not downloadable and this is not an oversight.**
+`predict-woo/qwen3-tts.cpp` has published no release and no tag — the GitHub API
+returns `[]` for both — so there is no binary anywhere to fetch. The only route
+is cloning and building it, which needs a C++ toolchain, the ggml submodule and
+a CUDA or Metal SDK, and on macOS then meets library validation refusing an
+unsigned `.dylib` under a hardened Python. Closing two gaps of three would spend
+1.7 GB before revealing the voice is still mute.
+
+**Which conversion is fetched was measured, and the obvious choice was wrong.**
+GGUF names its tensors, independent conversions do not agree, and nothing in a
+filename says which contract a file follows. Measured against a known-working
+local file:
+
+| | `general.architecture` | talker | tokenizer |
+|---|---|---|---|
+| what `src/gguf_loader.cpp` wants | `qwen3-tts` | `spk_enc.conv0.weight` | `tok_dec.dec.0.conv.bias` |
+| `khimaros/*` (fetched) | `qwen3-tts` | identical, all 478 | identical, all 448 |
+| `cstr/*` (most downloaded) | `qwen3tts` | **109 of 478 differ** | **all 448 differ** |
+
+`cstr` is the most-downloaded conversion and was the first choice; it is built
+for CrispASR, a different engine, and would download perfectly and fail to load.
+`tools/check_model_source.py` is that check — architecture, every tensor name,
+every shape, over HTTP Range so a candidate costs 16 MB rather than 1.3 GB — and
+it exits non-zero, so it can gate a URL change rather than merely inform one.
+**Re-run it before editing any URL in `FILES`.**
+
+Three things that are load-bearing:
+
+- **The filenames are the loader's, not upstream's.** `src/qwen3_tts.cpp:119`
+  hardcodes both, and the tokenizer is spelled `-f16` with no alternative
+  accepted, so a downloaded file is renamed into that regardless of what it was
+  called. The talker is looked for as q8_0 *first*, which is why the quantised
+  one is fetched: half a gigabyte smaller and the one the loader prefers anyway.
+- **Nothing lands under its real name until its hash matches.** Downloads go to
+  `.part` and are renamed only after SHA-256, hashed in 8 MB slices across frames
+  because the pet is a live animation and hashing 1.7 GB in one call freezes it.
+  Verified by serving deliberately corrupted bytes: the write is refused, the
+  `.part` is deleted, and the models stay absent rather than half-present.
+- **The download lands in `_work_path("models")`, the first place `_find_models()`
+  looks**, so `TTSService.rediscover()` is the whole of the wiring. Verified end
+  to end on a machine with the engine and no weights: the row appeared, 1.68 GB
+  arrived, both hashes matched, the row vanished, 本機模型（Qwen3） stopped being
+  disabled and the voice list appeared — **with no restart** — and the fetched
+  files then synthesised 3.18 s of real audio (peak 0.500, not silence).
+
+One trap this cost: `AcceptDialog` sizes itself to its content and a path has no
+spaces, so `AUTOWRAP_WORD_SMART` cannot break one. The models path pushed the
+dialog wider than a 1920px screen with both buttons off the edge; `_short_path()`
+shortening `$HOME` to `~` is the fix, since widening the wrap mode would only
+move the break to an arbitrary character mid-path.
+
 **macOS is the engine's better platform, and ours is where it bites.** Upstream
 ships a macOS quickstart, Metal is on by default for Apple, and there is a CoreML
 code predictor — so an Apple Silicon Mac takes the accelerated path, not the

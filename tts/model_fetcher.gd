@@ -215,7 +215,10 @@ func _process(_delta: float) -> void:
 func _report_download(done: int) -> void:
 	var total := TOTAL_BYTES
 	var so_far := _carried + maxi(done, 0)
-	progress.emit("下載語音模型 %d%%（%s / %s）\n（選單裡可以取消）" \
+	# No "you can cancel in the menu" here: the bubble carries its own stop
+	# button, the same way the recorder's does. A sentence pointing at a second
+	# place to stop is one more thing to keep true.
+	progress.emit("下載語音模型 %d%%（%s / %s）" \
 		% [_percent(so_far, total), size_text(so_far), size_text(total)])
 
 

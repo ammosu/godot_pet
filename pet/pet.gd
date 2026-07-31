@@ -198,6 +198,7 @@ func _ready() -> void:
 	RecorderService.saved.connect(_on_recording_saved)
 	RecorderService.failed.connect(_on_recording_failed)
 	_chat.holding_action_pressed.connect(_on_recording_stop_pressed)
+	_chat.holding_action_pressed.connect(_on_model_stop_pressed)
 	_chat.hit_region_changed.connect(_refresh_mask)
 	TTSService.remarked.connect(_on_voice_remarked)
 	# The row names the voice in use, and every one of these changes it.
@@ -1814,10 +1815,10 @@ func _setup_model_download() -> void:
 		"",
 		"・大小是 %s，分成兩個檔案" % ModelFetcher.size_text(ModelFetcher.TOTAL_BYTES),
 		"・來源是 %s" % ModelFetcher.SOURCE_LABEL,
-		"・會存在 %s" % TTSService.models_dir(),
+		"・會存在 %s" % _short_path(TTSService.models_dir()),
 		"・下載好之後就完全在這台電腦上跑，不會再連網路",
 		"",
-		"看網速大概要幾分鐘。中途可以在選單裡叫我停。",
+		"看網速大概要幾分鐘。中途可以隨時叫我停。",
 	]))
 	_model_download.exclusive = false
 	_model_download.theme = PetStyle.dialog_theme(scale)
@@ -1839,10 +1840,23 @@ func _setup_model_download() -> void:
 	add_child(_fetcher)
 
 
-## The menu row, which carries its own stop for the same reason 錄音 does: while
-## this runs it is the only other place the job is visible, and a progress
-## indicator whose instructions point at a row that doesn't exist is worse than
-## no instructions.
+## A home-relative path, for somewhere a full one would not fit.
+##
+## `AcceptDialog` sizes itself to its content and a path has no spaces in it, so
+## `AUTOWRAP_WORD_SMART` cannot break one — the dialog just grows. Measured: the
+## user:// models path pushed it wider than a 1920px screen, with both buttons
+## off the edge. Shortening the string is the fix; widening the wrap mode would
+## only move the break to an arbitrary character mid-path.
+func _short_path(path: String) -> String:
+	var home := OS.get_environment("HOME")
+	if not home.is_empty() and path.begins_with(home):
+		return "~" + path.substr(home.length())
+	return path
+
+
+## One row carrying both halves as a backup, the same shape 錄一段話 settled on.
+## The live bubble has the direct stop; this label staying truthful is what stops
+## the row offering a second download while one is already running.
 func _model_download_label() -> String:
 	if _fetcher != null and _fetcher.is_running():
 		return "停止下載語音模型"
@@ -1873,8 +1887,20 @@ func _start_model_download() -> void:
 ## same one the recorder's clock uses, and for the same reason: it already
 ## clamps to the visible area, follows the pet, and on Windows already sits
 ## inside the passthrough mask.
+##
+## It carries its own stop, like the recorder's does. A download that runs for
+## half an hour and can only be called off from a menu two levels down is one
+## the user will kill by quitting the app.
 func _on_model_progress(text: String) -> void:
-	_chat.show_holding(text)
+	_chat.show_holding(text, "停止下載")
+
+
+## Shares `holding_action_pressed` with the recorder's stop, which is safe
+## because the bubble only ever holds one of them at a time — so each handler
+## guards on its own thing being what is actually running.
+func _on_model_stop_pressed() -> void:
+	if _fetcher != null and _fetcher.is_running():
+		_fetcher.cancel()
 
 
 func _on_model_finished(ok: bool, message: String) -> void:
