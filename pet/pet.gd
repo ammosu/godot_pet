@@ -197,6 +197,8 @@ func _ready() -> void:
 	RecorderService.tick.connect(_on_recording_tick)
 	RecorderService.saved.connect(_on_recording_saved)
 	RecorderService.failed.connect(_on_recording_failed)
+	_chat.holding_action_pressed.connect(_on_recording_stop_pressed)
+	_chat.hit_region_changed.connect(_refresh_mask)
 	TTSService.remarked.connect(_on_voice_remarked)
 	# The row names the voice in use, and every one of these changes it.
 	TTSService.voice_changed.connect(_build_menu)
@@ -1888,8 +1890,9 @@ func _on_model_finished(ok: bool, message: String) -> void:
 
 # --- Recording ----------------------------------------------------------------
 
-## One row carrying both halves, so stopping is where starting was rather than a
-## second row that is dead most of the time.
+## One row carrying both halves as a backup. The live bubble now has the direct
+## stop action, but keeping this label truthful avoids a second start while a
+## recording is already active.
 func _record_label() -> String:
 	if not RecorderService.is_supported():
 		return "錄一段話（這台機器不能錄音）"
@@ -1926,7 +1929,15 @@ func _toggle_recording() -> void:
 ## the microphone is live, and how to make it stop — because between those two it
 ## is the only thing on screen saying so.
 func _on_recording_tick(elapsed_text: String) -> void:
-	_chat.show_holding("● 錄音中 %s\n（選單裡再點一次就停）" % elapsed_text)
+	_chat.show_holding("● 錄音中 %s" % elapsed_text, "停止錄音")
+
+
+## Dedicated rather than routed through _toggle_recording(): if the five-minute
+## cap ends between the pointer going down and the signal arriving, a late click
+## must do nothing instead of immediately starting a new recording.
+func _on_recording_stop_pressed() -> void:
+	if RecorderService.is_recording():
+		RecorderService.stop()
 
 
 func _on_recording_saved(file_name: String, seconds: float) -> void:

@@ -124,6 +124,37 @@ static func bubble_edge_width(scale: float) -> float:
 	return maxf(1.0, BUBBLE_BORDER * scale)
 
 
+## The action inside a live status bubble. The accent outline ties it to the
+## notice edge without turning the whole control into a second block of chrome;
+## filling on hover makes the click target obvious only when it is reached for.
+static func make_bubble_action_button(button: Button, scale: float) -> void:
+	var normal := _bubble_action_style(scale, Color(ACCENT, 0.07), Color(ACCENT, 0.45))
+	var hover := _bubble_action_style(scale, Color(ACCENT, 0.18), Color(ACCENT, 0.75))
+	var pressed := _bubble_action_style(scale, Color(ACCENT, 0.28), ACCENT)
+	button.add_theme_stylebox_override("normal", normal)
+	button.add_theme_stylebox_override("focus", normal)
+	button.add_theme_stylebox_override("hover", hover)
+	button.add_theme_stylebox_override("pressed", pressed)
+	button.add_theme_color_override("font_color", INK)
+	button.add_theme_color_override("font_hover_color", INK)
+	button.add_theme_color_override("font_pressed_color", INK)
+	button.add_theme_font_size_override("font_size", roundi(13.0 * scale))
+
+
+static func _bubble_action_style(scale: float, fill: Color, border: Color) -> StyleBoxFlat:
+	var box := StyleBoxFlat.new()
+	box.bg_color = fill
+	box.border_color = border
+	box.set_border_width_all(maxi(1, roundi(1.0 * scale)))
+	box.set_corner_radius_all(roundi(8.0 * scale))
+	box.corner_detail = 8
+	box.content_margin_left = roundi(12.0 * scale)
+	box.content_margin_right = roundi(12.0 * scale)
+	box.content_margin_top = roundi(5.0 * scale)
+	box.content_margin_bottom = roundi(5.0 * scale)
+	return box
+
+
 # --- Chat input ---------------------------------------------------------------
 
 ## A pill under the pet's feet. `height` is what the corner radius is derived
