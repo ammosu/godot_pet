@@ -60,6 +60,25 @@ INDEX=0
 MADE=0
 OUTDIR=""
 
+# Synthesis fails occasionally — measured once in about sixty renders, the same
+# line succeeding on its own immediately afterwards, so it is resource pressure
+# from reloading 2.6 GB of model per invocation rather than anything about the
+# text. Retried once, and whatever still fails is collected and reported at the
+# end: a missing wav is indistinguishable from a line that sounded fine, so a
+# failure buried in sixty lines of progress is the one outcome this must not
+# have.
+FAILED=$(mktemp)
+trap 'rm -f "$FAILED"' EXIT
+
+synth() {
+	text=$1
+	out=$2
+	shift 2
+	"$CLI" -m "$MODELS" -l zh -t "$text" "$@" -o "$out" >/dev/null 2>&1 && return 0
+	sleep 2
+	"$CLI" -m "$MODELS" -l zh -t "$text" "$@" -o "$out" >/dev/null 2>&1
+}
+
 # `printf %s` rather than echo: a line starting with "-" or containing a
 # backslash is data here, and echo would eat both.
 while IFS= read -r line || [ -n "$line" ]; do
@@ -100,24 +119,52 @@ print("".join(c for c in line if c not in drop)[:12])
 
 	if [ "$SPOKEN" != "$line" ]; then
 		printf '  %s %s\n     唸：%s\n' "$NUM" "$line" "$SPOKEN"
-		"$CLI" -m "$MODELS" -l zh -t "$SPOKEN" "$@" -o "$OUTDIR/$NUM-$STEM.wav" \
-			>/dev/null 2>&1 || { echo "     ！合成失敗" >&2; continue; }
-		"$CLI" -m "$MODELS" -l zh -t "$line" "$@" -o "$OUTDIR/$NUM-$STEM-原句.wav" \
-			>/dev/null 2>&1 || true
-		MADE=$((MADE + 2))
 	else
 		printf '  %s %s\n' "$NUM" "$line"
-		"$CLI" -m "$MODELS" -l zh -t "$SPOKEN" "$@" -o "$OUTDIR/$NUM-$STEM.wav" \
-			>/dev/null 2>&1 || { echo "     ！合成失敗" >&2; continue; }
+	fi
+
+	if synth "$SPOKEN" "$OUTDIR/$NUM-$STEM.wav" "$@"; then
 		MADE=$((MADE + 1))
+	else
+		printf '%s\n' "  [$CURRENT] $NUM $line" >> "$FAILED"
+		printf '     ！合成失敗\n'
+		continue
+	fi
+
+	# Only where a rule fired. Judging a substitution needs both versions, and
+	# rendering an identical second copy everywhere else would double the wait.
+	if [ "$SPOKEN" != "$line" ]; then
+		if synth "$line" "$OUTDIR/$NUM-$STEM-原句.wav" "$@"; then
+			MADE=$((MADE + 1))
+		else
+			printf '%s\n' "  [$CURRENT] $NUM（原句對照）$line" >> "$FAILED"
+			printf '     ！原句對照合成失敗\n'
+		fi
 	fi
 done < "$SAMPLES"
 
 echo
+# Failures are reported before anything else, and the empty-output case is only
+# blamed on the group name once there are none. Otherwise a run where every
+# synthesis failed says 「組名打錯了嗎？」 — sending you to check a spelling that
+# was right, while the actual reason goes unmentioned.
+if [ -s "$FAILED" ]; then
+	echo "！這幾句兩次都沒合成出來，資料夾裡沒有它們的檔案："
+	cat "$FAILED"
+	echo "  （聽的時候不會發現少了什麼，所以在這裡講。）"
+	if [ "$MADE" -eq 0 ]; then
+		echo "  這次一句都沒成功——引擎可能沒跑起來，先用 tools/say.sh 試一句看看。"
+	else
+		echo "  再跑一次那一組通常就好了。"
+	fi
+	exit 1
+fi
+
 if [ "$MADE" -eq 0 ]; then
 	echo "沒有產出任何檔案。組名打錯了嗎？可用的組："
 	grep -o '^\[.*\]' "$SAMPLES" | tr -d '[]' | sed 's/^/  /'
 	exit 1
 fi
+
 echo "產了 $MADE 個檔，在 $OUTROOT/"
 echo "帶「-原句」的是套用規則前的樣子，用來跟同編號的那個比。"
