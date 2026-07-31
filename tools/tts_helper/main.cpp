@@ -1,17 +1,34 @@
-#include <cerrno>
+#include "engine_api.h"
+
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <cstdio>
 #include <cstdint>
-#include <cstdlib>
+#include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <map>
+#include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <poll.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#else
+#error "The native TTS helper currently requires POSIX file and pipe semantics"
+#endif
 
 namespace {
 
@@ -570,25 +587,41 @@ public:
 	}
 
 	void ready() {
-		send("{\"event\":\"ready\",\"protocol\":1,\"engine\":\"unavailable\"}");
+		send("{\"event\":\"ready\",\"protocol\":1,\"engine\":\"" +
+				escape_json(compiled_engine_name()) + "\"}");
 	}
 
-	void unavailable(std::int64_t id, const std::string &op) {
+	void audio(std::int64_t id, const std::string &path, std::int32_t rate,
+			std::size_t samples, std::int64_t milliseconds) {
+		std::ostringstream event;
+		event << "{\"event\":\"audio\",\"id\":" << id
+			  << ",\"path\":\"" << escape_json(path)
+			  << "\",\"rate\":" << rate
+			  << ",\"samples\":" << samples
+			  << ",\"ms\":" << milliseconds << "}";
+		send(event.str());
+	}
+
+	void cloned(std::int64_t id, const std::string &path, std::size_t dimensions) {
+		std::ostringstream event;
+		event << "{\"event\":\"cloned\",\"id\":" << id
+			  << ",\"path\":\"" << escape_json(path)
+			  << "\",\"dims\":" << dimensions << "}";
+		send(event.str());
+	}
+
+	void error(std::int64_t id, const std::string &op, const std::string &code,
+			const std::string &message) {
 		std::ostringstream event;
 		event << "{\"event\":\"error\",\"id\":" << id
 			  << ",\"op\":\"" << escape_json(op)
-			  << "\",\"code\":\"engine_unavailable\","
-			  << "\"message\":\"qwen engine is not linked\"}";
+			  << "\",\"code\":\"" << escape_json(code)
+			  << "\",\"message\":\"" << escape_json(message) << "\"}";
 		send(event.str());
 	}
 
 	void malformed(std::int64_t id, const std::string &op, const std::string &message) {
-		std::ostringstream event;
-		event << "{\"event\":\"error\",\"id\":" << id
-			  << ",\"op\":\"" << escape_json(op)
-			  << "\",\"code\":\"malformed_request\","
-			  << "\"message\":\"" << escape_json(message) << "\"}";
-		send(event.str());
+		error(id, op, "malformed_request", message);
 	}
 
 	void bye() {
@@ -606,6 +639,712 @@ private:
 
 	std::ofstream stream_;
 };
+
+enum class WorkKind { Say, Clone, Unload, Malformed, Quit };
+
+struct WorkItem {
+	WorkKind kind = WorkKind::Malformed;
+	std::int64_t id = 0;
+	std::string op = "request";
+	std::string text;
+	std::string language;
+	std::string voice;
+	std::string wav;
+	std::string output;
+	std::string message;
+};
+
+class WorkQueue {
+public:
+	void push(WorkItem item) {
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			items_.push_back(std::move(item));
+		}
+		changed_.notify_one();
+	}
+
+	bool pop_for(WorkItem &item, std::chrono::milliseconds timeout) {
+		std::unique_lock<std::mutex> lock(mutex_);
+		if (!changed_.wait_for(lock, timeout, [this] { return !items_.empty(); })) {
+			return false;
+		}
+		item = std::move(items_.front());
+		items_.pop_front();
+		return true;
+	}
+
+private:
+	std::mutex mutex_;
+	std::condition_variable changed_;
+	std::deque<WorkItem> items_;
+};
+
+std::string string_member(
+		const JsonValue &object, const std::string &key, const std::string &fallback = "") {
+	const JsonValue *value = member(object, key);
+	return value != nullptr && value->type == JsonValue::Type::String
+			? value->text : fallback;
+}
+
+bool accept_request_line(const std::string &line, WorkQueue &queue,
+		std::atomic<std::int64_t> &cancel_up_to, std::int64_t &last_say_id) {
+	if (line.find_first_not_of(" \t\r\n") == std::string::npos) {
+		return true;
+	}
+
+	JsonValue request;
+	std::string parse_error;
+	if (!JsonParser(line).parse(request, parse_error) ||
+			request.type != JsonValue::Type::Object) {
+		WorkItem malformed;
+		malformed.message = parse_error.empty()
+				? "request must be a JSON object" : parse_error;
+		queue.push(std::move(malformed));
+		return true;
+	}
+
+	WorkItem item;
+	const JsonValue *id_value = member(request, "id");
+	const bool has_valid_id = id_value != nullptr &&
+			integer_value(*id_value, item.id) && item.id >= 0;
+	if (!has_valid_id) {
+		item.id = 0;
+	}
+	const JsonValue *op_value = member(request, "op");
+	if (op_value == nullptr || op_value->type != JsonValue::Type::String ||
+			op_value->text.empty()) {
+		item.message = "request has no non-empty string op";
+		queue.push(std::move(item));
+		return true;
+	}
+	item.op = op_value->text;
+	if (item.op == "cancel") {
+		cancel_up_to.store(last_say_id, std::memory_order_release);
+		return true;
+	}
+	if (item.op == "quit") {
+		item.kind = WorkKind::Quit;
+		queue.push(std::move(item));
+		return false;
+	}
+	if (item.op == "unload") {
+		item.kind = WorkKind::Unload;
+		queue.push(std::move(item));
+		return true;
+	}
+	if (!has_valid_id) {
+		item.message = "request has no non-negative integer id";
+		queue.push(std::move(item));
+		return true;
+	}
+	if (item.op == "say") {
+		item.kind = WorkKind::Say;
+		item.text = string_member(request, "text");
+		item.language = string_member(request, "lang", "zh");
+		item.voice = string_member(request, "voice");
+		last_say_id = std::max(last_say_id, item.id);
+		queue.push(std::move(item));
+		return true;
+	}
+	if (item.op == "clone") {
+		item.kind = WorkKind::Clone;
+		item.wav = string_member(request, "wav");
+		item.output = string_member(request, "out");
+		queue.push(std::move(item));
+		return true;
+	}
+	item.message = "unknown op: " + item.op;
+	queue.push(std::move(item));
+	return true;
+}
+
+void read_requests(WorkQueue &queue, std::atomic<std::int64_t> &cancel_up_to,
+		std::atomic<bool> &stop_requested) noexcept {
+	bool enqueue_quit = true;
+	try {
+		std::int64_t last_say_id = -1;
+		std::string pending;
+		char buffer[4096];
+		while (!stop_requested.load(std::memory_order_acquire)) {
+			struct pollfd input = {};
+			input.fd = STDIN_FILENO;
+			input.events = POLLIN;
+			const int poll_result = poll(&input, 1, 50);
+			if (poll_result < 0) {
+				if (errno == EINTR) {
+					continue;
+				}
+				throw std::runtime_error(
+						"cannot poll request input: " + std::string(std::strerror(errno)));
+			}
+			if (poll_result == 0) {
+				continue;
+			}
+			if ((input.revents & (POLLIN | POLLHUP)) == 0) {
+				if ((input.revents & (POLLERR | POLLNVAL)) != 0) {
+					throw std::runtime_error("request input became unavailable");
+				}
+				continue;
+			}
+			const ssize_t count = read(STDIN_FILENO, buffer, sizeof(buffer));
+			if (count < 0) {
+				if (errno == EINTR) {
+					continue;
+				}
+				throw std::runtime_error(
+						"cannot read request input: " + std::string(std::strerror(errno)));
+			}
+			if (count == 0) {
+				if (!pending.empty()) {
+					enqueue_quit = accept_request_line(
+							pending, queue, cancel_up_to, last_say_id);
+				}
+				break;
+			}
+			pending.append(buffer, static_cast<std::size_t>(count));
+			std::size_t newline = 0;
+			while ((newline = pending.find('\n')) != std::string::npos) {
+				const std::string line = pending.substr(0, newline);
+				pending.erase(0, newline + 1);
+				if (!accept_request_line(line, queue, cancel_up_to, last_say_id)) {
+					enqueue_quit = false;
+					return;
+				}
+			}
+		}
+	} catch (const std::exception &error) {
+		try {
+			WorkItem malformed;
+			malformed.message = std::string("request input failed: ") + error.what();
+			queue.push(std::move(malformed));
+		} catch (...) {
+			enqueue_quit = false;
+		}
+	} catch (...) {
+		try {
+			WorkItem malformed;
+			malformed.message = "request input failed with an unknown exception";
+			queue.push(std::move(malformed));
+		} catch (...) {
+			enqueue_quit = false;
+		}
+	}
+	if (enqueue_quit && !stop_requested.load(std::memory_order_acquire)) {
+		try {
+			WorkItem eof;
+			eof.kind = WorkKind::Quit;
+			eof.op = "quit";
+			queue.push(std::move(eof));
+		} catch (...) {
+			// The process is already out of memory; the owning guard still joins us.
+		}
+	}
+}
+
+class ReaderGuard {
+public:
+	ReaderGuard(WorkQueue &queue, std::atomic<std::int64_t> &cancel_up_to,
+			std::atomic<bool> &stop_requested)
+		: stop_requested_(stop_requested),
+		  thread_(read_requests, std::ref(queue), std::ref(cancel_up_to),
+				  std::ref(stop_requested)) {}
+
+	ReaderGuard(const ReaderGuard &) = delete;
+	ReaderGuard &operator=(const ReaderGuard &) = delete;
+
+	~ReaderGuard() {
+		stop_and_join();
+	}
+
+	void stop_and_join() noexcept {
+		stop_requested_.store(true, std::memory_order_release);
+		if (thread_.joinable()) {
+			thread_.join();
+		}
+	}
+
+private:
+	std::atomic<bool> &stop_requested_;
+	std::thread thread_;
+};
+
+std::int32_t language_id(const std::string &language) {
+	static const std::map<std::string, std::int32_t> languages = {
+		{"en", 2050}, {"ru", 2069}, {"zh", 2055}, {"ja", 2058}, {"ko", 2064},
+		{"de", 2053}, {"fr", 2061}, {"es", 2054}, {"it", 2070}, {"pt", 2071},
+	};
+	const auto found = languages.find(language);
+	return found == languages.end() ? languages.at("zh") : found->second;
+}
+
+const char *engine_error_code() {
+	return std::string(compiled_engine_name()) == "unavailable"
+			? "engine_unavailable" : "engine_error";
+}
+
+std::uint16_t read_u16(const unsigned char *bytes) {
+	return static_cast<std::uint16_t>(
+			bytes[0] | (static_cast<std::uint16_t>(bytes[1]) << 8));
+}
+
+std::uint32_t read_u32(const unsigned char *bytes) {
+	return static_cast<std::uint32_t>(bytes[0]) |
+			(static_cast<std::uint32_t>(bytes[1]) << 8) |
+			(static_cast<std::uint32_t>(bytes[2]) << 16) |
+			(static_cast<std::uint32_t>(bytes[3]) << 24);
+}
+
+bool target_is_symlink(const std::filesystem::path &target, std::string &error) {
+	struct stat status = {};
+	if (lstat(target.c_str(), &status) == 0) {
+		if (S_ISLNK(status.st_mode)) {
+			error = "refusing symbolic-link output target: " + target.string();
+			return true;
+		}
+		return false;
+	}
+	if (errno == ENOENT) {
+		return false;
+	}
+	error = "cannot inspect output target " + target.string() + ": " +
+			std::strerror(errno);
+	return true;
+}
+
+class TemporaryOutput {
+public:
+	TemporaryOutput() = default;
+	TemporaryOutput(const TemporaryOutput &) = delete;
+	TemporaryOutput &operator=(const TemporaryOutput &) = delete;
+
+	TemporaryOutput(TemporaryOutput &&other) noexcept
+		: path_(std::move(other.path_)), handle_(other.handle_), committed_(other.committed_) {
+		other.handle_ = nullptr;
+		other.committed_ = true;
+	}
+
+	~TemporaryOutput() {
+		if (handle_ != nullptr) {
+			std::fclose(handle_);
+		}
+		if (!committed_ && !path_.empty()) {
+			unlink(path_.c_str());
+		}
+	}
+
+	static std::optional<TemporaryOutput> create(
+			const std::filesystem::path &target, std::string &error) {
+		if (target_is_symlink(target, error)) {
+			return std::nullopt;
+		}
+		const std::filesystem::path directory =
+				target.has_parent_path() ? target.parent_path() : std::filesystem::path(".");
+		std::string pattern =
+				(directory / ("." + target.filename().string() + ".part.XXXXXX")).string();
+		std::vector<char> writable(pattern.begin(), pattern.end());
+		writable.push_back('\0');
+		const int descriptor = mkstemp(writable.data());
+		if (descriptor < 0) {
+			error = "cannot create temporary output beside " + target.string() + ": " +
+					std::strerror(errno);
+			return std::nullopt;
+		}
+		FILE *handle = fdopen(descriptor, "wb");
+		if (handle == nullptr) {
+			const int saved_errno = errno;
+			close(descriptor);
+			unlink(writable.data());
+			error = "cannot open temporary output: " + std::string(std::strerror(saved_errno));
+			return std::nullopt;
+		}
+		TemporaryOutput output;
+		output.path_ = writable.data();
+		output.handle_ = handle;
+		output.committed_ = false;
+		return output;
+	}
+
+	bool write(const void *bytes, std::size_t size, std::string &error) {
+		if (size == 0) {
+			return true;
+		}
+		if (handle_ == nullptr || std::fwrite(bytes, 1, size, handle_) != size) {
+			error = "cannot write temporary output: " + std::string(std::strerror(errno));
+			return false;
+		}
+		return true;
+	}
+
+	bool write_u16(std::uint16_t value, std::string &error) {
+		const unsigned char bytes[] = {
+			static_cast<unsigned char>(value & 0xff),
+			static_cast<unsigned char>((value >> 8) & 0xff),
+		};
+		return write(bytes, sizeof(bytes), error);
+	}
+
+	bool write_u32(std::uint32_t value, std::string &error) {
+		const unsigned char bytes[] = {
+			static_cast<unsigned char>(value & 0xff),
+			static_cast<unsigned char>((value >> 8) & 0xff),
+			static_cast<unsigned char>((value >> 16) & 0xff),
+			static_cast<unsigned char>((value >> 24) & 0xff),
+		};
+		return write(bytes, sizeof(bytes), error);
+	}
+
+	bool commit(const std::filesystem::path &target, std::string &error) {
+		if (handle_ == nullptr) {
+			error = "temporary output is already closed";
+			return false;
+		}
+		if (std::fflush(handle_) != 0 || fsync(fileno(handle_)) != 0) {
+			error = "cannot flush temporary output: " + std::string(std::strerror(errno));
+			return false;
+		}
+		if (std::fclose(handle_) != 0) {
+			handle_ = nullptr;
+			error = "cannot close temporary output: " + std::string(std::strerror(errno));
+			return false;
+		}
+		handle_ = nullptr;
+		if (target_is_symlink(target, error)) {
+			return false;
+		}
+		// POSIX rename replaces an existing non-directory atomically. It never
+		// follows a destination symlink, and no pre-remove window is introduced.
+		if (rename(path_.c_str(), target.c_str()) != 0) {
+			error = "cannot install " + target.string() + ": " + std::strerror(errno);
+			return false;
+		}
+		committed_ = true;
+		return true;
+	}
+
+private:
+	std::filesystem::path path_;
+	FILE *handle_ = nullptr;
+	bool committed_ = true;
+};
+
+bool write_pcm16_wav(const std::filesystem::path &path, const EngineAudio &audio,
+		std::string &error) {
+	if (audio.sample_rate <= 0 || audio.samples.empty() ||
+			audio.samples.size() > (std::numeric_limits<std::uint32_t>::max() - 44) / 2) {
+		error = "audio buffer is empty or too large";
+		return false;
+	}
+	const std::uint64_t sample_rate = static_cast<std::uint64_t>(audio.sample_rate);
+	const std::uint64_t byte_rate = sample_rate * sizeof(std::int16_t);
+	constexpr std::uint64_t kMaximumReasonableSampleRate = 768000;
+	if (sample_rate > kMaximumReasonableSampleRate ||
+			sample_rate > std::numeric_limits<std::uint32_t>::max() ||
+			byte_rate > std::numeric_limits<std::uint32_t>::max()) {
+		error = "audio sample rate is out of WAV range";
+		return false;
+	}
+	for (const float sample : audio.samples) {
+		if (!std::isfinite(sample)) {
+			error = "qwen returned non-finite audio samples";
+			return false;
+		}
+	}
+	const std::uint32_t data_bytes =
+			static_cast<std::uint32_t>(audio.samples.size() * sizeof(std::int16_t));
+	std::optional<TemporaryOutput> output = TemporaryOutput::create(path, error);
+	if (!output.has_value()) {
+		return false;
+	}
+	if (!output->write("RIFF", 4, error) ||
+			!output->write_u32(36 + data_bytes, error) ||
+			!output->write("WAVEfmt ", 8, error) ||
+			!output->write_u32(16, error) ||
+			!output->write_u16(1, error) ||
+			!output->write_u16(1, error) ||
+			!output->write_u32(static_cast<std::uint32_t>(sample_rate), error) ||
+			!output->write_u32(static_cast<std::uint32_t>(byte_rate), error) ||
+			!output->write_u16(2, error) ||
+			!output->write_u16(16, error) ||
+			!output->write("data", 4, error) ||
+			!output->write_u32(data_bytes, error)) {
+		return false;
+	}
+	for (const float sample : audio.samples) {
+		const float clipped = std::max(-1.0f, std::min(1.0f, sample));
+		const auto pcm = static_cast<std::int16_t>(
+				std::lround(clipped < 0.0f ? clipped * 32768.0f : clipped * 32767.0f));
+		if (!output->write_u16(static_cast<std::uint16_t>(pcm), error)) {
+			return false;
+		}
+	}
+	return output->commit(path, error);
+}
+
+bool write_embedding(const std::filesystem::path &path,
+		const std::vector<float> &embedding, std::string &error) {
+	if (embedding.empty() || embedding.size() > 4096) {
+		error = "qwen returned an invalid speaker embedding";
+		return false;
+	}
+	for (const float value : embedding) {
+		if (!std::isfinite(value)) {
+			error = "qwen returned a non-finite speaker embedding";
+			return false;
+		}
+	}
+	std::optional<TemporaryOutput> output = TemporaryOutput::create(path, error);
+	if (!output.has_value()) {
+		return false;
+	}
+	if (!output->write("Q3EM", 4, error) ||
+			!output->write_u32(1, error) ||
+			!output->write_u32(static_cast<std::uint32_t>(embedding.size()), error)) {
+		return false;
+	}
+	for (const float value : embedding) {
+		std::uint32_t bits = 0;
+		static_assert(sizeof(bits) == sizeof(value), "float must be 32 bits");
+		std::memcpy(&bits, &value, sizeof(bits));
+		if (!output->write_u32(bits, error)) {
+			return false;
+		}
+	}
+	return output->commit(path, error);
+}
+
+bool read_embedding(const std::filesystem::path &path,
+		std::vector<float> &embedding, std::string &error) {
+	std::ifstream stream(path, std::ios::binary);
+	if (!stream) {
+		error = "cannot open speaker embedding: " + path.string();
+		return false;
+	}
+	unsigned char header[12] = {};
+	stream.read(reinterpret_cast<char *>(header), sizeof(header));
+	if (stream.gcount() != static_cast<std::streamsize>(sizeof(header)) ||
+			std::memcmp(header, "Q3EM", 4) != 0 || read_u32(header + 4) != 1) {
+		error = "invalid speaker embedding header";
+		return false;
+	}
+	const std::uint32_t dimensions = read_u32(header + 8);
+	if (dimensions == 0 || dimensions > 4096) {
+		error = "invalid speaker embedding dimensions";
+		return false;
+	}
+	embedding.resize(dimensions);
+	for (float &value : embedding) {
+		unsigned char bytes[4] = {};
+		stream.read(reinterpret_cast<char *>(bytes), sizeof(bytes));
+		if (!stream) {
+			error = "truncated speaker embedding";
+			return false;
+		}
+		const std::uint32_t bits = read_u32(bytes);
+		std::memcpy(&value, &bits, sizeof(value));
+		if (!std::isfinite(value)) {
+			error = "speaker embedding contains a non-finite value";
+			return false;
+		}
+	}
+	char trailing = '\0';
+	if (stream.read(&trailing, 1)) {
+		error = "speaker embedding has trailing bytes";
+		return false;
+	}
+	if (!stream.eof()) {
+		error = "cannot finish reading speaker embedding";
+		return false;
+	}
+	return true;
+}
+
+std::optional<float> wav_peak(const std::filesystem::path &path) {
+	std::ifstream stream(path, std::ios::binary);
+	if (!stream) {
+		return std::nullopt;
+	}
+	stream.seekg(0, std::ios::end);
+	const std::streamoff actual_length = stream.tellg();
+	if (actual_length < 12) {
+		return std::nullopt;
+	}
+	stream.seekg(0, std::ios::beg);
+
+	unsigned char riff[12] = {};
+	stream.read(reinterpret_cast<char *>(riff), sizeof(riff));
+	if (!stream || std::memcmp(riff, "RIFF", 4) != 0 ||
+			std::memcmp(riff + 8, "WAVE", 4) != 0) {
+		return std::nullopt;
+	}
+	const std::uint64_t riff_length =
+			static_cast<std::uint64_t>(read_u32(riff + 4)) + 8;
+	if (riff_length < sizeof(riff) ||
+			riff_length > static_cast<std::uint64_t>(actual_length)) {
+		return std::nullopt;
+	}
+
+	constexpr std::uint64_t kMaximumChunkBytes = 512ULL * 1024 * 1024;
+	constexpr std::uint64_t kMaximumFormatBytes = 64ULL * 1024;
+	bool pcm16 = false;
+	float peak = 0.0f;
+	std::uint64_t offset = sizeof(riff);
+	while (offset + 8 <= riff_length) {
+		unsigned char chunk[8] = {};
+		stream.read(reinterpret_cast<char *>(chunk), sizeof(chunk));
+		if (!stream) {
+			return std::nullopt;
+		}
+		offset += sizeof(chunk);
+		const std::uint64_t size = read_u32(chunk + 4);
+		const std::uint64_t padded_size = size + (size & 1U);
+		if (size > kMaximumChunkBytes || padded_size > riff_length - offset) {
+			return std::nullopt;
+		}
+		if (std::memcmp(chunk, "fmt ", 4) == 0) {
+			if (size < 16 || size > kMaximumFormatBytes) {
+				return std::nullopt;
+			}
+			unsigned char format[16] = {};
+			stream.read(reinterpret_cast<char *>(format), sizeof(format));
+			if (!stream) {
+				return std::nullopt;
+			}
+			pcm16 = read_u16(format) == 1 && read_u16(format + 14) == 16;
+			stream.seekg(static_cast<std::streamoff>(
+					padded_size - sizeof(format)), std::ios::cur);
+		} else if (std::memcmp(chunk, "data", 4) == 0 && pcm16) {
+			if ((size & 1U) != 0U) {
+				return std::nullopt;
+			}
+			std::uint64_t remaining = size;
+			unsigned char samples[4096] = {};
+			while (remaining != 0) {
+				const std::size_t count = static_cast<std::size_t>(
+						std::min<std::uint64_t>(remaining, sizeof(samples)));
+				stream.read(reinterpret_cast<char *>(samples),
+						static_cast<std::streamsize>(count));
+				if (!stream) {
+					return std::nullopt;
+				}
+				for (std::size_t index = 0; index < count; index += 2) {
+					const auto signed_sample =
+							static_cast<std::int16_t>(read_u16(samples + index));
+					peak = std::max(peak,
+							std::abs(static_cast<float>(signed_sample)) / 32768.0f);
+				}
+				remaining -= count;
+			}
+			return peak;
+		} else {
+			stream.seekg(static_cast<std::streamoff>(padded_size), std::ios::cur);
+		}
+		if (!stream) {
+			return std::nullopt;
+		}
+		offset += padded_size;
+	}
+	return std::nullopt;
+}
+
+void process_say(const WorkItem &item, const Options &options, EngineApi &engine,
+		Responder &responder) {
+	const bool only_json_whitespace = std::all_of(
+			item.text.begin(), item.text.end(), [](unsigned char character) {
+				return character == ' ' || character == '\t' ||
+						character == '\r' || character == '\n';
+			});
+	if (only_json_whitespace) {
+		responder.error(item.id, "say", "empty", "nothing to say");
+		return;
+	}
+	std::string error;
+	std::vector<float> embedding;
+	const std::vector<float> *voice = nullptr;
+	if (!item.voice.empty()) {
+		if (!read_embedding(item.voice, embedding, error)) {
+			responder.error(item.id, "say", "invalid_voice", error);
+			return;
+		}
+		voice = &embedding;
+	}
+
+	EngineAudio audio;
+	const auto started = std::chrono::steady_clock::now();
+	bool synthesized = false;
+	try {
+		synthesized =
+				engine.synthesize(item.text, language_id(item.language), voice, audio, error);
+	} catch (const std::exception &exception) {
+		responder.error(item.id, "say", "internal_error",
+				std::string("TTS engine threw an exception: ") + exception.what());
+		return;
+	} catch (...) {
+		responder.error(item.id, "say", "internal_error",
+				"TTS engine threw an unknown exception");
+		return;
+	}
+	if (!synthesized) {
+		responder.error(item.id, "say", engine_error_code(), error);
+		return;
+	}
+	const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - started).count();
+	const std::filesystem::path path =
+			std::filesystem::path(options.spool) / (std::to_string(item.id) + ".wav");
+	if (!write_pcm16_wav(path, audio, error)) {
+		responder.error(item.id, "say", "write_failed", error);
+		return;
+	}
+	responder.audio(
+			item.id, path.string(), audio.sample_rate, audio.samples.size(), milliseconds);
+}
+
+void process_clone(const WorkItem &item, EngineApi &engine, Responder &responder) {
+	if (item.wav.empty() || item.output.empty()) {
+		responder.error(item.id, "clone", "invalid_request",
+				"clone requires wav and out paths");
+		return;
+	}
+	const std::optional<float> peak = wav_peak(item.wav);
+	if (peak.has_value() && *peak < 0.05f) {
+		responder.error(item.id, "clone", "silent",
+				"reference audio is almost silent");
+		return;
+	}
+
+	std::vector<float> embedding;
+	std::string error;
+	bool extracted = false;
+	try {
+		extracted = engine.extract_embedding(item.wav, embedding, error);
+	} catch (const std::exception &exception) {
+		responder.error(item.id, "clone", "internal_error",
+				std::string("TTS engine threw an exception: ") + exception.what());
+		return;
+	} catch (...) {
+		responder.error(item.id, "clone", "internal_error",
+				"TTS engine threw an unknown exception");
+		return;
+	}
+	if (!extracted) {
+		responder.error(item.id, "clone", engine_error_code(), error);
+		return;
+	}
+	const std::filesystem::path output(item.output);
+	std::error_code filesystem_error;
+	if (output.has_parent_path()) {
+		std::filesystem::create_directories(output.parent_path(), filesystem_error);
+	}
+	if (filesystem_error || !write_embedding(output, embedding, error)) {
+		if (error.empty()) {
+			error = "cannot create embedding directory: " + filesystem_error.message();
+		}
+		responder.error(item.id, "clone", "write_failed", error);
+		return;
+	}
+	responder.cloned(item.id, output.string(), embedding.size());
+}
 
 bool internal_self_test() {
 	const std::string sample =
@@ -638,70 +1377,97 @@ int run(const Options &options) {
 			return 2;
 		}
 	}
+	// qwen and ggml write diagnostics directly to the process streams. Redirect
+	// both before the C API can be loaded, so an undrained pipe cannot fill and
+	// block synthesis. Metadata modes return before run() and remain on stdout.
+	if (std::freopen(options.log.c_str(), "a", stdout) == nullptr ||
+			std::freopen(options.log.c_str(), "a", stderr) == nullptr) {
+		return 2;
+	}
 	std::ofstream log(options.log, std::ios::app);
 	if (!log) {
 		std::cerr << "cannot open log file\n";
 		return 2;
 	}
-	log << "native TTS protocol stub " << kVersion << " started; models="
-		<< options.models << " threads=" << options.threads << " idle=" << options.idle << '\n';
+	log << "native TTS helper " << kVersion << " started; engine="
+		<< compiled_engine_name() << " models=" << options.models
+		<< " threads=" << options.threads << " idle=" << options.idle << '\n';
 	log.flush();
 
 	try {
 		Responder responder(options.output);
 		responder.ready();
-		std::string line;
-		bool quit_requested = false;
-		while (std::getline(std::cin, line)) {
-			if (line.find_first_not_of(" \t\r\n") == std::string::npos) {
+
+		WorkQueue queue;
+		std::atomic<std::int64_t> cancel_up_to(-1);
+		std::atomic<bool> stop_requested(false);
+		std::unique_ptr<EngineApi> engine = create_engine(options.models, options.threads);
+		ReaderGuard reader(queue, cancel_up_to, stop_requested);
+		auto last_work = std::chrono::steady_clock::now();
+		const auto idle = std::chrono::duration<double>(options.idle);
+		bool finished = false;
+		while (!finished) {
+			WorkItem item;
+			if (!queue.pop_for(item, std::chrono::milliseconds(50))) {
+				try {
+					if (engine->is_loaded() && options.idle >= 0.0 &&
+							std::chrono::steady_clock::now() - last_work >= idle) {
+						engine->unload();
+						log << "engine unloaded after idle timeout\n";
+						log.flush();
+					}
+				} catch (const std::exception &error) {
+					log << "engine idle unload failed: " << error.what() << '\n';
+					log.flush();
+				} catch (...) {
+					log << "engine idle unload failed with an unknown exception\n";
+					log.flush();
+				}
 				continue;
 			}
 
-			JsonValue request;
-			std::string parse_error;
-			if (!JsonParser(line).parse(request, parse_error) ||
-					request.type != JsonValue::Type::Object) {
-				responder.malformed(0, "request",
-						parse_error.empty() ? "request must be a JSON object" : parse_error);
-				continue;
-			}
-
-			std::int64_t id = 0;
-			const JsonValue *id_value = member(request, "id");
-			const bool has_valid_id =
-					id_value != nullptr && integer_value(*id_value, id) && id >= 0;
-			if (!has_valid_id) {
-				id = 0;
-			}
-
-			const JsonValue *op_value = member(request, "op");
-			const bool has_valid_op = op_value != nullptr &&
-					op_value->type == JsonValue::Type::String && !op_value->text.empty();
-			const std::string op = has_valid_op ? op_value->text : "request";
-			if (!has_valid_op) {
-				responder.malformed(id, op, "request has no non-empty string op");
-				continue;
-			}
-			if (op == "quit") {
-				quit_requested = true;
-				break;
-			}
-			if (op == "cancel" || op == "unload") {
-				continue;
-			}
-
-			if (!has_valid_id) {
-				responder.malformed(id, op, "request has no non-negative integer id");
-				continue;
-			}
-			if (op == "say" || op == "clone") {
-				responder.unavailable(id, op);
-			} else {
-				responder.malformed(id, op, "unknown op: " + op);
+			switch (item.kind) {
+				case WorkKind::Say:
+					if (item.id <= cancel_up_to.load(std::memory_order_acquire)) {
+						responder.error(item.id, "say", "cancelled", "dropped by cancel");
+					} else {
+						process_say(item, options, *engine, responder);
+						last_work = std::chrono::steady_clock::now();
+					}
+					break;
+				case WorkKind::Clone:
+					process_clone(item, *engine, responder);
+					last_work = std::chrono::steady_clock::now();
+					break;
+				case WorkKind::Unload:
+					try {
+						engine->unload();
+					} catch (const std::exception &error) {
+						log << "explicit engine unload failed: " << error.what() << '\n';
+						log.flush();
+					} catch (...) {
+						log << "explicit engine unload failed with an unknown exception\n";
+						log.flush();
+					}
+					break;
+				case WorkKind::Malformed:
+					responder.malformed(item.id, item.op, item.message);
+					break;
+				case WorkKind::Quit:
+					finished = true;
+					break;
 			}
 		}
+		reader.stop_and_join();
+		try {
+			engine->unload();
+		} catch (const std::exception &error) {
+			log << "shutdown engine unload failed: " << error.what() << '\n';
+		} catch (...) {
+			log << "shutdown engine unload failed with an unknown exception\n";
+		}
 		responder.bye();
-		log << (quit_requested ? "quit requested" : "stdin reached EOF") << '\n';
+		log << "shutdown complete\n";
 		return 0;
 	} catch (const std::exception &error) {
 		log << "fatal: " << error.what() << '\n';
@@ -728,7 +1494,8 @@ int main(int argc, char **argv) {
 				std::cerr << "internal JSON self-test failed\n";
 				return 1;
 			}
-			std::cout << "{\"ok\":true,\"protocol\":1,\"engine\":\"unavailable\"}\n";
+			std::cout << "{\"ok\":true,\"protocol\":1,\"engine\":\""
+					  << escape_json(compiled_engine_name()) << "\"}\n";
 			return 0;
 		}
 	}

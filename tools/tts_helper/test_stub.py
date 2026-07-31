@@ -120,6 +120,22 @@ class StubTests(unittest.TestCase):
         self.assertEqual(events[3], {"event": "bye"})
         self.assertEqual(len(events), 4)
 
+    def test_json_whitespace_only_say_gets_one_empty_error(self):
+        result, events = self.run_protocol(
+            '{"op":"say","id":43,"text":" \\t\\r\\n"}\n'
+            '{"op":"quit"}\n'
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(events[1], {
+            "event": "error",
+            "id": 43,
+            "op": "say",
+            "code": "empty",
+            "message": "nothing to say",
+        })
+        self.assertEqual(events[2], {"event": "bye"})
+        self.assertEqual(len(events), 3)
+
     def test_malformed_requests_emit_errors_and_processing_continues(self):
         result, events = self.run_protocol(
             '{"op":"say","id":1,\n'
@@ -202,6 +218,24 @@ class StubTests(unittest.TestCase):
             {"event": "ready", "protocol": 1, "engine": "unavailable"},
             {"event": "bye"},
         ])
+
+    def test_op_must_be_non_empty_but_literal_request_is_unknown(self):
+        result, events = self.run_protocol(
+            '{"op":"","id":81}\n'
+            '{"op":"request","id":82}\n'
+            '{"op":"quit"}\n'
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [(event["id"], event["op"], event["code"]) for event in events[1:3]],
+            [
+                (81, "request", "malformed_request"),
+                (82, "request", "malformed_request"),
+            ],
+        )
+        self.assertIn("no non-empty string op", events[1]["message"])
+        self.assertIn("unknown op: request", events[2]["message"])
 
     def test_escaped_quotes_and_traditional_chinese_utf8_are_valid(self):
         result, events = self.run_protocol(
