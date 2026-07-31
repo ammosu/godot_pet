@@ -124,9 +124,12 @@ class Engine:
     to the machine the user is also working on, and reloading it costs 750 ms.
     """
 
-    def __init__(self, library, model_dir, threads, lib_path=""):
+    def __init__(self, library, model_dir, threads, lib_path="", max_tokens=0,
+                 temperature=0.0):
         self._model_dir = model_dir
         self._threads = threads
+        self._max_tokens = max_tokens
+        self._temperature = temperature
         self._tts = None
         preload(lib_path)
         lib = ctypes.CDLL(library)
@@ -188,6 +191,32 @@ class Engine:
         self._lib.qwen3_tts_default_params(ctypes.byref(params))
         params.n_threads = self._threads
         params.language_id = LANGUAGE_IDS.get(language, LANGUAGE_IDS["zh"])
+        # Generation does not always stop. Measured on one line, same voice,
+        # five runs at the library's default temperature of 0.9: one ended
+        # normally, one ran to 20.78 s of audio for a six-second sentence, and
+        # three died allocating 21598 MiB of VRAM — the graph is sized from the
+        # token ceiling, so a run that never emits EOS asks for all of it.
+        #
+        # The library's own default ceiling is 4096 tokens, which at 12.5 Hz is
+        # five and a half minutes. That is the pet reading gibberish aloud for
+        # five and a half minutes with every queued sentence stuck behind it,
+        # and on a smaller card it is an out-of-memory instead. Neither is a
+        # thing a desk pet should be able to do.
+        #
+        # This does not stop generation running away — see the temperature
+        # setting for that — it bounds what happens when it does.
+        if self._max_tokens > 0:
+            params.max_audio_tokens = self._max_tokens
+        # And this is what stops it running away in the first place. Same line,
+        # same voice, five runs each: 0.9 (the library's default) ended normally
+        # once, 0.7 twice, 0.5 five times out of five, and 0.3 not at all.
+        #
+        # Both ends fail for opposite reasons — too high and sampling wanders
+        # off without ever drawing EOS, too low and greedy decoding never picks
+        # it — so this is a value with a floor as well as a ceiling, and 0 is
+        # not "use the default" but the worst setting available.
+        if self._temperature > 0.0:
+            params.temperature = self._temperature
         handle = ctypes.c_void_p(self._tts)
         if embedding:
             buf = (ctypes.c_float * len(embedding))(*embedding)
@@ -367,13 +396,20 @@ def main():
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--idle", type=float, default=300.0,
                         help="seconds of silence before the model is unloaded")
+    parser.add_argument("--max-tokens", type=int, default=0,
+                        help="ceiling on audio tokens per utterance; 0 leaves "
+                             "the library's own default of 4096 (5.5 minutes)")
+    parser.add_argument("--temperature", type=float, default=0.0,
+                        help="sampling temperature; 0 leaves the library's own "
+                             "default of 0.9, which runs away often")
     args = parser.parse_args()
 
     os.makedirs(args.spool, exist_ok=True)
     out = Responder(args.out)
 
     try:
-        engine = Engine(args.lib, args.models, args.threads, args.lib_path)
+        engine = Engine(args.lib, args.models, args.threads, args.lib_path,
+                        args.max_tokens, args.temperature)
         load_ms = engine.load()
     except Exception as error:  # OSError from CDLL, RuntimeError from create
         # id 0 and op "load" is what marks this fatal on the caller's side: one

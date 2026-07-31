@@ -64,6 +64,66 @@ const RTF_SAMPLES := 3
 ## reported as ~1.7 CPU-only in the upstream integration guide.
 const RTF_TOO_SLOW := 1.0
 
+## Ceiling on the audio tokens one utterance may generate, at 12.5 per second.
+##
+## Generation does not reliably stop, and **the risk is almost entirely on the
+## default voice**. Measured, same sentence, eight runs each: the default voice
+## ran away once and wobbled once more (3.4 to 40.9 s), while `yu` and `anna`
+## were 0 for 8 apiece and barely varied at all (3.3-4.3 s). The 61 lines
+## `tools/hear.sh` renders are all in a cloned voice and none has ever run away.
+##
+## That is backwards from the obvious guess — a speaker embedding sounds like an
+## extra constraint that could only make things harder — and it is worth
+## remembering when reading anything else here: several rounds of measurement on
+## this went wrong purely because the runs used no embedding and the app always
+## does.
+##
+## It still has to be bounded, because the pet speaks in its own voice when no
+## voice is chosen. Left alone the ceiling is 4096, which is **five and a half
+## minutes** of the pet reading gibberish with every queued sentence stuck
+## behind it — and worse than that, the compute graph is sized from the ceiling,
+## so a run that never emits EOS asks for 21598 MiB of VRAM and takes the helper
+## down with an out-of-memory instead. Measured both ways: at 4096 the runaway
+## is a crash, at 512 it is 41 seconds of noise.
+##
+## 512 is 41 seconds. `TTSService` flushes at 40 characters, and a 30-character
+## line measured 8.70 s — 109 tokens — so the longest thing that should ever
+## arrive here is around 150. Erring high is deliberate: cutting a sentence off
+## mid-word is a worse failure than the runaway this bounds, and the runaway has
+## its own fix in the temperature setting rather than in this number.
+##
+## Verified by driving the daemon directly: 32 gave 2.54 s of audio (32/12.5),
+## and 512 gave 40.94 s — that second one having run away, which is what a
+## ceiling looks like when it works.
+const MAX_AUDIO_TOKENS := 512
+
+## Sampling temperature. The library defaults to 0.9, and that default is what
+## makes the runaway above common: measured on one sentence, one voice, five
+## runs per setting, the runs that ended normally were 1 at 0.9, 2 at 0.7, 5 at
+## 0.5, and 0 at 0.3.
+##
+## **0.5 makes it rare, not impossible.** Fifteen runs at 0.5 were 10 good
+## against 7 at 0.9 — a real improvement and nothing like the 5-for-5 the first
+## small sample suggested. Neither setting replaces the other: this lowers the
+## rate, `MAX_AUDIO_TOKENS` bounds the damage, and both are needed.
+##
+## A run of good sentences is not evidence that a value fixed anything. Every
+## wrong conclusion drawn while investigating this — that 0.5 cured it, that only
+## long lines were affected, that it was specific to one sentence — came from
+## three to five samples that happened to agree. This engine is random enough to
+## fake any pattern at that size; count at least fifteen.
+##
+## It fails at both ends and for opposite reasons — too high and sampling
+## wanders off without ever drawing EOS, too low and greedy decoding never picks
+## it (0.0 measured 60 s for a line that normally takes 7). So this is not
+## "lower is safer": it has a floor as well as a ceiling, and the usable range
+## is narrower than a knob like this usually implies.
+##
+## Lowering it also narrows how much a voice varies between takes, which is the
+## trade being made. A pet that occasionally reads gibberish for forty seconds
+## is worse than one that is slightly more even.
+const DEFAULT_TEMPERATURE := 0.5
+
 ## How many times a helper that died is started again before the voice is given
 ## up on. One, for the same reason WorkService retries a stale session exactly
 ## once: two overlapping calls into this library abort the process outright
@@ -692,6 +752,8 @@ func _command() -> String:
 		"--spool", _sh_quote(_work_path("spool")),
 		"--threads", str(mini(8, maxi(2, OS.get_processor_count()))),
 		"--idle", str(float(Config.get_value("tts", "qwen3_idle_seconds", 300.0))),
+		"--max-tokens", str(int(Config.get_value("tts", "qwen3_max_tokens", MAX_AUDIO_TOKENS))),
+		"--temperature", str(float(Config.get_value("tts", "qwen3_temperature", DEFAULT_TEMPERATURE))),
 		">%s" % _sh_quote(_work_path("engine.log")),
 		"2>&1",
 	])
