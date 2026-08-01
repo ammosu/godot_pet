@@ -33,6 +33,9 @@ signal remarked(text: String)
 ## so the menu row naming it is stale.
 signal voice_changed()
 
+## A pre-render batch moved on. `left` reaching zero ends it, however it ended.
+signal prerender_progress(done: int, left: int)
+
 var _enabled := false
 var _buffer := ""
 var _backend_name := BACKEND_OS
@@ -51,6 +54,8 @@ func _ready() -> void:
 	_qwen3 = Qwen3Voice.new()
 	_qwen3.name = "Qwen3Voice"
 	_qwen3.voice_cloned.connect(_on_voice_cloned)
+	_qwen3.line_prerendered.connect(func(done: int, left: int) -> void:
+		prerender_progress.emit(done, left))
 	add_child(_qwen3)
 	for backend in [_os_voice, _qwen3]:
 		backend.broke.connect(_on_backend_broke)
@@ -371,6 +376,38 @@ func _speak(text: String) -> void:
 ## be matched again by a later rule — with a table of whole words that has not
 ## come up, and the alternative (one pass with a combined pattern) costs more
 ## than the problem.
+## Every line the pet says aloud whose wording never changes.
+##
+## Only three things reach a backend at all — a streamed reply, a nudge, and the
+## vision refusal — and the first of those is written fresh every time. So this
+## is the nudges plus that one line, and it is short by nature: eighteen at the
+## time of writing.
+func fixed_lines() -> PackedStringArray:
+	var lines := Nudger.fixed_lines()
+	lines.append(VisionService.WALLPAPER_ONLY_LINE)
+	return lines
+
+
+## Render the fixed lines in advance so saying one costs a file read.
+##
+## Returns how many are being made, or -1 when the active backend cannot do it.
+## The OS voice is not a failure to report: it has nothing to pre-render, since
+## `DisplayServer.tts_speak()` has no file output and no model to load either.
+func prerender_fixed_lines() -> int:
+	if _backend != _qwen3 or _qwen3 == null or not _qwen3.is_available():
+		return -1
+	var spoken := PackedStringArray()
+	for line in fixed_lines():
+		# Through `_respell` exactly as speaking does, because that is the key
+		# the lookup will use. Rendering the written form instead would cache
+		# audio no lookup could ever find, and quietly render the whole feature
+		# a no-op that still cost a minute of GPU.
+		var text := _respell(line.strip_edges())
+		if not text.is_empty():
+			spoken.append(text)
+	return _qwen3.prerender(spoken)
+
+
 func _respell(line: String) -> String:
 	for pair in _respellings:
 		line = line.replace(pair[0], pair[1])

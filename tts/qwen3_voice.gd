@@ -56,6 +56,7 @@ const SEED_DIR := "res://voices"
 ## rather than two, so nothing downstream has to know where a voice came from.
 const VOICES_DIR := "voices"
 const VOICE_EXTENSION := "emb"
+const CACHE_DIR := "cache"
 ## Long enough to name a person, short enough to sit in a menu row.
 const MAX_VOICE_NAME := 24
 
@@ -151,6 +152,12 @@ const NATIVE_READY_TIMEOUT_MSEC := 5000
 ## Emitted when a cloning attempt finishes, either way.
 signal voice_cloned(ok: bool, message: String)
 
+## One pre-rendered line landed, or was given up on. `left` reaching zero is the
+## end of the batch — including when it ends early, since `stop()` drops every
+## outstanding request and the count has to reach zero either way or the caller
+## waits forever for a line nobody is still making.
+signal line_prerendered(done: int, left: int)
+
 var _pid := -1
 var _stdio: FileAccess = null
 var _offset := 0
@@ -172,6 +179,9 @@ var _outstanding := 0
 ## helper protocol is untrusted input even in development: duplicate or stale
 ## events must not decrement unrelated work or play twice.
 var _pending_say_ids := {}
+## id → the text being rendered into the cache, for requests that must not play.
+var _cache_fills := {}
+var _prerendered := 0
 
 var _player: AudioStreamPlayer
 var _queue: Array[AudioStreamWAV] = []
@@ -821,6 +831,99 @@ func _home() -> String:
 	return home if not home.is_empty() else OS.get_environment("USERPROFILE")
 
 
+## Where pre-rendered lines for the voice currently selected are kept.
+##
+## Per voice, because the audio is the voice: switching to `tiffy` must not play
+## back `lulu`. The default voice has no file and so no name, hence the literal —
+## it cannot collide with a real one, which `sanitise_voice_name()` strips
+## leading dots from.
+##
+## This folder is machine-owned, unlike the outbox. The names are hashes because
+## the lookup is by exact text, and they carry the rate and sample count so a
+## truncated or half-written file is rejected by the same parser that guards the
+## helper's own output rather than played as noise.
+func _report_prerender(ok: bool) -> void:
+	if ok:
+		_prerendered += 1
+	line_prerendered.emit(_prerendered, _cache_fills.size())
+	if _cache_fills.is_empty():
+		_prerendered = 0
+
+
+## Every outstanding fill given up on at once, for the paths that discard the
+## whole queue rather than one request — `stop()` and a helper that died.
+func _abandon_cache_fills() -> void:
+	if _cache_fills.is_empty():
+		return
+	_cache_fills.clear()
+	line_prerendered.emit(_prerendered, 0)
+	_prerendered = 0
+
+
+func _cache_dir() -> String:
+	var voice := active_voice()
+	return _work_path(CACHE_DIR).path_join(voice if not voice.is_empty() else ".default")
+
+
+func _cache_key(text: String) -> String:
+	return text.sha256_text()
+
+
+## The cached file for this exact text, or "" — the text being the **respelled**
+## one, since that is what `TTSService` hands every backend. A 破音字 rule that
+## changes how a line is spoken therefore changes its key, so the old audio stops
+## being found on its own. Nothing has to remember to clear it, and nothing can
+## forget to: a cache that kept playing the pronunciation a new rule was written
+## to fix would silently undo the whole table.
+func _cached_path(text: String) -> String:
+	var directory := _cache_dir()
+	var dir := DirAccess.open(directory)
+	if dir == null:
+		return ""
+	var prefix := _cache_key(text) + "-"
+	for file in dir.get_files():
+		if file.begins_with(prefix) and file.get_extension() == "wav" and not dir.is_link(file):
+			return directory.path_join(file)
+	return ""
+
+
+func _cached_stream(text: String) -> AudioStreamWAV:
+	var path := _cached_path(text)
+	if path.is_empty():
+		return null
+	var parts := path.get_file().get_basename().split("-")
+	if parts.size() != 3:
+		return null
+	var wav := parse_native_wav(FileAccess.get_file_as_bytes(path),
+		int(parts[1]), int(parts[2]))
+	if wav.is_empty():
+		# Rejected rather than repaired: the next thing this function's caller
+		# does is synthesise the line for real, so a bad cache file costs one
+		# ordinary utterance and nothing else.
+		push_warning("Qwen3Voice: ignoring unreadable cached line %s" % path.get_file())
+		return null
+	return _pcm_stream(wav["data"], int(wav["rate"]))
+
+
+func _pcm_stream(pcm: PackedByteArray, rate: int) -> AudioStreamWAV:
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = rate
+	stream.stereo = false
+	stream.data = pcm
+	return stream
+
+
+func _write_cache(directory: String, text: String, pcm: PackedByteArray, rate: int) -> void:
+	var samples := pcm.size() >> 1
+	if samples <= 0 or rate <= 0 or directory.is_empty() or text.is_empty():
+		return
+	DirAccess.make_dir_recursive_absolute(directory)
+	var path := directory.path_join("%s-%d-%d.wav" % [_cache_key(text), rate, samples])
+	if _pcm_stream(pcm, rate).save_to_wav(path) != OK:
+		push_warning("Qwen3Voice: could not write cached line to %s" % path)
+
+
 func _work_path(leaf: String) -> String:
 	var base := (_work_root_override if not _work_root_override.is_empty()
 		else ProjectSettings.globalize_path(WORK_DIR))
@@ -841,6 +944,16 @@ func _consume_pending_say(request_id: int) -> bool:
 	return true
 
 func speak(text: String) -> void:
+	# **Before `_ensure_running()`, which is the whole point.** A nudge arrives at
+	# least eight minutes after the last one (`Nudger.COOLDOWN_MINUTES`) and the
+	# engine unloads after five (`qwen3_idle_seconds`), so the two can never
+	# overlap: every unprompted line reloads the model and takes 2.6 GB of VRAM
+	# back — measured — to say one of eighteen sentences that never change.
+	var cached := _cached_stream(text)
+	if cached != null:
+		_queue.append(cached)
+		_play_next()
+		return
 	if not _ensure_running():
 		return
 	_next_id += 1
@@ -854,6 +967,42 @@ func speak(text: String) -> void:
 	set_process(true)
 
 
+## Render `lines` to the cache without playing any of them.
+##
+## Returns how many were actually asked for: one that is already cached costs
+## nothing, so re-running this after adding a 破音字 rule only redoes the lines
+## that rule touched.
+func prerender(lines: PackedStringArray) -> int:
+	var wanted := PackedStringArray()
+	for line in lines:
+		var text := line.strip_edges()
+		if not text.is_empty() and _cached_path(text).is_empty():
+			wanted.append(text)
+	if wanted.is_empty():
+		return 0
+	if not _ensure_running():
+		return 0
+	# The destination is fixed here rather than looked up when each line lands.
+	# A batch takes about a second a line and switching voice is the obvious
+	# thing to do next, so the folder can change mid-flight — and a fill that
+	# followed it would file this voice's audio under the new one's name, which
+	# plays as the wrong voice forever with nothing to show for it.
+	var directory := _cache_dir()
+	DirAccess.make_dir_recursive_absolute(directory)
+	for text in wanted:
+		_next_id += 1
+		_pending_say_ids[_next_id] = true
+		_cache_fills[_next_id] = {"text": text, "dir": directory}
+		_send({
+			"op": "say", "id": _next_id, "text": text,
+			"lang": str(Config.get_value("tts", "qwen3_language", "zh")),
+			"voice": _voice_path(active_voice()),
+		})
+	_sync_outstanding()
+	set_process(true)
+	return wanted.size()
+
+
 func stop() -> void:
 	# Everything asked for so far is unwanted, including whatever is being
 	# generated right now — the library cannot be interrupted mid-utterance, so
@@ -861,6 +1010,10 @@ func stop() -> void:
 	_epoch = _next_id
 	_queue.clear()
 	_pending_say_ids.clear()
+	# A batch is abandoned by anything that stops the voice — the user typing,
+	# a reply starting. Whatever already landed stays cached and the next run
+	# picks up only what is still missing, so this costs nothing but time.
+	_abandon_cache_fills()
 	_sync_outstanding()
 	_drop_deferred_say_requests()
 	if _player != null:
@@ -957,7 +1110,10 @@ func _finish_clone_failure(message: String) -> void:
 ## behind its own back), and a zero-length stream **does** (so a bad utterance can
 ## never leave the queue stalled with the player idle).
 func _play_next() -> void:
-	if _player.playing or _queue.is_empty():
+	# The null check is not paranoia about `_ready()`: the cached path reaches
+	# here without any helper traffic having happened first, so this is now
+	# callable on a Qwen3Voice that was never put in the tree.
+	if _player == null or _player.playing or _queue.is_empty():
 		return
 	_player.stream = _queue.pop_front()
 	_player.play()
@@ -1583,6 +1739,11 @@ func _on_audio(data: Dictionary) -> void:
 	if not _consume_pending_say(event_id):
 		push_warning("Qwen3Voice: ignored stale, duplicate, or unknown audio event")
 		return
+	# Taken before any of the early returns below: a fill that is dropped still
+	# has to be counted, or the batch never reaches zero and the caller waits on
+	# a line nobody is still making.
+	var fill: Dictionary = _cache_fills.get(event_id, {})
+	_cache_fills.erase(event_id)
 	var path := str(data.get("path", ""))
 	var leaf := _expected_audio_leaf(event_id)
 	var accepted_path := is_expected_spool_file(path, _work_path("spool"), leaf)
@@ -1593,6 +1754,8 @@ func _on_audio(data: Dictionary) -> void:
 	if accepted_path and is_expected_spool_file(path, _work_path("spool"), leaf):
 		DirAccess.remove_absolute(path)
 	if event_id <= _epoch or bytes.is_empty():
+		if not fill.is_empty():
+			_report_prerender(false)
 		return
 
 	var samples := int(data.get("samples", 0))
@@ -1605,16 +1768,17 @@ func _on_audio(data: Dictionary) -> void:
 		bytes = wav["data"]
 		rate = int(wav["rate"])
 		samples = int(wav["samples"])
+	if not fill.is_empty():
+		# Written and never played. `_watch_speed` is skipped too: it exists to
+		# say the voice is lagging behind speech, and during a batch there is no
+		# speech to lag behind — the warning would be true of the number and
+		# wrong about what it means.
+		_write_cache(str(fill.get("dir", "")), str(fill.get("text", "")), bytes, rate)
+		_report_prerender(true)
+		return
 	_watch_speed(int(data.get("ms", 0)), samples, rate)
 
-	var stream := AudioStreamWAV.new()
-	# Raw PCM16 rather than a .wav file, so nothing here depends on which Godot
-	# version learned to parse one, and the helper needs no wav writer.
-	stream.format = AudioStreamWAV.FORMAT_16_BITS
-	stream.mix_rate = rate
-	stream.stereo = false
-	stream.data = bytes
-	_queue.append(stream)
+	_queue.append(_pcm_stream(bytes, rate))
 	_play_next()
 
 
@@ -1772,10 +1936,15 @@ func _on_error(data: Dictionary) -> void:
 		push_warning("Qwen3Voice: ignored stale or unknown clone error")
 		return
 	if op == "say":
-		if not _consume_pending_say(int(data.get("id", 0))):
+		var failed_id := int(data.get("id", 0))
+		if not _consume_pending_say(failed_id):
 			if code != "cancelled" and code != "empty":
 				push_warning("Qwen3Voice: ignored stale, duplicate, or unknown say error")
 			return
+		# A line that failed is one the batch is no longer waiting for. Nothing
+		# is written, so the next run simply asks for it again.
+		if _cache_fills.erase(failed_id):
+			_report_prerender(false)
 	elif op != "clone" and op != "load":
 		push_warning("Qwen3Voice: ignored error with unknown op")
 		return
@@ -1839,6 +2008,10 @@ func _fail(reason: String) -> void:
 		_finish_clone_failure("換聲音的時候引擎停了，等一下再試一次好嗎？")
 	_pending_say_ids.clear()
 	_deferred_native_requests.clear()
+	# Same reason the clone above is answered: a batch waiting on a helper that
+	# is gone would otherwise leave the menu row saying it is still working for
+	# the rest of the session.
+	_abandon_cache_fills()
 	if _pid != -1 and OS.is_process_running(_pid):
 		OS.kill(_pid)
 	_forget_helper()

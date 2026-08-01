@@ -20,6 +20,11 @@ const DETAIL := "low"
 
 const DEFAULT_QUESTION := "你看一下我現在的螢幕，跟我說說你看到什麼。"
 
+## The one line this service speaks aloud, named so `TTSService` can pre-render
+## it alongside the nudges — it is the only fixed spoken line that does not come
+## from `prompts/nudges.json`.
+const WALLPAPER_ONLY_LINE := "我只看到桌布欸……是不是還沒給我螢幕錄製權限？系統設定 → 隱私權與安全性 → 螢幕錄製。"
+
 ## Below this much local contrast the capture is almost certainly just the
 ## desktop wallpaper. Calibrated against real captures; a genuinely empty
 ## desktop trips it too, which is why the pet asks rather than asserts.
@@ -76,8 +81,7 @@ func look(question := DEFAULT_QUESTION, record_question := true) -> void:
 		# macOS hands back the wallpaper with no error at all when Screen
 		# Recording permission is missing, so this can't be left to fail
 		# silently — the model would cheerfully discuss the desktop picture.
-		EventBus.pet_nudged.emit("sad",
-			"我只看到桌布欸……是不是還沒給我螢幕錄製權限？系統設定 → 隱私權與安全性 → 螢幕錄製。")
+		EventBus.pet_nudged.emit("sad", WALLPAPER_ONLY_LINE)
 		return
 
 	LLMService.ask_about_image(question, image_to_data_url(shot), record_question)

@@ -12,6 +12,7 @@ func _ready() -> void:
 	_test_python_command()
 	_test_native_wav()
 	_test_spool_paths_and_symlink()
+	_test_line_cache()
 	_test_clear_spool_ownership()
 	_test_linked_workdir_blocks_spawn()
 	_test_linked_owned_leaves_block_spawn()
@@ -278,6 +279,65 @@ func _test_spool_paths_and_symlink() -> void:
 	DirAccess.remove_absolute(real_spool)
 	DirAccess.remove_absolute(victim)
 	DirAccess.remove_absolute(spool)
+	DirAccess.remove_absolute(root)
+
+
+## The cache has to hand back exactly what was put in it, and — the part worth
+## testing hardest — must stop matching the moment the spoken text changes.
+func _test_line_cache() -> void:
+	var root := ProjectSettings.globalize_path("user://qwen3_tts/cache-test")
+	var voice := Qwen3Voice.new()
+	voice._work_root_override = root
+
+	var pcm := PackedByteArray()
+	for i in 400:
+		pcm.append(i % 256)
+		pcm.append(0)
+	voice._write_cache(voice._cache_dir(), "我肚子餓了", pcm, 24000)
+	var found := voice._cached_path("我肚子餓了")
+	_expect(not found.is_empty(), "a written cache line was not found again")
+	_expect(found.get_file().begins_with("我肚子餓了".sha256_text() + "-"),
+		"the cache file is not named after the spoken text")
+
+	var stream := voice._cached_stream("我肚子餓了")
+	_expect(stream != null, "a cached line did not come back as a stream")
+	if stream != null:
+		_expect(stream.data == pcm, "the cached audio came back altered")
+		_expect(stream.mix_rate == 24000, "the cached sample rate was lost")
+		_expect(not stream.stereo, "a cached line came back as stereo")
+
+	# The invalidation the whole design rests on: a 破音字 rule changes the text
+	# that reaches the backend, so it changes the key, so the old audio is simply
+	# never found. Nothing clears anything, and nothing can forget to.
+	_expect(voice._cached_path("我肚子餓ㄌ").is_empty(),
+		"a different line matched a cached one")
+	_expect(voice._cached_stream("我肚子餓ㄌ") == null,
+		"a different line played cached audio")
+
+	# The point of the whole feature: a cached line is queued without the helper
+	# being asked for anything, so no model is loaded and no VRAM is taken. If
+	# this ever regresses the pet still speaks correctly and the saving silently
+	# disappears, which is why it is asserted rather than assumed.
+	var before := voice._next_id
+	voice.speak("我肚子餓了")
+	_expect(voice._next_id == before, "a cached line still sent a request to the helper")
+	_expect(voice._queue.size() == 1, "a cached line was not queued for playback")
+	_expect(voice._pid == -1, "a cached line started the helper process")
+
+	# A half-written or truncated file is refused rather than played as noise —
+	# the caller then synthesises the line for real.
+	_write_bytes(found, PackedByteArray([82, 73, 70, 70, 9, 9, 9, 9]))
+	_expect(voice._cached_stream("我肚子餓了") == null,
+		"a corrupt cache file was played instead of being refused")
+
+	var cache_dir := voice._cache_dir()
+	voice.free()
+	var dir := DirAccess.open(cache_dir)
+	if dir != null:
+		for leaf in dir.get_files():
+			DirAccess.remove_absolute(cache_dir.path_join(leaf))
+	DirAccess.remove_absolute(cache_dir)
+	DirAccess.remove_absolute(root.path_join(Qwen3Voice.CACHE_DIR))
 	DirAccess.remove_absolute(root)
 
 

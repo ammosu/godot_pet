@@ -221,6 +221,29 @@ func _minutes_since(unix_time: float) -> float:
 	return (Time.get_unix_time_from_system() - unix_time) / 60.0
 
 
+## Every line the pet can say unprompted whose wording is fixed, for pre-rendering.
+##
+## The `memory` pool is left out on purpose: those are `{fact}` templates filled
+## at pick time, so the string here is not one anybody ever hears. Anything else
+## carrying a brace is skipped for the same reason rather than by pool name — a
+## template added to another pool would otherwise be cached with its brace intact
+## and then played instead of the filled version, which is the one failure a
+## cache of fixed lines must not have.
+func fixed_lines() -> PackedStringArray:
+	var lines := PackedStringArray()
+	for name in _lines:
+		var pool: Variant = _lines[name]
+		if str(name).begins_with("_") or typeof(pool) != TYPE_ARRAY:
+			continue
+		for entry: Variant in pool:
+			if typeof(entry) != TYPE_DICTIONARY:
+				continue
+			var text := str((entry as Dictionary).get("text", "")).strip_edges()
+			if not text.is_empty() and not text.contains("{"):
+				lines.append(text)
+	return lines
+
+
 func _load_lines() -> Dictionary:
 	var raw := FileAccess.get_file_as_string(LINES_PATH)
 	var data: Variant = JSON.parse_string(raw) if not raw.is_empty() else null

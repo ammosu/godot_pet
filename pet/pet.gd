@@ -64,7 +64,7 @@ const DEFAULT_PET_SELECTION := "__default__"
 enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, MONITOR, SPEAK, ROAM, CALIBRATE,
 	RECENTRE, SET_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
-	RECORD, CLEAR_VOICE, MANAGE_VOICES, FETCH_MODELS, QUIT,
+	RECORD, CLEAR_VOICE, MANAGE_VOICES, FETCH_MODELS, PRERENDER, QUIT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -99,6 +99,9 @@ var _size_factor := DEFAULT_SIZE_FACTOR
 var _pending_voice_wav := ""
 ## The voice names the 說話 submenu was last drawn with. See _open_menu().
 var _listed_voices := PackedStringArray()
+## How many pre-rendered lines are still outstanding, so the menu row can say so
+## and refuse to start a second batch on top of the first.
+var _prerender_left := 0
 ## The pet's silhouette relative to where it stands. Measured only when the pet
 ## itself changes, so re-pushing the mask stays cheap.
 var _pet_shape := PackedVector2Array()
@@ -203,6 +206,7 @@ func _ready() -> void:
 	TTSService.remarked.connect(_on_voice_remarked)
 	# The row names the voice in use, and every one of these changes it.
 	TTSService.voice_changed.connect(_build_menu)
+	TTSService.prerender_progress.connect(_on_prerender_progress)
 
 	# Only worth ticking where the mask clips rendering; elsewhere the bubble is
 	# outside it by design and moving is free.
@@ -819,8 +823,20 @@ func _build_speech_menu() -> PopupMenu:
 			menu.add_separator("錄一段話，再去「我做的東西」把它設成我的聲音")
 		else:
 			menu.add_item("管理聲音…", MenuId.MANAGE_VOICES)
+		# Under the voices because it renders *for whichever one is ticked* — the
+		# cache is per voice, so this row means something different depending on
+		# the row above it, and putting it anywhere else would hide that.
+		menu.add_item(_prerender_label(), MenuId.PRERENDER)
+		menu.set_item_disabled(menu.get_item_index(MenuId.PRERENDER), _prerender_left > 0)
 	_index_items(menu)
 	return menu
+
+
+## The fixed lines are the ones the pet says after a long silence, which is
+## exactly when the engine has unloaded — so without this each of them reloads
+## the model and takes a couple of GB of VRAM back to say one canned sentence.
+func _prerender_label() -> String:
+	return "先錄好固定台詞" if _prerender_left <= 0 else "先錄好固定台詞（還剩 %d 句）" % _prerender_left
 
 
 func _build_behaviour_menu(current: PetPack) -> PopupMenu:
@@ -1045,6 +1061,8 @@ func _on_menu_pressed(id: int) -> void:
 			OS.shell_open(TTSService.voices_folder())
 		MenuId.FETCH_MODELS:
 			_toggle_model_download()
+		MenuId.PRERENDER:
+			_start_prerender()
 		MenuId.ROAM:
 			_toggle_roaming()
 		MenuId.CALIBRATE:
@@ -1861,6 +1879,38 @@ func _model_download_label() -> String:
 	if _fetcher != null and _fetcher.is_running():
 		return "停止下載語音模型"
 	return "下載語音模型（%s）…" % ModelFetcher.size_text(ModelFetcher.TOTAL_BYTES)
+
+
+## Render every fixed line for the voice that is ticked right now.
+##
+## Speaks its own progress rather than putting a bar anywhere: this takes about
+## a second a line and the pet is standing right there. Both lines go through
+## `_on_pet_nudged(…, false, false)` — the pet answering something the user just
+## clicked has to appear even while the chat input is open, and must not be
+## recorded as something it said.
+func _start_prerender() -> void:
+	var count := TTSService.prerender_fixed_lines()
+	if count < 0:
+		_on_pet_nudged("sad", "這個要用本機模型的聲音才行喔。", false, false)
+		return
+	if count == 0:
+		_on_pet_nudged("happy", "都錄好了，不用再錄一次。", false, false)
+		return
+	_prerender_left = count
+	_on_pet_nudged("neutral", "好，我把 %d 句先錄起來，等我一下。" % count, false, false)
+
+
+func _on_prerender_progress(done: int, left: int) -> void:
+	_prerender_left = left
+	if left > 0:
+		return
+	# Said only at the end, and only about what actually landed: a batch cut
+	# short by the user typing still leaves everything it finished in the cache,
+	# so "none" and "some" are different outcomes and claiming the whole set
+	# would be a lie the next silence exposes.
+	_on_pet_nudged("happy" if done > 0 else "sad",
+		"錄好 %d 句了，以後這幾句我馬上就能講。" % done if done > 0
+		else "一句都沒錄成，等一下再試試看？", false, false)
 
 
 func _toggle_model_download() -> void:
