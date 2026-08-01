@@ -1,5 +1,11 @@
 #include "engine_api.h"
 
+// std::all_of, std::min and std::max. Only the first one actually needs naming
+// here: libstdc++ reaches min/max through <bits/stl_algobase.h>, which every
+// container header drags in, while all_of lives in <bits/stl_algo.h>, which
+// none of them do. So a build can be one standard library away from failing on
+// a line nobody touched — measured, GCC 13.3 refuses what clang accepted.
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
