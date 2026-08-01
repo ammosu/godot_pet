@@ -25,8 +25,13 @@ public:
 			std::vector<float> &embedding, std::string &error) = 0;
 };
 
+// `max_audio_tokens` and `temperature` carry the runaway-generation limits, and
+// a non-positive value for either means "leave the library's own default" — the
+// same contract tools/qwen3_tts_daemon.py offers, because the voice falls back
+// from this helper to that one silently and the two must sound the same.
 std::unique_ptr<EngineApi> create_engine(
-		const std::string &model_directory, std::int32_t threads);
+		const std::string &model_directory, std::int32_t threads,
+		std::int32_t max_audio_tokens, float temperature);
 const char *compiled_engine_name();
 
 #endif

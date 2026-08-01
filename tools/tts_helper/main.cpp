@@ -504,6 +504,11 @@ struct Options {
 	int threads = 0;
 	double idle = 0.0;
 	int protocol = 0;
+	// Zero for either means "leave the library's own default", so a helper driven
+	// by hand behaves exactly as one driven by the legacy Python daemon with the
+	// same flags omitted. Qwen3Voice always names both.
+	int max_audio_tokens = 0;
+	float temperature = 0.0f;
 };
 
 bool parse_int(const std::string &text, int &value) {
@@ -541,9 +546,13 @@ bool parse_options(int argc, char **argv, Options &options, std::string &error) 
 	std::string threads;
 	std::string idle;
 	std::string protocol;
+	std::string max_tokens;
+	std::string temperature;
 	strings["--threads"] = &threads;
 	strings["--idle"] = &idle;
 	strings["--protocol"] = &protocol;
+	strings["--max-tokens"] = &max_tokens;
+	strings["--temperature"] = &temperature;
 
 	for (int index = 1; index < argc; index += 2) {
 		const std::string flag(argv[index]);
@@ -564,6 +573,14 @@ bool parse_options(int argc, char **argv, Options &options, std::string &error) 
 	}
 
 	for (const auto &entry : strings) {
+		// The two sampling limits are the only optional flags: omitting them is
+		// how the protocol tests and a hand-driven helper ask for the library's
+		// own defaults, and an unknown-argument error is what would greet an
+		// older caller if they were required instead of the protocol mismatch
+		// that --protocol exists to report.
+		if (entry.second == &max_tokens || entry.second == &temperature) {
+			continue;
+		}
 		if (entry.second->empty()) {
 			error = "missing required argument: " + entry.first;
 			return false;
@@ -580,6 +597,20 @@ bool parse_options(int argc, char **argv, Options &options, std::string &error) 
 	if (!parse_int(protocol, options.protocol) || options.protocol != kProtocolVersion) {
 		error = "unsupported protocol version";
 		return false;
+	}
+	if (!max_tokens.empty() &&
+			(!parse_int(max_tokens, options.max_audio_tokens) ||
+					options.max_audio_tokens < 0)) {
+		error = "--max-tokens must be a non-negative integer";
+		return false;
+	}
+	if (!temperature.empty()) {
+		double value = 0.0;
+		if (!parse_double(temperature, value) || value < 0.0) {
+			error = "--temperature must be a non-negative number";
+			return false;
+		}
+		options.temperature = static_cast<float>(value);
 	}
 	return true;
 }
@@ -1395,9 +1426,14 @@ int run(const Options &options) {
 		std::cerr << "cannot open log file\n";
 		return 2;
 	}
+	// The sampling limits are logged because running without them is silent: the
+	// voice still works, and only rarely reads gibberish for minutes or dies
+	// allocating VRAM. This line is the one place that says which it will be.
 	log << "native TTS helper " << kVersion << " started; engine="
 		<< compiled_engine_name() << " models=" << options.models
-		<< " threads=" << options.threads << " idle=" << options.idle << '\n';
+		<< " threads=" << options.threads << " idle=" << options.idle
+		<< " max_audio_tokens=" << options.max_audio_tokens
+		<< " temperature=" << options.temperature << '\n';
 	log.flush();
 
 	try {
@@ -1407,7 +1443,8 @@ int run(const Options &options) {
 		WorkQueue queue;
 		std::atomic<std::int64_t> cancel_up_to(-1);
 		std::atomic<bool> stop_requested(false);
-		std::unique_ptr<EngineApi> engine = create_engine(options.models, options.threads);
+		std::unique_ptr<EngineApi> engine = create_engine(options.models,
+				options.threads, options.max_audio_tokens, options.temperature);
 		ReaderGuard reader(queue, cancel_up_to, stop_requested);
 		auto last_work = std::chrono::steady_clock::now();
 		const auto idle = std::chrono::duration<double>(options.idle);

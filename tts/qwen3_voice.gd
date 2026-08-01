@@ -1308,6 +1308,12 @@ func _native_arguments() -> PackedStringArray:
 		"--threads", str(mini(8, maxi(2, OS.get_processor_count()))),
 		"--idle", str(float(Config.get_value("tts", "qwen3_idle_seconds", 300.0))),
 		"--protocol", str(HELPER_PROTOCOL),
+		# The same two limits `_command()` passes the Python daemon, read from the
+		# same config keys. The helper treats both as optional and falls back to
+		# the library's defaults without them — which is the combination measured
+		# to run away — so a backend that stops naming them goes quiet about it.
+		"--max-tokens", str(int(Config.get_value("tts", "qwen3_max_tokens", MAX_AUDIO_TOKENS))),
+		"--temperature", str(float(Config.get_value("tts", "qwen3_temperature", DEFAULT_TEMPERATURE))),
 	])
 
 

@@ -81,6 +81,16 @@ Qwen3TtsAudio *qwen3_tts_synthesize(
 		tts->error = "expected Traditional Chinese language id";
 		return nullptr;
 	}
+	// Reports the two runaway limits back rather than checking them, so the test
+	// can assert the numbers it put on the command line without this file
+	// carrying a second copy of them to drift against.
+	if (std::string(text) == "REPORT_LIMITS") {
+		tts->error = params == nullptr
+				? "no params"
+				: "max_audio_tokens=" + std::to_string(params->max_audio_tokens) +
+						" temperature=" + std::to_string(params->temperature);
+		return nullptr;
+	}
 	if (std::string(text) == "SLOW") {
 		append_trace(tts, "slow-start");
 		std::this_thread::sleep_for(std::chrono::milliseconds(75));

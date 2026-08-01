@@ -33,7 +33,8 @@ public:
 
 }  // namespace
 
-std::unique_ptr<EngineApi> create_engine(const std::string &, std::int32_t) {
+std::unique_ptr<EngineApi> create_engine(
+		const std::string &, std::int32_t, std::int32_t, float) {
 	return std::make_unique<UnavailableEngine>();
 }
 

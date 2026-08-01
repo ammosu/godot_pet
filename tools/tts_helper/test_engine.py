@@ -36,7 +36,8 @@ class EngineHelperTests(unittest.TestCase):
             text=True,
         )
 
-    def run_protocol(self, directory, requests, model_name="models", idle="300"):
+    def run_protocol(self, directory, requests, model_name="models", idle="300",
+                     extra=()):
         models = directory / model_name
         models.mkdir(exist_ok=True)
         output = directory / ("responses-" + model_name + ".jsonl")
@@ -51,6 +52,7 @@ class EngineHelperTests(unittest.TestCase):
             "--threads", "4",
             "--idle", idle,
             "--protocol", "1",
+            *extra,
         ]
         result = subprocess.run(
             command,
@@ -187,6 +189,62 @@ class EngineHelperTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(events[1]["event"], "audio")
             self.assertEqual(events[1]["id"], 8)
+
+    def test_runaway_limits_reach_the_engine(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            result, events, _, _ = self.run_protocol(
+                directory,
+                '{"op":"say","id":9,"text":"REPORT_LIMITS"}\n'
+                '{"op":"quit"}\n',
+                extra=("--max-tokens", "512", "--temperature", "0.5"),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(events[1]["event"], "error")
+            self.assertEqual(events[1]["id"], 9)
+            self.assertIn("max_audio_tokens=512", events[1]["message"])
+            self.assertIn("temperature=0.500000", events[1]["message"])
+
+    def test_omitted_limits_leave_the_library_defaults(self):
+        """The flags are optional, and omitting them must be the library's own
+        defaults rather than a zero — 0 tokens synthesises nothing and
+        temperature 0 is greedy decoding, which never draws EOS at all."""
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            result, events, _, _ = self.run_protocol(
+                directory,
+                '{"op":"say","id":10,"text":"REPORT_LIMITS"}\n'
+                '{"op":"quit"}\n',
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(events[1]["event"], "error")
+            self.assertIn("max_audio_tokens=4096", events[1]["message"])
+            self.assertIn("temperature=0.900000", events[1]["message"])
+
+    def test_negative_limits_are_refused_at_launch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for flag, value in (("--max-tokens", "-1"), ("--temperature", "-0.5")):
+                result = subprocess.run(
+                    [
+                        str(BINARY),
+                        "--models", str(directory),
+                        "--out", str(directory / "out.jsonl"),
+                        "--spool", str(directory / "spool"),
+                        "--log", str(directory / "helper.log"),
+                        "--threads", "4",
+                        "--idle", "300",
+                        "--protocol", "1",
+                        flag, value,
+                    ],
+                    input="",
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=10,
+                )
+                self.assertNotEqual(result.returncode, 0, flag)
+                self.assertIn(flag, result.stderr)
 
     def test_json_whitespace_only_say_gets_exactly_one_empty_error(self):
         with tempfile.TemporaryDirectory() as temporary:

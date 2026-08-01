@@ -26,8 +26,10 @@ using AudioHandle = std::unique_ptr<Qwen3TtsAudio, AudioDeleter>;
 
 class QwenEngine final : public EngineApi {
 public:
-	QwenEngine(std::string model_directory, std::int32_t threads)
-		: model_directory_(std::move(model_directory)), threads_(threads) {}
+	QwenEngine(std::string model_directory, std::int32_t threads,
+			std::int32_t max_audio_tokens, float temperature)
+		: model_directory_(std::move(model_directory)), threads_(threads),
+		  max_audio_tokens_(max_audio_tokens), temperature_(temperature) {}
 
 	~QwenEngine() override {
 		unload();
@@ -70,6 +72,19 @@ public:
 		qwen3_tts_default_params(&parameters);
 		parameters.n_threads = threads_;
 		parameters.language_id = language_id;
+		// Generation does not always stop, and the library's own defaults are the
+		// combination that lets it run: the graph is sized from the token ceiling,
+		// so a run that never emits EOS asks for all 21598 MiB of it. The ceiling
+		// bounds the damage and the temperature is what stops it happening — both
+		// are needed, and neither is a value with only an upper bound. The full
+		// measurement record is in tools/qwen3_tts_daemon.py, which applies the
+		// same two numbers through ctypes; keep the two in step.
+		if (max_audio_tokens_ > 0) {
+			parameters.max_audio_tokens = max_audio_tokens_;
+		}
+		if (temperature_ > 0.0f) {
+			parameters.temperature = temperature_;
+		}
 
 		AudioHandle result(embedding != nullptr && !embedding->empty()
 				? qwen3_tts_synthesize_with_embedding(
@@ -120,14 +135,18 @@ private:
 
 	std::string model_directory_;
 	std::int32_t threads_;
+	std::int32_t max_audio_tokens_;
+	float temperature_;
 	Qwen3Tts *handle_ = nullptr;
 };
 
 }  // namespace
 
 std::unique_ptr<EngineApi> create_engine(
-		const std::string &model_directory, std::int32_t threads) {
-	return std::make_unique<QwenEngine>(model_directory, threads);
+		const std::string &model_directory, std::int32_t threads,
+		std::int32_t max_audio_tokens, float temperature) {
+	return std::make_unique<QwenEngine>(
+			model_directory, threads, max_audio_tokens, temperature);
 }
 
 const char *compiled_engine_name() {

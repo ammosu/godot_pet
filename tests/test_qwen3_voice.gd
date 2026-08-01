@@ -144,7 +144,7 @@ func _test_native_arguments() -> void:
 	voice._models = "/models"
 	var args := voice._native_arguments()
 	voice.free()
-	_expect(args.size() == 14, "native helper argument count is wrong")
+	_expect(args.size() == 18, "native helper argument count is wrong")
 	_expect(_argument(args, "--models") == "/models", "native models argument is wrong")
 	_expect(_argument(args, "--out").ends_with("/response.jsonl"),
 		"native response argument is wrong")
@@ -155,6 +155,13 @@ func _test_native_arguments() -> void:
 	_expect(_argument(args, "--protocol") == "1", "native protocol argument is wrong")
 	_expect(int(_argument(args, "--threads")) >= 2, "native thread count is invalid")
 	_expect(float(_argument(args, "--idle")) > 0.0, "native idle timeout is invalid")
+	# Both limits are optional to the helper and zero means the library's own
+	# defaults, which is the combination measured to run away — so what this
+	# checks is that the protection is switched on at all, not any one value.
+	_expect(int(_argument(args, "--max-tokens")) > 0,
+		"native helper was launched without a token ceiling")
+	_expect(float(_argument(args, "--temperature")) > 0.0,
+		"native helper was launched without a sampling temperature")
 
 
 func _test_python_command() -> void:
@@ -163,8 +170,16 @@ func _test_python_command() -> void:
 	voice._library = "/legacy/libqwen3tts.dylib"
 	voice._models = "/legacy/models"
 	var command := voice._command()
+	var native := voice._native_arguments()
 	voice.free()
 	_expect(command.contains("qwen3_tts/daemon.py"), "Python daemon command was lost")
+	# The voice falls back from the native helper to this one without saying so,
+	# so a sentence must not become more likely to run away by being spoken on
+	# the other backend. Same config keys, therefore the same two numbers.
+	_expect(command.contains("--max-tokens %s " % _argument(native, "--max-tokens")),
+		"the two backends disagree about the token ceiling")
+	_expect(command.contains("--temperature %s " % _argument(native, "--temperature")),
+		"the two backends disagree about the sampling temperature")
 	_expect(command.contains("--lib '/legacy/libqwen3tts.dylib'"),
 		"Python library fallback argument was lost")
 	_expect(command.contains("--models '/legacy/models'"),
