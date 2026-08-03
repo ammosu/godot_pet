@@ -119,19 +119,25 @@ func voice_name() -> String:
 	return _voice_id
 
 
-## Every voice on the account, as [{id, name}, …]. Fetched once per session; the
-## menu can offer these without this class knowing anything about menus.
-func list_voices() -> Array:
-	var out := []
+## Every voice on the account, by id. Fetched once per session; the menu can
+## offer these without this class knowing anything about menus. Ids rather than
+## names because the id is what the API takes and what config stores — the name
+## is for the row that says which one is speaking, and `voice_name()` has it.
+func list_voices() -> PackedStringArray:
+	var out := PackedStringArray()
 	for entry: Variant in _voices:
 		if typeof(entry) == TYPE_DICTIONARY:
-			out.append({"id": str(entry.get("voice_id", "")), "name": str(entry.get("name", ""))})
+			out.append(str(entry.get("voice_id", "")))
 	return out
 
 
-func select_voice(id: String) -> void:
-	_voice_id = id
-	Config.set_value("tts", "eleven_voice_id", id)
+func active_voice() -> String:
+	return _voice_id
+
+
+func select_voice(name: String) -> void:
+	_voice_id = name
+	Config.set_value("tts", "eleven_voice_id", name)
 
 
 func speak(text: String) -> void:

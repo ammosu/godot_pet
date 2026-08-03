@@ -23,6 +23,11 @@ signal broke(reason: String)
 ## is said once and the user decides.
 signal warned(message: String)
 
+## One pre-rendered line landed, or was given up on. `left` reaching zero ends
+## the batch however it ended — including early, or the caller waits forever on
+## a line nobody is still making.
+signal line_prerendered(done: int, left: int)
+
 
 ## Say one sentence. Called once per sentence as a reply streams in, so an
 ## implementation queues rather than interrupting — consecutive sentences have to
@@ -52,6 +57,29 @@ func unavailable_reason() -> String:
 ## the row said the name the whole time and it was never doubted.
 func voice_name() -> String:
 	return ""
+
+
+## Every voice this backend can speak in, by the id the user picks. Empty on a
+## backend that has no such notion, which is what lets the menu ask without
+## checking which one is in use first.
+func list_voices() -> PackedStringArray:
+	return PackedStringArray()
+
+
+func active_voice() -> String:
+	return ""
+
+
+func select_voice(_name: String) -> void:
+	pass
+
+
+## Render lines into a cache so saying one later costs no synthesis, returning
+## how many were actually asked for. Zero is the honest answer for a backend
+## with nothing to gain from it — the OS voice loads no model and reaches no
+## network, so there is nothing to save.
+func prerender(_lines: PackedStringArray) -> int:
+	return 0
 
 
 ## Release whatever this is holding: a child process, an audio device. Called

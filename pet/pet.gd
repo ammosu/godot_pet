@@ -63,7 +63,7 @@ const DEFAULT_PET_SELECTION := "__default__"
 
 enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, MONITOR, SPEAK, ROAM, CALIBRATE,
-	RECENTRE, SET_KEY, SET_ELEVEN_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
+	RECENTRE, SET_KEY, SET_ELEVEN_KEY, SET_VOXCPM_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
 	RECORD, CLEAR_VOICE, MANAGE_VOICES, FETCH_MODELS, PRERENDER, QUIT,
 }
 
@@ -802,6 +802,11 @@ func _build_speech_menu() -> PopupMenu:
 	# repair. A key is the cloud backend's only dependency.
 	if not TTSService.backend_is_available(TTSService.BACKEND_ELEVEN):
 		menu.add_item("設定 ElevenLabs 金鑰…", MenuId.SET_ELEVEN_KEY)
+	# Only when a key is what is missing. The local service is far more often
+	# just not running, and no key fixes that — offering one would send the user
+	# to paste something that changes nothing.
+	if TTSService.voxcpm_needs_key():
+		menu.add_item("設定 VoxCPM 金鑰…", MenuId.SET_VOXCPM_KEY)
 
 	# Directly under the backend it repairs, so the disabled row and the way to
 	# undisable it read as one thing. Shown only when the download would actually
@@ -814,23 +819,29 @@ func _build_speech_menu() -> PopupMenu:
 	# Which voice, once there is a choice. The model's own voice is always in the
 	# list and always first: it is the one that needs no file and cannot go
 	# missing, so it is what every other row is measured against.
-	if TTSService.can_clone_voice():
-		var voices := TTSService.list_voices()
+	# The voices belong to whichever backend is speaking, so the list is asked for
+	# unconditionally and the *cloning* rows are what stay behind a capability
+	# check. A backend that only reads a library it was given has no 預設嗓音 to
+	# fall back to and no folder worth opening.
+	var voices := TTSService.list_voices()
+	var can_clone := TTSService.can_clone_voice()
+	if not voices.is_empty() or can_clone:
 		_listed_voices = voices
 		menu.add_separator()
 		var active := TTSService.active_voice()
-		menu.add_radio_check_item("預設嗓音", MenuId.CLEAR_VOICE)
-		menu.set_item_checked(menu.get_item_index(MenuId.CLEAR_VOICE), active.is_empty())
+		if can_clone:
+			menu.add_radio_check_item("預設嗓音", MenuId.CLEAR_VOICE)
+			menu.set_item_checked(menu.get_item_index(MenuId.CLEAR_VOICE), active.is_empty())
 		for i in voices.size():
 			menu.add_radio_check_item(voices[i], VOICE_PICK_BASE + i)
 			menu.set_item_checked(menu.get_item_index(VOICE_PICK_BASE + i),
 				voices[i] == active)
-		if voices.is_empty():
+		if can_clone and voices.is_empty():
 			# Said where the empty list is, rather than left as a bare heading:
 			# cloning belongs on the recording itself — you are choosing *which*
 			# take — so there is nothing to click here, only somewhere to be sent.
 			menu.add_separator("錄一段話，再去「我做的東西」把它設成我的聲音")
-		else:
+		elif can_clone:
 			menu.add_item("管理聲音…", MenuId.MANAGE_VOICES)
 		# Under the voices because it renders *for whichever one is ticked* — the
 		# cache is per voice, so this row means something different depending on
@@ -988,9 +999,12 @@ func _open_menu() -> void:
 	# that then went on listing what used to be there would be lying about the
 	# one thing it just sent them off to change. A voice shipped by an update
 	# lands the same way. Cloning does not need this — it emits voice_changed.
-	if can_speak:
-		var voices := TTSService.list_voices()
-		stale = stale or voices != _listed_voices
+	# Unconditional now: the list belongs to whichever backend is speaking, and
+	# the local service's arrives asynchronously after a health check, so gating
+	# it on one backend being available would leave the menu showing an empty
+	# list for as long as it stayed open.
+	var voices := TTSService.list_voices()
+	stale = stale or voices != _listed_voices
 
 	if stale:
 		_build_menu()
@@ -1085,6 +1099,9 @@ func _on_menu_pressed(id: int) -> void:
 			_ask_for_api_key()
 		MenuId.SET_ELEVEN_KEY:
 			_ask_for_eleven_key()
+		MenuId.SET_VOXCPM_KEY:
+			_pending_secret_key = VoxCPMVoice.KEY_NAME
+			_chat.ask_for_secret("貼上 VoxCPM 服務的 API key，Enter 儲存")
 		MenuId.LOOK:
 			EventBus.screen_look_requested.emit(VisionService.DEFAULT_QUESTION, true)
 		MenuId.WORK:
@@ -1132,7 +1149,10 @@ func _on_secret_submitted(value: String) -> void:
 	var secured := Config.set_secret(key, value)
 	# Adopted right away rather than sending the user back to the menu — a key is
 	# the only thing standing between the mock and the real thing in both cases.
-	if key == ElevenVoice.KEY_NAME:
+	if key == VoxCPMVoice.KEY_NAME:
+		TTSService.rediscover()
+		TTSService.select_backend(TTSService.BACKEND_VOXCPM)
+	elif key == ElevenVoice.KEY_NAME:
 		# `Config.get_secret()` caches per process and the backend caches its
 		# reason, so both have to be told before the row can stop being disabled.
 		TTSService.rediscover()

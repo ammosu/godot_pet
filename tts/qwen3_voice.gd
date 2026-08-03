@@ -152,12 +152,6 @@ const NATIVE_READY_TIMEOUT_MSEC := 5000
 ## Emitted when a cloning attempt finishes, either way.
 signal voice_cloned(ok: bool, message: String)
 
-## One pre-rendered line landed, or was given up on. `left` reaching zero is the
-## end of the batch — including when it ends early, since `stop()` drops every
-## outstanding request and the count has to reach zero either way or the caller
-## waits forever for a line nobody is still making.
-signal line_prerendered(done: int, left: int)
-
 var _pid := -1
 var _stdio: FileAccess = null
 var _offset := 0

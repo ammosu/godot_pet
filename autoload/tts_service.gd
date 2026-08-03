@@ -26,6 +26,7 @@ const RESPELL_PATH := "res://prompts/pronunciation.json"
 const BACKEND_OS := "os"
 const BACKEND_QWEN3 := "qwen3"
 const BACKEND_ELEVEN := "eleven"
+const BACKEND_VOXCPM := "voxcpm"
 
 ## Something happened to the voice that the pet should say out loud. Carried on a
 ## signal rather than spoken here, because `pet.gd` is the only thing that
@@ -44,6 +45,7 @@ var _backend_name := BACKEND_OS
 var _backend: TTSBackend
 var _os_voice: OSVoice
 var _eleven: ElevenVoice
+var _voxcpm: VoxCPMVoice
 var _qwen3: Qwen3Voice
 ## [[from, to], …] sorted longest-first — see _load_respellings().
 var _respellings: Array = []
@@ -57,15 +59,18 @@ func _ready() -> void:
 	_qwen3 = Qwen3Voice.new()
 	_qwen3.name = "Qwen3Voice"
 	_qwen3.voice_cloned.connect(_on_voice_cloned)
-	_qwen3.line_prerendered.connect(func(done: int, left: int) -> void:
-		prerender_progress.emit(done, left))
 	add_child(_qwen3)
 	_eleven = ElevenVoice.new()
 	_eleven.name = "ElevenVoice"
 	add_child(_eleven)
-	for backend in [_os_voice, _qwen3, _eleven]:
+	_voxcpm = VoxCPMVoice.new()
+	_voxcpm.name = "VoxCPMVoice"
+	add_child(_voxcpm)
+	for backend in [_os_voice, _qwen3, _eleven, _voxcpm]:
 		backend.broke.connect(_on_backend_broke)
 		backend.warned.connect(func(message: String) -> void: remarked.emit(message))
+		backend.line_prerendered.connect(func(done: int, left: int) -> void:
+			prerender_progress.emit(done, left))
 
 	# Startup picks a backend but never writes one back — persisting what merely
 	# happened to work on first run is how auto-detection gets permanently
@@ -123,13 +128,15 @@ func stop() -> void:
 # --- Which voice --------------------------------------------------------------
 
 func list_backends() -> PackedStringArray:
-	return PackedStringArray([BACKEND_OS, BACKEND_QWEN3, BACKEND_ELEVEN])
+	return PackedStringArray([BACKEND_OS, BACKEND_QWEN3, BACKEND_VOXCPM, BACKEND_ELEVEN])
 
 
 func backend_label(id: String) -> String:
 	match id:
 		BACKEND_QWEN3:
 			return "本機模型（Qwen3）"
+		BACKEND_VOXCPM:
+			return "本機服務（VoxCPM）"
 		BACKEND_ELEVEN:
 			return "ElevenLabs（雲端）"
 		_:
@@ -156,10 +163,18 @@ func rediscover() -> void:
 	# menu a moment ago is exactly the thing that would otherwise need a restart
 	# to be believed — `Config.get_secret()` caches per process.
 	_eleven.refresh()
+	# And the local service may have been started or stopped since the last look.
+	_voxcpm.refresh()
 
 
 func backend_is_available(id: String) -> bool:
 	return _for(id).is_available()
+
+
+## Whether the local service is refusing for want of a key, as opposed to simply
+## not being there. Only that first case has a row worth offering.
+func voxcpm_needs_key() -> bool:
+	return _voxcpm != null and _voxcpm.needs_key()
 
 
 func backend_unavailable_reason(id: String) -> String:
@@ -210,6 +225,8 @@ func _for(id: String) -> TTSBackend:
 	match id:
 		BACKEND_QWEN3:
 			return _qwen3
+		BACKEND_VOXCPM:
+			return _voxcpm
 		BACKEND_ELEVEN:
 			return _eleven
 		_:
@@ -278,21 +295,27 @@ func has_cloned_voice() -> bool:
 ## Every voice the local engine can speak in, by name. Empty on a backend that
 ## has no such notion, which is what lets the menu ask without checking first.
 func list_voices() -> PackedStringArray:
-	return _qwen3.list_voices() if _qwen3 != null else PackedStringArray()
+	return _backend.list_voices() if _backend != null else PackedStringArray()
 
 
 func active_voice() -> String:
-	return _qwen3.active_voice() if _qwen3 != null else ""
+	return _backend.active_voice() if _backend != null else ""
+
+
+## Whether there is a voice to choose at all, which is what the menu asks before
+## drawing the list. Distinct from `can_clone_voice()`: every backend with more
+## than one voice answers yes here, only the local engine can make a new one.
+func has_voice_choice() -> bool:
+	return not list_voices().is_empty()
 
 
 func select_voice(name: String) -> void:
-	if _qwen3 == null or name == _qwen3.active_voice():
+	if _backend == null or name == _backend.active_voice():
 		return
-	_qwen3.set_active_voice(name)
+	_backend.select_voice(name)
 	# Only the *next* sentence should be in the new voice; whatever is queued was
 	# generated in the old one and would arrive as a jarring half-and-half.
-	if _backend == _qwen3:
-		_qwen3.stop()
+	_backend.stop()
 	voice_changed.emit()
 
 
@@ -416,7 +439,7 @@ func fixed_lines() -> PackedStringArray:
 ## The OS voice is not a failure to report: it has nothing to pre-render, since
 ## `DisplayServer.tts_speak()` has no file output and no model to load either.
 func prerender_fixed_lines() -> int:
-	if _backend != _qwen3 or _qwen3 == null or not _qwen3.is_available():
+	if _backend == null or not _backend.is_available():
 		return -1
 	var spoken := PackedStringArray()
 	for line in fixed_lines():
@@ -427,7 +450,7 @@ func prerender_fixed_lines() -> int:
 		var text := _respell(line.strip_edges())
 		if not text.is_empty():
 			spoken.append(text)
-	return _qwen3.prerender(spoken)
+	return _backend.prerender(spoken)
 
 
 func _respell(line: String) -> String:
