@@ -11,6 +11,23 @@ the same discipline `prompts/pronunciation.json` demands of its right-hand
 side, and for the same reason: a wrong reference makes the answer wrong with
 nothing to show for it.
 
+## How often it is right, measured against ears
+
+**It agrees with a listener at the extremes and is unreliable in between** —
+which is the case it was written for. Checked against a person on eight labelled
+takes it got three wrong: twice it called a correct reading wrong (「發覺」), and
+once it called a wrong one right (「錯覺」), with a fourth judged "nearly right
+but odd".
+
+Whole-run rates on words with a one-sided answer do hold up: 「螢幕」 15/15 wrong
+and 「察覺」 0/15 wrong both matched what the listener heard. It is the words
+that come out wrong *some* of the time — exactly the ones worth quantifying —
+where the per-take verdicts are close to a coin toss.
+
+So the honest use is **ordering a listening queue**, not deciding anything. Five
+rules were re-checked with it after an engine change and every decision was made
+by ear; the tool only chose which to listen to first.
+
 ## What it cannot do, and the false negative that proves it
 
 **It only ever answers "A or B".** Given a word, a right-sounding spelling and a
