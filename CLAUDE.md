@@ -1018,14 +1018,26 @@ Three things about the table:
   often than it is right.
 - Rules are applied **longest key first**, so 「重新」 beats any rule mentioning
   「重」 — otherwise the specific correction never fires.
-- It ships **empty**, and that is a statement about what could be verified rather
-  than about what is needed. Nothing here can hear; the entries have to come from
-  someone who can. `tools/say.sh` is the loop (it applies the same table and
-  prints what it actually sent), and `tools/build_pronunciation.py` runs a model
-  over the pet's own lines **offline** to propose candidates — the same model that
-  is unsafe per-sentence is useful when every mistake it makes is caught while it
-  is still a diff. It screens its own output for Simplified and Japanese
+- It shipped **empty**, and that was a statement about what could be verified
+  rather than about what is needed. Nothing here can hear; every entry has come
+  from someone who can. `tools/say.sh` is the loop (it applies the same table and
+  prints what it actually sent), `tools/hear.sh` re-renders the whole listening
+  list in `tools/say_samples.txt` so a new rule can be checked against what it
+  might have broken, and `tools/build_pronunciation.py` runs a model over the
+  pet's own lines **offline** to propose candidates — the same model that is
+  unsafe per-sentence is useful when every mistake it makes is caught while it is
+  still a diff. It screens its own output for Simplified and Japanese
   characters, which is exactly what the two measured failures were.
+- **A reading with no homophone has no fix of this shape**, and 著 is the case:
+  the only characters that read zháo are 著 and its Simplified 着, so 「睡著」 —
+  which the engine reads as the neutral-tone particle *zhe* — cannot be repaired
+  by swapping in a different character the way 螢幕 and 錯覺 were. The rule
+  therefore swaps in **着**: the same character in the other script, which
+  `text_prep.py` passes through unnormalised. It is also the one entry
+  `build_pronunciation.py`'s Simplified screen would reject outright — right
+  about a model's guesses, wrong about this. `check_reading.py` is unusable here
+  for the same reason the fix was hard: it demands both references be true
+  homophones, and neither reading has one. This rule rests on an ear alone.
 
 One measured non-entry, worth keeping as the shape of the trap: 「銀行」 and
 「銀航」 synthesize to 1.82 s and 1.90 s, i.e. the engine already reads it háng.
