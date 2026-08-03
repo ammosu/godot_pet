@@ -10,29 +10,50 @@ extends LLMProvider
 const HOST := "api.openai.com"
 const PORT := 443
 const ENDPOINT := "/v1/chat/completions"
-## Not nano, despite nano being cheaper and perfectly good at chatting. The pet
-## asks to see the screen by emitting `[look]` in the mood-tag slot, and nano
-## simply doesn't: measured 0/12 on questions that plainly need a screenshot
-## ("我現在在幹嘛？", "這個錯誤是什麼意思？"), where mini scores 9/9 and still
-## correctly declines on questions that don't. Nano *can* read a screenshot once
-## one is attached — it just never asks for one, so the feature is dead on it.
 ## Override with `openai_model` under `[llm]` in config.cfg.
-const DEFAULT_MODEL := "gpt-5.4-mini"
+const DEFAULT_MODEL := "gpt-5.6-luna"
+const DEFAULT_REASONING_EFFORT := "none"
+
+const STANDARD_REASONING_EFFORTS := ["none", "low", "medium", "high", "xhigh"]
+const GPT_56_REASONING_EFFORTS := ["none", "low", "medium", "high", "xhigh", "max"]
+
+const REASONING_EFFORTS: Array[Dictionary] = [
+	{"id": "none", "label": "不推理", "note": "最快、最省"},
+	{"id": "low", "label": "低", "note": "會多用一些時間與 token"},
+	{"id": "medium", "label": "中", "note": "會增加時間與費用"},
+	{"id": "high", "label": "高", "note": "較慢、較貴"},
+	{"id": "xhigh", "label": "極高", "note": "很慢、很貴"},
+	{"id": "max", "label": "最大", "note": "最慢、最貴，只適合難題"},
+]
+
+## max_completion_tokens includes hidden reasoning tokens. The ordinary reply
+## cap is only 320, which is enough at `none` but can be consumed before a model
+## emits one visible word at a higher effort. These remain backstops rather than
+## targets; the pet's persona still asks for a short answer.
+const MIN_COMPLETION_TOKENS := {
+	"low": 1024,
+	"medium": 2048,
+	"high": 4096,
+	"xhigh": 8192,
+	"max": 16384,
+}
 
 ## What the menu offers, cheapest first. Ids were read off `/v1/models` rather
 ## than written from memory — the family is not guessable (there is no plain
 ## `gpt-5.6`; that generation is `-sol` / `-luna` / `-terra`).
 ##
-## A note is attached only where the caveat is *measured*, which is why nano
-## carries one and the rest don't. Listing nano at all is deliberate: it is the
-## cheapest way to chat, and someone who never asks the pet about the screen
-## should be able to choose it knowingly.
+## Each entry declares its reasoning range as well as its display note. Keeping
+## that capability beside the id means a future model does not inherit `max`
+## merely because its name happens to look newer.
 const MODELS: Array[Dictionary] = [
-	{"id": "gpt-5.4-nano", "note": "最省，但看不懂螢幕"},
-	{"id": "gpt-5.4-mini", "note": "預設"},
-	{"id": "gpt-5.4", "note": ""},
-	{"id": "gpt-5.5", "note": ""},
-	{"id": "gpt-5.6-sol", "note": "最新"},
+	{"id": "gpt-5.4-nano", "note": "最省，但看不懂螢幕",
+		"reasoning": STANDARD_REASONING_EFFORTS},
+	{"id": "gpt-5.4-mini", "note": "", "reasoning": STANDARD_REASONING_EFFORTS},
+	{"id": "gpt-5.6-luna", "note": "預設", "reasoning": GPT_56_REASONING_EFFORTS},
+	{"id": "gpt-5.4", "note": "", "reasoning": STANDARD_REASONING_EFFORTS},
+	{"id": "gpt-5.6-terra", "note": "", "reasoning": GPT_56_REASONING_EFFORTS},
+	{"id": "gpt-5.5", "note": "", "reasoning": STANDARD_REASONING_EFFORTS},
+	{"id": "gpt-5.6-sol", "note": "最強", "reasoning": GPT_56_REASONING_EFFORTS},
 ]
 
 const KEY_NAME := "OPENAI_API_KEY"
@@ -52,6 +73,37 @@ var _saw_done := false
 var _quiet_for := 0.0
 ## Held only for the duration of one request, so the key isn't kept in memory.
 var _authorization := ""
+
+
+static func reasoning_effort_ids() -> PackedStringArray:
+	var ids := PackedStringArray()
+	for effort in REASONING_EFFORTS:
+		ids.append(str(effort["id"]))
+	return ids
+
+
+static func supported_reasoning_efforts(model: String) -> PackedStringArray:
+	for entry in MODELS:
+		if str(entry["id"]) == model:
+			return PackedStringArray(entry["reasoning"])
+	# A model typed into config by hand gets the common, conservative range.
+	return PackedStringArray(STANDARD_REASONING_EFFORTS)
+
+
+## The config stores a preference. A model with a smaller range uses its highest
+## compatible effort without destroying that preference, so switching back to a
+## 5.6 model restores `max`.
+static func effective_reasoning_effort(model: String, preferred: String) -> String:
+	if not reasoning_effort_ids().has(preferred):
+		return DEFAULT_REASONING_EFFORT
+	var supported := supported_reasoning_efforts(model)
+	if supported.has(preferred):
+		return preferred
+	return supported[-1] if not supported.is_empty() else DEFAULT_REASONING_EFFORT
+
+
+static func completion_token_budget(reasoning_effort: String, reply_tokens: int) -> int:
+	return maxi(reply_tokens, int(MIN_COMPLETION_TOKENS.get(reasoning_effort, reply_tokens)))
 
 
 func _ready() -> void:
@@ -243,16 +295,29 @@ func _strip_cr(chunk: PackedByteArray) -> PackedByteArray:
 # --- Plumbing -----------------------------------------------------------------
 
 func _build_payload(messages: Array, system: String) -> String:
+	var model := str(Config.get_value("llm", "openai_model", DEFAULT_MODEL))
+	var preferred := str(Config.get_value(
+		"llm", "reasoning_effort", DEFAULT_REASONING_EFFORT))
+	var effort := effective_reasoning_effort(model, preferred)
+	return build_payload(messages, system, model, effort,
+		int(Config.get_value("llm", "max_reply_tokens", 320)))
+
+
+## Kept pure so the exact wire contract can be tested without writing over a
+## person's real config.cfg.
+static func build_payload(messages: Array, system: String, model: String,
+		reasoning_effort: String, max_tokens: int) -> String:
 	var wire: Array = [{"role": "system", "content": system}]
 	for message in messages:
 		wire.append({"role": message.get("role", "user"), "content": message.get("content", "")})
 	return JSON.stringify({
-		"model": str(Config.get_value("llm", "openai_model", DEFAULT_MODEL)),
+		"model": model,
+		"reasoning_effort": reasoning_effort,
 		"stream": true,
 		# A backstop against a runaway reply, not a style control — the persona
-		# handles length. Verified against gpt-5.4-nano, which spends no reasoning
-		# tokens here, so the cap won't quietly swallow the answer.
-		"max_completion_tokens": int(Config.get_value("llm", "max_reply_tokens", 320)),
+		# handles visible length. Higher efforts need room for hidden reasoning
+		# tokens before the model can emit that short answer.
+		"max_completion_tokens": completion_token_budget(reasoning_effort, max_tokens),
 		"messages": wire,
 	})
 

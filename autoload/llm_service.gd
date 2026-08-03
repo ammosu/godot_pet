@@ -103,8 +103,7 @@ func list_providers() -> PackedStringArray:
 
 func provider_label(name: String) -> String:
 	if name == "openai":
-		var openai: GDScript = load(PROVIDERS["openai"])
-		return "OpenAI · %s" % Config.get_value("llm", "openai_model", openai.DEFAULT_MODEL)
+		return "OpenAI"
 	if name == "mock":
 		return "Mock（不呼叫 API）"
 	return name
@@ -138,6 +137,52 @@ func get_model() -> String:
 ## every request, so there is nothing to restart.
 func select_model(id: String) -> void:
 	Config.set_value("llm", "openai_model", id)
+
+
+## The full display list stays stable so the menu does not jump around when a
+## model changes. Unsupported rows are disabled from the capability list below.
+func list_reasoning_efforts() -> Array[Dictionary]:
+	if _provider_name != "openai":
+		return []
+	var openai: GDScript = load(PROVIDERS["openai"])
+	return openai.REASONING_EFFORTS
+
+
+func get_supported_reasoning_efforts() -> PackedStringArray:
+	return get_supported_reasoning_efforts_for_model(get_model())
+
+
+## The settings window previews another model before it persists anything, so
+## capability lookup accepts the staged model rather than only the live one.
+func get_supported_reasoning_efforts_for_model(model: String) -> PackedStringArray:
+	var openai: GDScript = load(PROVIDERS["openai"])
+	return openai.supported_reasoning_efforts(model)
+
+
+func get_reasoning_effort() -> String:
+	var openai: GDScript = load(PROVIDERS["openai"])
+	var preferred := str(Config.get_value(
+		"llm", "reasoning_effort", openai.DEFAULT_REASONING_EFFORT))
+	return openai.effective_reasoning_effort(get_model(), preferred)
+
+
+func effective_reasoning_effort_for_model(model: String, preferred: String) -> String:
+	var openai: GDScript = load(PROVIDERS["openai"])
+	return openai.effective_reasoning_effort(model, preferred)
+
+
+func reasoning_effort_is_supported(id: String) -> bool:
+	return get_supported_reasoning_efforts().has(id)
+
+
+## A menu choice is persisted; an incompatible or unknown programmatic choice
+## is rejected rather than leaving a request that the API will refuse.
+func select_reasoning_effort(id: String) -> bool:
+	var openai: GDScript = load(PROVIDERS["openai"])
+	if not openai.reasoning_effort_ids().has(id) or not reasoning_effort_is_supported(id):
+		return false
+	Config.set_value("llm", "reasoning_effort", id)
+	return true
 
 
 func set_provider(name: String) -> void:

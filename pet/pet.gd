@@ -18,16 +18,15 @@ const DRAG_IMPACT_DURATION := 0.06
 const DRAG_LANDING_DURATION := 0.28
 
 ## Menu ids above these offsets select an installed pet pack / a body size /
-## an LLM backend / a mini-game / a model / a workspace to go and work in.
+## an LLM backend / a mini-game / a workspace to go and work in.
 ##
 ## Every test against these in `_on_menu_pressed` is "at or above", so they must
-## be checked highest-first — a workspace id at 600 also satisfies all five tests
-## below it.
+## be checked highest-first — a workspace id at 600 also satisfies every range
+## test below it.
 const PET_ID_BASE := 100
 const SIZE_BASE := 200
 const PROVIDER_BASE := 300
 const GAME_BASE := 400
-const MODEL_BASE := 500
 const WORKSPACE_BASE := 600
 const VOICE_BASE := 700
 ## Which cloned voice speaks. Above VOICE_BASE, so it is tested first — every
@@ -65,7 +64,7 @@ enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, MONITOR, SPEAK, ROAM, CALIBRATE,
 	RECENTRE, SET_KEY, SET_ELEVEN_KEY, SET_VOXCPM_KEY, SET_VOXCPM_URL,
 	CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
-	RECORD, PRERENDER, QUIT,
+	RECORD, PRERENDER, MODEL_SETTINGS, QUIT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -78,6 +77,11 @@ enum MenuId {
 @onready var _work_consent: ConfirmationDialog = $WorkConsent
 @onready var _work_offer: ConfirmationDialog = $WorkOffer
 @onready var _dirty_warning: ConfirmationDialog = $DirtyWarning
+@onready var _model_settings: ConfirmationDialog = $ModelSettings
+@onready var _model_settings_current: Label = $ModelSettings/Box/Current
+@onready var _model_picker: OptionButton = $ModelSettings/Box/Grid/Model
+@onready var _reasoning_picker: OptionButton = $ModelSettings/Box/Grid/Reasoning
+@onready var _model_settings_hint: Label = $ModelSettings/Box/Hint
 ## Where every key and the service address are typed. One window reused rather
 ## than four, because they differ only in what they are called and whether the
 ## characters are hidden — and four near-identical dialogs is four places for a
@@ -208,6 +212,7 @@ func _ready() -> void:
 	_setup_work_consent_dialog()
 	_setup_work_offer_dialog()
 	_setup_dirty_warning_dialog()
+	_setup_model_settings_dialog()
 	_setup_entry_dialog()
 	_setup_codex_login_dialog()
 	CodexCli.login_finished.connect(_on_codex_login_finished)
@@ -753,16 +758,12 @@ func _build_model_menu() -> PopupMenu:
 		menu.set_item_checked(menu.get_item_index(PROVIDER_BASE + i),
 			provider == LLMService.get_provider_name())
 
-	# Only where the backend actually has models to choose between, so the mock
-	# doesn't grow a list that changes nothing.
-	var models := LLMService.list_models()
-	if not models.is_empty():
+	if LLMService.get_provider_name() == "openai":
 		menu.add_separator()
-		var current := LLMService.get_model()
-		for i in models.size():
-			menu.add_radio_check_item(_model_label(models[i]), MODEL_BASE + i)
-			menu.set_item_checked(menu.get_item_index(MODEL_BASE + i),
-				str(models[i]["id"]) == current)
+		menu.add_item("目前：%s · 推理 %s" % [
+			LLMService.get_model(), LLMService.get_reasoning_effort()])
+		menu.set_item_disabled(menu.item_count - 1, true)
+		menu.add_item("更換模型與推理程度…", MenuId.MODEL_SETTINGS)
 
 	menu.add_separator()
 	menu.add_item(_api_key_label(), MenuId.SET_KEY)
@@ -777,6 +778,10 @@ func _model_label(model: Dictionary) -> String:
 	if note.is_empty():
 		return str(model["id"])
 	return "%s（%s）" % [model["id"], note]
+
+
+func _reasoning_label(effort: Dictionary) -> String:
+	return "%s（%s）" % [effort["label"], effort["id"]]
 
 
 ## Which voice, whether to use it, and — once there is a local engine — whose it
@@ -1044,11 +1049,6 @@ func _on_menu_pressed(id: int) -> void:
 		if index < spaces.size():
 			_begin_work(spaces[index])
 		return
-	if id >= MODEL_BASE:
-		LLMService.select_model(str(LLMService.list_models()[id - MODEL_BASE]["id"]))
-		# The provider row shows the model name too, so both rows need redrawing.
-		_build_menu()
-		return
 	if id >= GAME_BASE:
 		_game.open(_window_ctl.get_ui_scale(), _visual.get_pack(),
 			_visual.state_rows(), id - GAME_BASE)
@@ -1089,6 +1089,8 @@ func _on_menu_pressed(id: int) -> void:
 		MenuId.RECENTRE:
 			_window_ctl.park_at_default_spot()
 			_brain.set_home_here()
+		MenuId.MODEL_SETTINGS:
+			_open_model_settings()
 		MenuId.SET_KEY:
 			_ask_for_entry(OPENAI_KEY, "OpenAI API key",
 				"用來聊天跟看螢幕的。%s" % _entry_storage_note(), true)
@@ -1466,13 +1468,134 @@ func _setup_work_consent_dialog() -> void:
 	_work_consent.canceled.connect(_abandon_pending_work.bind("好，那我不動你的資料夾。"))
 
 
-## The one guard that stands between the level the user chose — edit in place —
-## and losing work git can't get back. Deliberately a question, not a notice: a
-## warning you can't act on is noise, and this one has an obvious action.
-##
-## Per job rather than per folder, because the answer changes every time. It is
-## only asked where it means something: an editable workspace, in a git repo, with
-## something uncommitted in it.
+## A compact instrument panel for the two settings that shape every reply. The
+## right-click menu only reports the live values and opens this native window;
+## choices stay staged here until 套用 is pressed.
+func _setup_model_settings_dialog() -> void:
+	var scale := _window_ctl.get_ui_scale()
+	_model_settings.exclusive = false
+	_model_settings.theme = PetStyle.dialog_theme(scale)
+	_model_settings_current.custom_minimum_size = Vector2(380.0 * scale, 0)
+	_model_settings_current.add_theme_color_override("font_color", PetStyle.ACCENT_TEXT)
+	_model_settings_current.add_theme_font_size_override("font_size", roundi(17.0 * scale))
+	_model_settings_hint.custom_minimum_size = Vector2(380.0 * scale, 0)
+	_model_settings_hint.add_theme_color_override("font_color", PetStyle.NIGHT_MUTED)
+	_model_settings_hint.add_theme_font_size_override("font_size", roundi(13.0 * scale))
+	_model_picker.custom_minimum_size = Vector2(250.0 * scale, 0)
+	_reasoning_picker.custom_minimum_size = Vector2(250.0 * scale, 0)
+	($ModelSettings/Box as VBoxContainer).add_theme_constant_override(
+		"separation", roundi(14.0 * scale))
+	($ModelSettings/Box/Grid as GridContainer).add_theme_constant_override(
+		"h_separation", roundi(18.0 * scale))
+	($ModelSettings/Box/Grid as GridContainer).add_theme_constant_override(
+		"v_separation", roundi(12.0 * scale))
+	for label in [$ModelSettings/Box/Grid/ModelLabel,
+			$ModelSettings/Box/Grid/ReasoningLabel]:
+		(label as Label).add_theme_color_override("font_color", PetStyle.NIGHT_MUTED)
+	_model_picker.get_popup().theme = PetStyle.menu_theme(scale)
+	_reasoning_picker.get_popup().theme = PetStyle.menu_theme(scale)
+
+	var ok := _model_settings.get_ok_button()
+	var primary := PetStyle.primary_button_styles(scale)
+	for state in primary:
+		ok.add_theme_stylebox_override(state, primary[state])
+	ok.add_theme_color_override("font_color", PetStyle.INK)
+	ok.add_theme_color_override("font_hover_color", PetStyle.INK)
+	ok.add_theme_color_override("font_pressed_color", PetStyle.INK)
+	PetStyle.make_ghost_button(_model_settings.get_cancel_button(), scale)
+
+	_model_picker.item_selected.connect(_on_model_settings_model_selected)
+	_reasoning_picker.item_selected.connect(_on_model_settings_reasoning_selected)
+	_model_settings.confirmed.connect(_apply_model_settings)
+
+
+func _open_model_settings() -> void:
+	var models := LLMService.list_models()
+	var efforts := LLMService.list_reasoning_efforts()
+	if models.is_empty() or efforts.is_empty():
+		return
+
+	_model_picker.clear()
+	var current_model := LLMService.get_model()
+	var current_index := -1
+	for model in models:
+		_model_picker.add_item(_model_label(model))
+		var index := _model_picker.item_count - 1
+		_model_picker.set_item_metadata(index, str(model["id"]))
+		if str(model["id"]) == current_model:
+			current_index = index
+	# Preserve a model entered directly in config instead of silently replacing
+	# it merely because the settings window was opened.
+	if current_index < 0:
+		_model_picker.add_item("%s（自訂）" % current_model)
+		current_index = _model_picker.item_count - 1
+		_model_picker.set_item_metadata(current_index, current_model)
+	_model_picker.select(current_index)
+
+	_reasoning_picker.clear()
+	for effort in efforts:
+		_reasoning_picker.add_item(_reasoning_label(effort))
+		var index := _reasoning_picker.item_count - 1
+		_reasoning_picker.set_item_metadata(index, str(effort["id"]))
+	_sync_reasoning_picker(LLMService.get_reasoning_effort())
+	_model_settings.reset_size()
+	_model_settings.popup_centered()
+
+
+func _selected_picker_value(picker: OptionButton) -> String:
+	if picker.selected < 0:
+		return ""
+	return str(picker.get_item_metadata(picker.selected))
+
+
+## Keep all six levels visible, but make the selected model's capability
+## obvious. A newly incompatible choice is clamped only in the staged UI.
+func _sync_reasoning_picker(preferred: String) -> void:
+	var model := _selected_picker_value(_model_picker)
+	var supported := LLMService.get_supported_reasoning_efforts_for_model(model)
+	var effective := LLMService.effective_reasoning_effort_for_model(model, preferred)
+	for i in _reasoning_picker.item_count:
+		var effort_id := str(_reasoning_picker.get_item_metadata(i))
+		_reasoning_picker.set_item_disabled(i, not supported.has(effort_id))
+		if effort_id == effective:
+			_reasoning_picker.select(i)
+	_refresh_model_settings_readout()
+
+
+func _on_model_settings_model_selected(_index: int) -> void:
+	_sync_reasoning_picker(_selected_picker_value(_reasoning_picker))
+
+
+func _on_model_settings_reasoning_selected(_index: int) -> void:
+	_refresh_model_settings_readout()
+
+
+func _refresh_model_settings_readout() -> void:
+	var model := _selected_picker_value(_model_picker)
+	var effort := _selected_picker_value(_reasoning_picker)
+	var changed := model != LLMService.get_model() \
+		or effort != LLMService.get_reasoning_effort()
+	_model_settings_current.text = "%s　%s · 推理 %s" % [
+		"準備改成" if changed else "現在使用", model, effort]
+	var note := ""
+	for entry in LLMService.list_reasoning_efforts():
+		if str(entry["id"]) == effort:
+			note = str(entry.get("note", ""))
+			break
+	_model_settings_hint.text = "%s%s" % [
+		note, "。按「套用」後，下一次對話就會使用新設定。" if changed else "。"]
+
+
+func _apply_model_settings() -> void:
+	var model := _selected_picker_value(_model_picker)
+	var effort := _selected_picker_value(_reasoning_picker)
+	if model.is_empty() or effort.is_empty():
+		return
+	LLMService.select_model(model)
+	LLMService.select_reasoning_effort(effort)
+	_build_menu()
+
+
 ## The entry window. `register_text_enter` is what makes Enter save, which is
 ## what everyone will try first — a settings field that only accepts a mouse
 ## click on 儲存 reads as broken to anyone who has ever used a password box.
@@ -1505,6 +1628,13 @@ func _setup_entry_dialog() -> void:
 	_secret_entry.canceled.connect(func() -> void: _secret_field.text = "")
 
 
+## The one guard that stands between the level the user chose — edit in place —
+## and losing work git can't get back. Deliberately a question, not a notice: a
+## warning you can't act on is noise, and this one has an obvious action.
+##
+## Per job rather than per folder, because the answer changes every time. It is
+## only asked where it means something: an editable workspace, in a git repo, with
+## something uncommitted in it.
 func _setup_dirty_warning_dialog() -> void:
 	var scale := _window_ctl.get_ui_scale()
 	_dirty_warning.exclusive = false

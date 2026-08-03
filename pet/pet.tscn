@@ -91,6 +91,36 @@ title = "這個資料夾有沒存好的東西"
 ok_button_text = "就這樣開始"
 cancel_button_text = "我先去存"
 
+[node name="ModelSettings" type="ConfirmationDialog" parent="."]
+title = "語言模型設定"
+ok_button_text = "套用"
+cancel_button_text = "取消"
+
+[node name="Box" type="VBoxContainer" parent="ModelSettings"]
+
+[node name="Current" type="Label" parent="ModelSettings/Box"]
+text = "現在使用"
+
+[node name="Rule" type="HSeparator" parent="ModelSettings/Box"]
+
+[node name="Grid" type="GridContainer" parent="ModelSettings/Box"]
+columns = 2
+
+[node name="ModelLabel" type="Label" parent="ModelSettings/Box/Grid"]
+text = "模型"
+
+[node name="Model" type="OptionButton" parent="ModelSettings/Box/Grid"]
+size_flags_horizontal = 3
+
+[node name="ReasoningLabel" type="Label" parent="ModelSettings/Box/Grid"]
+text = "推理程度"
+
+[node name="Reasoning" type="OptionButton" parent="ModelSettings/Box/Grid"]
+size_flags_horizontal = 3
+
+[node name="Hint" type="Label" parent="ModelSettings/Box"]
+autowrap_mode = 3
+
 [node name="SecretEntry" type="ConfirmationDialog" parent="."]
 title = "設定金鑰"
 ok_button_text = "儲存"

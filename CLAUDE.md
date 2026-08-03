@@ -525,15 +525,33 @@ reaches the bubble and before it enters the history.
 does not persist; only `select_provider()` does. Persisting a default pins
 whichever one applied on first run and permanently defeats later auto-detection.
 
-The 語言模型 submenu picks the model as well as the backend.
+The 語言模型 submenu picks the backend, reports the live model/reasoning pair,
+and opens a separate native settings dialog for changing those two values. The
+dialog stages its selections until the user presses 套用, keeping the submenu
+short even as the model and reasoning registries grow.
 `OpenAIProvider.MODELS` is the list; ids were read off `/v1/models` rather than
 written from memory, because the family is not guessable. A model carries a note
-in the menu only where the caveat is *measured*, which is why `gpt-5.4-nano` says
-「看不懂螢幕」 and the rest say nothing — see the `[look]` measurements below.
-Listing nano at all is deliberate: it is the cheapest way to chat, and someone
-who never asks about the screen should be able to choose it knowingly.
+in the menu for its role or where a caveat is *measured*, which is why
+`gpt-5.4-nano` says 「看不懂螢幕」 — see the `[look]` measurements below.
+`gpt-5.6-luna` is the default; Terra and Sol remain choices rather than replacing
+the cheaper older tiers.
 `select_model()` persists (it is a choice, not a default), and the provider
 re-reads the config on every request, so there is nothing to restart.
+
+The settings dialog exposes `reasoning_effort`, defaulting to `none`. All six
+rows stay visible: `none`, `low`, `medium`, `high`, `xhigh`, `max`. Model metadata
+declares which are supported, so 5.4/5.5 disable `max` while the 5.6 family can
+use it. Config stores the preference, while both the UI and request use the
+effective compatible value — a saved `max` becomes `xhigh` on 5.5 and returns
+to `max` when the user switches back. This compatibility adjustment never
+writes a startup-derived value back to config.
+
+`max_completion_tokens` includes hidden reasoning tokens. Keeping the ordinary
+320-token cap at `high` or above can spend the whole response before a visible
+word exists, so `OpenAIProvider.MIN_COMPLETION_TOKENS` adds increasing backstops
+for non-`none` efforts. These are ceilings, not requested answer lengths: the
+persona still keeps the spoken reply short, and the dialog hint makes the
+latency/token trade-off visible before the user applies it.
 
 ### Secrets
 
@@ -1241,8 +1259,8 @@ Leaving it to `[look]` alone was a mistake: **`gpt-5.4-nano` never emits it** �
 0/12 on questions that plainly need a screenshot, where `gpt-5.4-mini` scores
 9/9 and still declines correctly on ones that don't. Nano reads an attached
 screenshot perfectly well, it just never asks for one, so the whole feature was
-dead on the model that was configured. Hence both the local trigger and
-`DEFAULT_MODEL` being mini.
+dead on the model that was configured. That is why the local trigger remains
+mandatory even though the user-selected default is now `gpt-5.6-luna`.
 
 `_in_vision_pass` stops a second `[look]` looping. `_look_declined` stops the
 model re-asking after a refusal — and suppressing the tag is *not* enough on its
