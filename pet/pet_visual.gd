@@ -77,6 +77,21 @@ const LOOK_STEP_DEGREES := 22.5
 const LOOK_ROW_START := 9
 const LOOK_DIRECTIONS_PER_ROW := 8
 
+## The bundled pet has full-body 16-direction art. That is useful while the
+## pointer is outside the character, but reading a pointer over its upper body
+## from the character's centre selects a rear-facing frame. Keep close contact
+## friendly instead: face forward/sideways and occasionally acknowledge cursor
+## movement with one of the v2 action rows.
+const FRIENDLY_HOVER_PET_ID := "sprig-tail"
+const HOVER_REACTION_TRAVEL := 44.0  # sprite-local px travelled over the body
+const HOVER_REACTION_COOLDOWN := 2.0
+const HOVER_REACTION_STATES: Array[StringName] = [&"wave", &"idle"]
+const HOVER_REACTION_SECONDS := [0.70, 0.62]
+const HOVER_HOP_REACTION := 1
+## Stays within HIT_MARGIN so Windows' combined input/render mask does not crop
+## the top of the character during the position-only hop.
+const HOVER_HOP_HEIGHT := 8.0
+
 @onready var _sprite: AnimatedSprite2D = $Sprite
 @onready var _fallback: Node2D = $Fallback
 @onready var _label: Label = $CalibrationLabel
@@ -105,6 +120,14 @@ var _drag_lean := 0.0
 ## -1 means the normal state animation is active; 0-15 select the two v2 look
 ## rows clockwise from up.
 var _look_index := -1
+var _hovering_body := false
+var _hover_last_position := Vector2.ZERO
+var _hover_travel := 0.0
+var _hover_cooldown := 0.0
+var _hover_reaction_timer := 0.0
+var _hover_reaction_index := 0
+var _hover_active_reaction := -1
+var _hover_hop := 0.0
 
 var _calibrating := false
 var _calibration_row := 0
@@ -145,9 +168,13 @@ func _update_cursor_reaction(delta: float) -> void:
 	var lean_target := 0.0
 	var perk_target := 0.0
 	if eligible:
-		var scale := _window.get_ui_scale()
-		var radius := CURSOR_NOTICE_RADIUS * scale
+		var ui_scale := _window.get_ui_scale()
+		var radius := CURSOR_NOTICE_RADIUS * ui_scale
 		var offset := Vector2(DisplayServer.mouse_get_position() - _window.get_pet_screen_position())
+		var local_offset := _cursor_local_offset(offset)
+		var friendly_hover := _pack != null and _pack.id == FRIENDLY_HOVER_PET_ID \
+			and cursor_over_polygon(local_offset, _hit_polygon)
+		_update_hover_interaction(local_offset, friendly_hover, delta)
 		var dist := offset.length()
 		if dist < radius:
 			# Squared so the reaction concentrates near the pet ("perks up when
@@ -155,20 +182,28 @@ func _update_cursor_reaction(delta: float) -> void:
 			var falloff := pow(1.0 - dist / radius, 2.0)
 			lean_target = (offset.x / radius) * CURSOR_LEAN_MAX * falloff
 			perk_target = -CURSOR_PERK_MAX * falloff
-			if _pack != null and _pack.has_look_directions() \
-					and dist > CURSOR_FACING_DEADZONE * scale:
+			if friendly_hover:
+				_clear_look_direction()
+				_cursor_facing_dir = 1 if local_offset.x > CURSOR_FACING_DEADZONE \
+					else (-1 if local_offset.x < -CURSOR_FACING_DEADZONE else 0)
+			elif _pack != null and _pack.has_look_directions() \
+					and dist > CURSOR_FACING_DEADZONE * ui_scale:
 				_cursor_facing_dir = 0
 				_show_look_direction(offset)
-			elif absf(offset.x) > CURSOR_FACING_DEADZONE * scale:
+			elif absf(offset.x) > CURSOR_FACING_DEADZONE * ui_scale:
 				_clear_look_direction()
 				_cursor_facing_dir = 1 if offset.x > 0.0 else -1
 			else:
 				_clear_look_direction()
 				_cursor_facing_dir = 0
+		elif friendly_hover:
+			_clear_look_direction()
+			_cursor_facing_dir = 0
 		else:
 			_clear_look_direction()
 			_cursor_facing_dir = 0
 	else:
+		_reset_hover_interaction()
 		var was_overriding := _cursor_facing_dir != 0
 		var was_looking := _look_index >= 0
 		_cursor_facing_dir = 0
@@ -185,6 +220,85 @@ func _update_cursor_reaction(delta: float) -> void:
 	_cursor_lean = lerpf(_cursor_lean, lean_target, t)
 	_cursor_perk = lerpf(_cursor_perk, perk_target, t)
 	_apply_pose()
+
+
+## Convert desktop pixels back into PetVisual's sprite-local space. The visual
+## carries display scaling, per-pack normalisation and the user's size choice;
+## its hit polygon is measured before all three.
+func _cursor_local_offset(screen_offset: Vector2) -> Vector2:
+	var sx := absf(scale.x)
+	var sy := absf(scale.y)
+	return Vector2(screen_offset.x / sx if sx > 0.0001 else 0.0,
+		screen_offset.y / sy if sy > 0.0001 else 0.0)
+
+
+static func cursor_over_polygon(point: Vector2, polygon: PackedVector2Array) -> bool:
+	return polygon.size() >= 3 and Geometry2D.is_point_in_polygon(point, polygon)
+
+
+static func hover_reaction_ready(travel: float, cooldown: float, reacting: bool) -> bool:
+	return not reacting and cooldown <= 0.0 and travel >= HOVER_REACTION_TRAVEL
+
+
+func _update_hover_interaction(local_offset: Vector2, over_body: bool, delta: float) -> void:
+	_hover_cooldown = maxf(0.0, _hover_cooldown - delta)
+	if not over_body:
+		_reset_hover_interaction()
+		return
+
+	if not _hovering_body:
+		_hovering_body = true
+		_hover_last_position = local_offset
+		_hover_travel = 0.0
+		return
+
+	if _hover_reaction_timer > 0.0:
+		_hover_reaction_timer = maxf(0.0, _hover_reaction_timer - delta)
+		_hover_last_position = local_offset
+		if _hover_active_reaction == HOVER_HOP_REACTION:
+			var duration: float = HOVER_REACTION_SECONDS[HOVER_HOP_REACTION]
+			var progress := 1.0 - _hover_reaction_timer / duration
+			_hover_hop = -sin(PI * progress) * HOVER_HOP_HEIGHT
+		if is_zero_approx(_hover_reaction_timer):
+			_hover_active_reaction = -1
+			_hover_hop = 0.0
+			_restore_state_animation()
+		return
+
+	_hover_travel += local_offset.distance_to(_hover_last_position)
+	_hover_last_position = local_offset
+	if hover_reaction_ready(_hover_travel, _hover_cooldown, false):
+		_start_hover_reaction()
+
+
+func _start_hover_reaction() -> void:
+	if _pack == null or _calibrating or HOVER_REACTION_STATES.is_empty():
+		return
+	var index := _hover_reaction_index % HOVER_REACTION_STATES.size()
+	var state := HOVER_REACTION_STATES[index]
+	_sprite.play(PetPack.row_anim(_resolve_row(state)))
+	_hover_active_reaction = index
+	_hover_hop = 0.0
+	_hover_reaction_timer = HOVER_REACTION_SECONDS[index]
+	_hover_reaction_index = (index + 1) % HOVER_REACTION_STATES.size()
+	_hover_travel = 0.0
+	_hover_cooldown = HOVER_REACTION_COOLDOWN
+
+
+func _reset_hover_interaction() -> void:
+	var was_reacting := _hover_reaction_timer > 0.0
+	_hovering_body = false
+	_hover_travel = 0.0
+	_hover_reaction_timer = 0.0
+	_hover_active_reaction = -1
+	_hover_hop = 0.0
+	if was_reacting:
+		_restore_state_animation()
+
+
+func _restore_state_animation() -> void:
+	if _pack != null and not _calibrating:
+		_sprite.play(PetPack.row_anim(_playback_row(_state)))
 
 
 func _show_look_direction(offset: Vector2) -> void:
@@ -235,8 +349,9 @@ func _apply_pose() -> void:
 	# the character sideways. Negate it to keep them planted; lean is a plain
 	# screen-space nudge, not a padding correction, so it is never negated.
 	var lean := _cursor_lean + _drag_lean
-	_sprite.offset = Vector2((-_base_offset.x if flipped else _base_offset.x) + lean, _base_offset.y)
-	_fallback.position = Vector2(lean, 0.0)
+	_sprite.offset = Vector2((-_base_offset.x if flipped else _base_offset.x) + lean,
+		_base_offset.y + _hover_hop)
+	_fallback.position = Vector2(lean, _hover_hop)
 
 	var total_squash := _squash + _cursor_perk
 	if _pack == null:
@@ -249,6 +364,7 @@ func _apply_pose() -> void:
 
 ## Pass null only when no selected or bundled pack could be loaded.
 func load_pack(pack: PetPack) -> void:
+	_reset_hover_interaction()
 	_pack = pack
 	_look_index = -1
 	if pack == null:
@@ -329,6 +445,7 @@ static func _normalised_scale(pack: PetPack, rest: Rect2i) -> float:
 # --- Playback -----------------------------------------------------------------
 
 func play_state(state: StringName) -> void:
+	_reset_hover_interaction()
 	_state = state
 	_look_index = -1
 	# Re-sync facing/lean/squash for the new state's eligibility on the transition
@@ -389,6 +506,7 @@ func get_hit_polygon() -> PackedVector2Array:
 ## Cycles through every spritesheet row with its index on screen, so the row ->
 ## state mapping can be checked against a pet whose author never declared one.
 func set_calibrating(on: bool) -> void:
+	_reset_hover_interaction()
 	_calibrating = on and _pack != null
 	_label.visible = _calibrating
 	if _calibrating:
