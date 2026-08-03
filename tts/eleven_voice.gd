@@ -3,7 +3,7 @@ class_name ElevenVoice
 
 ## ElevenLabs, as a third voice beside the operating system's and the local model.
 ##
-## The trade against `Qwen3Voice` is the opposite one in every respect: nothing to
+## The trade against the local service is the opposite one in every respect: nothing to
 ## install, no 2.6 GB of VRAM and no model load, in exchange for every sentence
 ## the pet says leaving this machine and costing money. It is not the default and
 ## never becomes one — `TTSService` picks a backend at startup and never writes
@@ -49,7 +49,7 @@ var _queue: Array[AudioStream] = []
 var _speaking := ""
 
 ## Bumped by `stop()`. A response that arrives after it is thrown away, the same
-## watermark `Qwen3Voice` keeps — an HTTP request already sent cannot be unsent,
+## watermark `VoxCPMVoice` keeps — an HTTP request already sent cannot be unsent,
 ## so the audio still turns up and has to be recognised as unwanted.
 var _epoch := 0
 var _request_epoch := 0
@@ -301,9 +301,11 @@ func _decode(body: PackedByteArray, format: String) -> AudioStream:
 			return null
 		return TTSBackend.pcm_stream(body, rate)
 	if format.begins_with("wav_"):
-		var wav := Qwen3Voice.parse_native_wav(body, int(format.substr(4)),
-			(body.size() - 44) >> 1)
-		return null if wav.is_empty() else TTSBackend.pcm_stream(wav["data"], int(wav["rate"]))
+		# The engine parses the header itself, so nothing here has to know the
+		# rate the format name claims — and a truncated body comes back as a
+		# zero-length stream rather than as noise.
+		var wav := AudioStreamWAV.load_from_buffer(body)
+		return null if wav == null or wav.get_length() <= 0.0 else wav
 	var mp3 := AudioStreamMP3.new()
 	mp3.data = body
 	return null if mp3.get_length() <= 0.0 else mp3

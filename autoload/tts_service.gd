@@ -1,8 +1,8 @@
 extends Node
 
 ## Speaks the pet's lines. Which voice does the speaking is a backend — the
-## operating system's own (`OSVoice`, no dependency at all), a local neural model
-## (`Qwen3Voice`, several), or a paid API (`ElevenVoice`, none of them local) —
+## operating system's own (`OSVoice`, no dependency at all), a local service
+## (`VoxCPMVoice`), or a paid API (`ElevenVoice`) —
 ## swapped the same way `LLMService` swaps providers, so everything below this
 ## line is written once.
 ##
@@ -24,7 +24,6 @@ const FLUSH_AFTER := 40
 const RESPELL_PATH := "res://prompts/pronunciation.json"
 
 const BACKEND_OS := "os"
-const BACKEND_QWEN3 := "qwen3"
 const BACKEND_ELEVEN := "eleven"
 const BACKEND_VOXCPM := "voxcpm"
 
@@ -32,8 +31,8 @@ const BACKEND_VOXCPM := "voxcpm"
 ## signal rather than spoken here, because `pet.gd` is the only thing that
 ## decides how the pet reacts to anything.
 signal remarked(text: String)
-## The voice changed identity — a different backend, or a newly cloned voice —
-## so the menu row naming it is stale.
+## The voice changed identity — a different backend, or a different voice from
+## the one it offers — so the menu row naming it is stale.
 signal voice_changed()
 
 ## A pre-render batch moved on. `left` reaching zero ends it, however it ended.
@@ -46,7 +45,6 @@ var _backend: TTSBackend
 var _os_voice: OSVoice
 var _eleven: ElevenVoice
 var _voxcpm: VoxCPMVoice
-var _qwen3: Qwen3Voice
 ## [[from, to], …] sorted longest-first — see _load_respellings().
 var _respellings: Array = []
 
@@ -56,17 +54,13 @@ func _ready() -> void:
 	_os_voice = OSVoice.new()
 	_os_voice.name = "OSVoice"
 	add_child(_os_voice)
-	_qwen3 = Qwen3Voice.new()
-	_qwen3.name = "Qwen3Voice"
-	_qwen3.voice_cloned.connect(_on_voice_cloned)
-	add_child(_qwen3)
 	_eleven = ElevenVoice.new()
 	_eleven.name = "ElevenVoice"
 	add_child(_eleven)
 	_voxcpm = VoxCPMVoice.new()
 	_voxcpm.name = "VoxCPMVoice"
 	add_child(_voxcpm)
-	for backend in [_os_voice, _qwen3, _eleven, _voxcpm]:
+	for backend in [_os_voice, _voxcpm, _eleven]:
 		backend.broke.connect(_on_backend_broke)
 		backend.warned.connect(func(message: String) -> void: remarked.emit(message))
 		backend.line_prerendered.connect(func(done: int, left: int) -> void:
@@ -128,13 +122,11 @@ func stop() -> void:
 # --- Which voice --------------------------------------------------------------
 
 func list_backends() -> PackedStringArray:
-	return PackedStringArray([BACKEND_OS, BACKEND_QWEN3, BACKEND_VOXCPM, BACKEND_ELEVEN])
+	return PackedStringArray([BACKEND_OS, BACKEND_VOXCPM, BACKEND_ELEVEN])
 
 
 func backend_label(id: String) -> String:
 	match id:
-		BACKEND_QWEN3:
-			return "本機模型（Qwen3）"
 		BACKEND_VOXCPM:
 			return "本機服務（VoxCPM）"
 		BACKEND_ELEVEN:
@@ -153,17 +145,16 @@ func get_backend_name() -> String:
 ## installed by an external CLI.
 ##
 ## Note what it does *not* fix: an edit to `config.cfg`, which `Config` reads once
-## at startup. See `Qwen3Voice.refresh()`.
+## at startup.
 ##
 ## Cheap: a handful of `file_exists` calls, plus at most one short-lived process
 ## if no well-known Python is where it should be.
 func rediscover() -> void:
-	_qwen3.refresh()
-	# The cloud one has no discovery to speak of, but a key pasted through the
-	# menu a moment ago is exactly the thing that would otherwise need a restart
-	# to be believed — `Config.get_secret()` caches per process.
+	# A key pasted through the menu a moment ago is exactly the thing that would
+	# otherwise need a restart to be believed — `Config.get_secret()` caches per
+	# process — and the local service may have been started or stopped since the
+	# last look.
 	_eleven.refresh()
-	# And the local service may have been started or stopped since the last look.
 	_voxcpm.refresh()
 
 
@@ -185,10 +176,6 @@ func backend_unavailable_reason(id: String) -> String:
 func select_backend(id: String) -> void:
 	if id == _backend_name:
 		return
-	if id == BACKEND_QWEN3:
-		# Discovery is cached, so a user who has just written the path into
-		# config.cfg would otherwise have to restart to be believed.
-		_qwen3.refresh()
 	# Asked for by name, so a refusal names *that* backend's reason and changes
 	# nothing. Letting `_set_backend`'s fallback handle it here would both persist
 	# a choice the user did not make and report whatever the fallback happens to
@@ -223,8 +210,6 @@ func _set_backend(id: String) -> void:
 
 func _for(id: String) -> TTSBackend:
 	match id:
-		BACKEND_QWEN3:
-			return _qwen3
 		BACKEND_VOXCPM:
 			return _voxcpm
 		BACKEND_ELEVEN:
@@ -238,16 +223,13 @@ func _for(id: String) -> TTSBackend:
 ## choice is *not* persisted, so the next run tries again.
 ##
 ## **The reason is said whether or not there is anything to fall back from.**
-## `clone_voice_from()` starts the helper regardless of which backend is active,
-## and the OS voice is the shipped default — so the most likely time this fires
-## is a 當我的聲音 on a machine where the engine cannot load, with the neural
-## backend not selected. Guarding the whole handler on "am I on it" made that
-## case fail in complete silence: the button did nothing, forever, with no line
-## and no way to find out why.
+## A backend can break while it is not the one speaking — the local service is
+## asked how it is on every menu open — and guarding the whole handler on "am I
+## on it" would make those failures silent, which is how the user ends up with a
+## disabled row and no idea why.
 func _on_backend_broke(reason: String) -> void:
 	if _backend == _os_voice:
-		# Nothing to fall back *from*: the helper was started by a clone while the
-		# OS voice was active. The reason still has to be said — see above.
+		# Nothing to fall back *from*. The reason still has to be said.
 		remarked.emit(reason)
 		return
 	_set_backend(BACKEND_OS)
@@ -268,45 +250,17 @@ func _on_backend_broke(reason: String) -> void:
 	remarked.emit(reason + next)
 
 
-# --- The downloadable half of the local engine --------------------------------
+# --- Which voice ---------------------------------------------------------------
 
-## Whether the local voice is one download away from working — engine present,
-## weights absent. False on a machine missing anything else, since fetching
-## models would not make the voice usable there. See ModelFetcher.
-func needs_models() -> bool:
-	return _qwen3 != null and _qwen3.needs_models()
-
-
-## Where those models should land. Empty when there is no local backend at all.
-func models_dir() -> String:
-	return _qwen3.models_dir() if _qwen3 != null else ""
-
-
-# --- The cloned voice ---------------------------------------------------------
-
-func can_clone_voice() -> bool:
-	return _qwen3 != null and _qwen3.is_available()
-
-
-func has_cloned_voice() -> bool:
-	return _qwen3 != null and _qwen3.has_cloned_voice()
-
-
-## Every voice the local engine can speak in, by name. Empty on a backend that
-## has no such notion, which is what lets the menu ask without checking first.
+## Every voice the speaking backend offers, by the id the user picks. Empty on a
+## backend that has no such notion, which is what lets the menu ask without
+## checking which one is in use first.
 func list_voices() -> PackedStringArray:
 	return _backend.list_voices() if _backend != null else PackedStringArray()
 
 
 func active_voice() -> String:
 	return _backend.active_voice() if _backend != null else ""
-
-
-## Whether there is a voice to choose at all, which is what the menu asks before
-## drawing the list. Distinct from `can_clone_voice()`: every backend with more
-## than one voice answers yes here, only the local engine can make a new one.
-func has_voice_choice() -> bool:
-	return not list_voices().is_empty()
 
 
 func select_voice(name: String) -> void:
@@ -317,45 +271,6 @@ func select_voice(name: String) -> void:
 	# generated in the old one and would arrive as a jarring half-and-half.
 	_backend.stop()
 	voice_changed.emit()
-
-
-func voices_folder() -> String:
-	return _qwen3.voices_folder() if _qwen3 != null else ""
-
-
-## Take the pet's voice from a recording — in practice one RecorderService made.
-## Answers on `remarked` either way, via _on_voice_cloned.
-func clone_voice_from(wav_path: String, name: String) -> void:
-	if not can_clone_voice():
-		remarked.emit(_qwen3.unavailable_reason())
-		return
-	_qwen3.clone_from(wav_path, name)
-
-
-func clear_cloned_voice() -> void:
-	if _qwen3 == null:
-		return
-	_qwen3.clear_cloned_voice()
-	voice_changed.emit()
-
-
-func _on_voice_cloned(ok: bool, message: String) -> void:
-	if ok:
-		# Cloning is only useful if you are then using it, and the user who just
-		# handed over a recording plainly wants to hear it.
-		if _backend_name != BACKEND_QWEN3:
-			select_backend(BACKEND_QWEN3)
-		if not _enabled:
-			set_enabled(true)
-		voice_changed.emit()
-	if _backend != _qwen3:
-		# Cloning starts the helper whichever backend is active, so a clone that
-		# failed — or one that succeeded and still could not be switched to —
-		# leaves a process nobody owns holding the model and a couple of GB of
-		# VRAM. Its own idle timer would get there eventually; five minutes is a
-		# long time to hold a graphics card you were not asked for.
-		_qwen3.shutdown()
-	remarked.emit(message)
 
 
 # --- Speaking -----------------------------------------------------------------

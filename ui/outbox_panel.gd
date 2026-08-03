@@ -175,20 +175,6 @@ func _make_row(file: Dictionary) -> Control:
 		OutboxService.open_file(name))
 	row.add_child(open)
 
-	# Only on a recording, and only where there is an engine that can use one.
-	# This is where the verb belongs rather than in the 說話 menu: cloning a voice
-	# means picking *which* take, and the takes are listed here.
-	if name.get_extension().to_lower() == "wav" and TTSService.can_clone_voice():
-		var adopt := Button.new()
-		adopt.text = "當我的聲音"
-		adopt.tooltip_text = "用這段錄音當寵物講話的聲音"
-		PetStyle.make_quiet_button(adopt, _scale)
-		adopt.pressed.connect(func() -> void:
-			# Handed to the pet rather than done here: a voice needs a name, and
-			# asking for one is the pet's input field, not this window's business.
-			EventBus.voice_offered.emit(OutboxService.folder_path().path_join(name)))
-		row.add_child(adopt)
-
 	var size := Label.new()
 	size.text = OutboxService.human_size(int(file["size"]))
 	size.add_theme_color_override("font_color", PetStyle.NIGHT_MUTED)

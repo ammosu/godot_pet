@@ -99,11 +99,6 @@ title = "先讓 Codex 登入"
 ok_button_text = "用 ChatGPT 帳號登入"
 cancel_button_text = "先不要"
 
-[node name="ModelDownload" type="ConfirmationDialog" parent="."]
-title = "下載本機語音的模型"
-ok_button_text = "好，開始下載"
-cancel_button_text = "先不要"
-
 [node name="Memory" type="Window" parent="."]
 title = "記憶與資料"
 initial_position = 2

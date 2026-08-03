@@ -3,13 +3,13 @@ class_name VoxCPMVoice
 
 ## VoxCPM2, through the HTTP service running on this machine.
 ##
-## Local like `Qwen3Voice` — nothing leaves the machine, nothing is billed — but
+## Local — nothing leaves the machine, nothing is billed — but
 ## reached the way `ElevenVoice` is reached, which is most of the point. The
 ## engine lives in somebody else's process, so this class has no child to spawn,
 ## no spool to guard, no crash to survive and no model to load; a sentence is one
 ## POST and one `load_from_buffer`.
 ##
-## Measured against the local helper it replaces, on the same line and the same
+## Measured against the in-process engine it replaced, on the same line and the same
 ## voice: 0.63–0.83 s end to end against 383–1278 ms *plus* a 754 ms model load,
 ## which a nudge always pays because it arrives at least eight minutes after the
 ## last one and the engine unloads after five.
@@ -157,7 +157,7 @@ func active_voice() -> String:
 	if not chosen.is_empty() and (known.is_empty() or known.has(chosen)):
 		return chosen
 	# A voice removed from the library must not leave the pet mute with a tick on
-	# a row that is gone — the same rule the local engine's voices followed.
+	# a row that is gone.
 	return known[0] if not known.is_empty() else ""
 
 

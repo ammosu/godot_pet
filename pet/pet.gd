@@ -64,7 +64,7 @@ const DEFAULT_PET_SELECTION := "__default__"
 enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, MONITOR, SPEAK, ROAM, CALIBRATE,
 	RECENTRE, SET_KEY, SET_ELEVEN_KEY, SET_VOXCPM_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
-	RECORD, CLEAR_VOICE, MANAGE_VOICES, FETCH_MODELS, PRERENDER, QUIT,
+	RECORD, PRERENDER, QUIT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -78,7 +78,6 @@ enum MenuId {
 @onready var _work_offer: ConfirmationDialog = $WorkOffer
 @onready var _dirty_warning: ConfirmationDialog = $DirtyWarning
 @onready var _codex_login: ConfirmationDialog = $CodexLogin
-@onready var _model_download: ConfirmationDialog = $ModelDownload
 @onready var _memory: MemoryPanel = $Memory
 @onready var _chat_log: ChatLogPanel = $ChatLog
 @onready var _game: GamePanel = $Game
@@ -96,7 +95,6 @@ var _item_menus := {}
 var _size_factor := DEFAULT_SIZE_FACTOR
 ## The recording waiting for a name. Cleared as soon as the name arrives, so a
 ## dismissed field cannot leave one primed for whatever is typed next.
-var _pending_voice_wav := ""
 ## The voice names the 說話 submenu was last drawn with. See _open_menu().
 var _listed_voices := PackedStringArray()
 ## How many pre-rendered lines are still outstanding, so the menu row can say so
@@ -135,10 +133,6 @@ var _pending_work := {}
 ## A request the user has already typed, so the walk through _begin_work's gates
 ## ends by starting the job rather than asking them to type it a second time.
 var _queued_request := ""
-## Fetches the local voice's model files. Built here rather than living in
-## Qwen3Voice because the download is a thing the *user* is asked about and shown
-## — a dialog and an indicator — and this is the only place that owns UI.
-var _fetcher: ModelFetcher = null
 
 
 func _ready() -> void:
@@ -173,8 +167,6 @@ func _ready() -> void:
 
 	_chat.submitted.connect(_on_chat_submitted)
 	_chat.secret_submitted.connect(_on_secret_submitted)
-	_chat.voice_named.connect(_on_voice_named)
-	EventBus.voice_offered.connect(_on_voice_offered)
 	_chat.work_submitted.connect(_on_work_submitted)
 	WorkService.finished.connect(_on_work_finished)
 	WorkService.failed.connect(_on_work_failed)
@@ -198,14 +190,12 @@ func _ready() -> void:
 	_setup_work_offer_dialog()
 	_setup_dirty_warning_dialog()
 	_setup_codex_login_dialog()
-	_setup_model_download()
 	CodexCli.login_finished.connect(_on_codex_login_finished)
 	CodexCli.login_hint.connect(_on_codex_login_hint)
 	RecorderService.tick.connect(_on_recording_tick)
 	RecorderService.saved.connect(_on_recording_saved)
 	RecorderService.failed.connect(_on_recording_failed)
 	_chat.holding_action_pressed.connect(_on_recording_stop_pressed)
-	_chat.holding_action_pressed.connect(_on_model_stop_pressed)
 	_chat.hit_region_changed.connect(_refresh_mask)
 	TTSService.remarked.connect(_on_voice_remarked)
 	# The row names the voice in use, and every one of these changes it.
@@ -808,14 +798,6 @@ func _build_speech_menu() -> PopupMenu:
 	if TTSService.voxcpm_needs_key():
 		menu.add_item("設定 VoxCPM 金鑰…", MenuId.SET_VOXCPM_KEY)
 
-	# Directly under the backend it repairs, so the disabled row and the way to
-	# undisable it read as one thing. Shown only when the download would actually
-	# help: the models are the last gap, or one is being fetched right now. On a
-	# machine with no engine at all this stays hidden, because 1.7 GB would leave
-	# that machine exactly as mute as it started — see Qwen3Voice.needs_models().
-	if TTSService.needs_models() or (_fetcher != null and _fetcher.is_running()):
-		menu.add_item(_model_download_label(), MenuId.FETCH_MODELS)
-
 	# Which voice, once there is a choice. The model's own voice is always in the
 	# list and always first: it is the one that needs no file and cannot go
 	# missing, so it is what every other row is measured against.
@@ -823,26 +805,17 @@ func _build_speech_menu() -> PopupMenu:
 	# unconditionally and the *cloning* rows are what stay behind a capability
 	# check. A backend that only reads a library it was given has no 預設嗓音 to
 	# fall back to and no folder worth opening.
+	# The voices belong to whichever backend is speaking, so the list is asked for
+	# unconditionally rather than gated on one of them being the local engine.
 	var voices := TTSService.list_voices()
-	var can_clone := TTSService.can_clone_voice()
-	if not voices.is_empty() or can_clone:
+	if not voices.is_empty():
 		_listed_voices = voices
-		menu.add_separator()
 		var active := TTSService.active_voice()
-		if can_clone:
-			menu.add_radio_check_item("預設嗓音", MenuId.CLEAR_VOICE)
-			menu.set_item_checked(menu.get_item_index(MenuId.CLEAR_VOICE), active.is_empty())
+		menu.add_separator()
 		for i in voices.size():
 			menu.add_radio_check_item(voices[i], VOICE_PICK_BASE + i)
 			menu.set_item_checked(menu.get_item_index(VOICE_PICK_BASE + i),
 				voices[i] == active)
-		if can_clone and voices.is_empty():
-			# Said where the empty list is, rather than left as a bare heading:
-			# cloning belongs on the recording itself — you are choosing *which*
-			# take — so there is nothing to click here, only somewhere to be sent.
-			menu.add_separator("錄一段話，再去「我做的東西」把它設成我的聲音")
-		elif can_clone:
-			menu.add_item("管理聲音…", MenuId.MANAGE_VOICES)
 		# Under the voices because it renders *for whichever one is ticked* — the
 		# cache is per voice, so this row means something different depending on
 		# the row above it, and putting it anywhere else would hide that.
@@ -989,9 +962,9 @@ func _open_menu() -> void:
 	# kept it disabled after the user did exactly that. Rediscovering here is what
 	# makes that instruction true, and the menu is only rebuilt when the answer
 	# actually moved, so the ordinary open still costs a few `file_exists`.
-	var could_speak := TTSService.backend_is_available(TTSService.BACKEND_QWEN3)
+	var could_speak := TTSService.backend_is_available(TTSService.BACKEND_VOXCPM)
 	TTSService.rediscover()
-	var can_speak := TTSService.backend_is_available(TTSService.BACKEND_QWEN3)
+	var can_speak := TTSService.backend_is_available(TTSService.BACKEND_VOXCPM)
 	stale = stale or can_speak != could_speak
 
 	# And the voices themselves, for the reason 管理聲音… exists: that row opens
@@ -1074,16 +1047,6 @@ func _on_menu_pressed(id: int) -> void:
 			_toggle_monitor()
 		MenuId.SPEAK:
 			_toggle_speech()
-		MenuId.CLEAR_VOICE:
-			TTSService.clear_cloned_voice()
-			_on_pet_nudged("neutral", "好，我用回原本的嗓音。", false, false)
-		MenuId.MANAGE_VOICES:
-			# The folder, not a sixth window. A voice is one 4 KB file whose name
-			# *is* its name in the menu, so renaming and deleting are things the
-			# file manager already does better than anything worth writing here.
-			OS.shell_open(TTSService.voices_folder())
-		MenuId.FETCH_MODELS:
-			_toggle_model_download()
 		MenuId.PRERENDER:
 			_start_prerender()
 		MenuId.ROAM:
@@ -1821,29 +1784,6 @@ func _toggle_speech() -> void:
 	_set_checked(MenuId.SPEAK, TTSService.is_enabled())
 
 
-## A recording was offered as a voice. It is not cloned yet: a voice goes in a
-## list and a radio row, so it needs a name, and the only name this end could
-## invent is the recording's filename — 「錄音 2026-07-31 012304」, which is a
-## timestamp rather than a voice.
-func _on_voice_offered(wav_path: String) -> void:
-	if not TTSService.can_clone_voice():
-		_on_voice_remarked(TTSService.backend_unavailable_reason(TTSService.BACKEND_QWEN3))
-		return
-	_pending_voice_wav = wav_path
-	_chat.ask_for_voice_name("這個聲音要叫什麼？")
-
-
-## The name came back. Cloning takes a second or two and the pet says so when it
-## lands, via TTSService.remarked.
-func _on_voice_named(name: String) -> void:
-	var wav := _pending_voice_wav
-	_pending_voice_wav = ""
-	if wav.is_empty():
-		return
-	_on_pet_nudged("happy", "好，我聽聽看「%s」是什麼樣子……" % name, false, false)
-	TTSService.clone_voice_from(wav, name)
-
-
 ## Anything the voice layer has to tell the user: a backend that fell over, a
 ## machine too slow for it, a cloning attempt that worked or didn't.
 ##
@@ -1853,52 +1793,6 @@ func _on_voice_named(name: String) -> void:
 ## thing that broke is how a failure notice becomes silence.
 func _on_voice_remarked(text: String) -> void:
 	_on_pet_nudged("neutral", text, false, false)
-
-
-# --- Fetching the local voice's models ----------------------------------------
-
-## A dialog, unlike the recording it sits next to, because this one *does* meet
-## the bar the others are held to: it spends something the user has not already
-## agreed to spend — most of two gigabytes of their bandwidth, and a slice of
-## their disk — and it does so by talking to a third party over the network. The
-## recorder asks nothing because the click *was* the answer; here the click only
-## says "tell me more".
-##
-## So the text answers the three questions a download actually raises, the same
-## shape the screen-look dialog uses: how much, from where, and where it lands.
-## Naming the source is not decoration — these weights are a third-party
-## conversion, not Qwen's own file, and that is a thing someone may reasonably
-## want to check before agreeing.
-func _setup_model_download() -> void:
-	var scale := _window_ctl.get_ui_scale()
-	_model_download.dialog_text = "\n".join(PackedStringArray([
-		"本機語音的引擎已經裝好了，只差模型檔。我可以直接幫你抓下來。",
-		"",
-		"・大小是 %s，分成兩個檔案" % ModelFetcher.size_text(ModelFetcher.TOTAL_BYTES),
-		"・來源是 %s" % ModelFetcher.SOURCE_LABEL,
-		"・會存在 %s" % _short_path(TTSService.models_dir()),
-		"・下載好之後就完全在這台電腦上跑，不會再連網路",
-		"",
-		"看網速大概要幾分鐘。中途可以隨時叫我停。",
-	]))
-	_model_download.exclusive = false
-	_model_download.theme = PetStyle.dialog_theme(scale)
-	_model_download.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	# The loud treatment, not the ghost one: this is the thing the user came here
-	# to do, and the same call CodexLogin's primary button records making.
-	var ok := _model_download.get_ok_button()
-	var primary := PetStyle.primary_button_styles(scale)
-	for state in primary:
-		ok.add_theme_stylebox_override(state, primary[state])
-	ok.add_theme_color_override("font_color", PetStyle.INK)
-	ok.add_theme_color_override("font_hover_color", PetStyle.INK)
-	ok.add_theme_color_override("font_pressed_color", PetStyle.INK)
-	_model_download.confirmed.connect(_start_model_download)
-
-	_fetcher = ModelFetcher.new()
-	_fetcher.progress.connect(_on_model_progress)
-	_fetcher.finished.connect(_on_model_finished)
-	add_child(_fetcher)
 
 
 ## A home-relative path, for somewhere a full one would not fit.
@@ -1913,15 +1807,6 @@ func _short_path(path: String) -> String:
 	if not home.is_empty() and path.begins_with(home):
 		return "~" + path.substr(home.length())
 	return path
-
-
-## One row carrying both halves as a backup, the same shape 錄一段話 settled on.
-## The live bubble has the direct stop; this label staying truthful is what stops
-## the row offering a second download while one is already running.
-func _model_download_label() -> String:
-	if _fetcher != null and _fetcher.is_running():
-		return "停止下載語音模型"
-	return "下載語音模型（%s）…" % ModelFetcher.size_text(ModelFetcher.TOTAL_BYTES)
 
 
 ## Render every fixed line for the voice that is ticked right now.
@@ -1954,57 +1839,6 @@ func _on_prerender_progress(done: int, left: int) -> void:
 	_on_pet_nudged("happy" if done > 0 else "sad",
 		"錄好 %d 句了，以後這幾句我馬上就能講。" % done if done > 0
 		else "一句都沒錄成，等一下再試試看？", false, false)
-
-
-func _toggle_model_download() -> void:
-	if _fetcher != null and _fetcher.is_running():
-		_fetcher.cancel()
-		return
-	_model_download.reset_size()
-	_model_download.popup_centered()
-
-
-func _start_model_download() -> void:
-	var dir := TTSService.models_dir()
-	if dir.is_empty():
-		return
-	if not _fetcher.start(dir):
-		return
-	# Not on_talk_started(), unlike the recorder: this runs for minutes, and a pet
-	# frozen in place for all of them reads as the app having hung. The bubble
-	# follows the pet perfectly well while it wanders.
-	_on_model_progress("開始下載語音模型…")
-
-
-## The indicator, held open by ChatPanel's existing "more is coming" state — the
-## same one the recorder's clock uses, and for the same reason: it already
-## clamps to the visible area, follows the pet, and on Windows already sits
-## inside the passthrough mask.
-##
-## It carries its own stop, like the recorder's does. A download that runs for
-## half an hour and can only be called off from a menu two levels down is one
-## the user will kill by quitting the app.
-func _on_model_progress(text: String) -> void:
-	_chat.show_holding(text, "停止下載")
-
-
-## Shares `holding_action_pressed` with the recorder's stop, which is safe
-## because the bubble only ever holds one of them at a time — so each handler
-## guards on its own thing being what is actually running.
-func _on_model_stop_pressed() -> void:
-	if _fetcher != null and _fetcher.is_running():
-		_fetcher.cancel()
-
-
-func _on_model_finished(ok: bool, message: String) -> void:
-	if ok:
-		# Discovery is cached until something asks for it again, and the download
-		# landed in the first place _find_models() looks — so this one call is the
-		# whole of the wiring, and the voice is usable without a restart.
-		TTSService.rediscover()
-		if not TTSService.is_enabled():
-			message += "去「說話」選單把「說話出聲」打開，就能聽到了。"
-	_on_pet_nudged("happy" if ok else "sad", message, false, false)
 
 
 # --- Recording ----------------------------------------------------------------

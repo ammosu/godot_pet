@@ -14,8 +14,6 @@ signal secret_submitted(text: String)
 ## A job for the pet to hand to a coding-agent CLI, which goes to WorkService
 ## rather than into the conversation.
 signal work_submitted(text: String)
-## What to call a voice about to be cloned.
-signal voice_named(name: String)
 signal input_toggled(open: bool)
 ## The field grew or shrank a row. The passthrough mask is built from
 ## get_input_rect(), and outside the frame-by-frame case (Windows, where the mask
@@ -37,7 +35,7 @@ const CHAT_PLACEHOLDER := "跟我說說話…"
 ## WORK is unmasked and styled like chat — the only thing separating it is the
 ## placeholder and where the text is sent, which is what `secret` is checked for
 ## rather than the mode itself.
-enum InputMode { CHAT, SECRET, WORK, VOICE }
+enum InputMode { CHAT, SECRET, WORK }
 
 ## Design-unit sizes; everything is multiplied by the display scale.
 const BUBBLE_MAX_WIDTH := 300.0
@@ -585,18 +583,6 @@ func ask_what_to_do(placeholder: String) -> void:
 		set_input_open(true)
 
 
-## Open the input to name a voice. Reverts to chat on submit or dismissal for the
-## same reason the other two do — and here the cost of not reverting would be the
-## next thing you said to the pet becoming the name of a voice.
-func ask_for_voice_name(placeholder: String) -> void:
-	var was_open := is_input_open()
-	_set_input_mode(InputMode.VOICE, placeholder)
-	if was_open:
-		_field().grab_focus()
-	else:
-		set_input_open(true)
-
-
 ## Switching mode swaps which of the two fields is on screen, and the close
 ## button moves with it — being its child is what makes it impossible to show a
 ## field without its way out.
@@ -827,9 +813,6 @@ func _on_submitted(text: String) -> void:
 	elif _input_mode == InputMode.WORK:
 		_set_input_mode(InputMode.CHAT)
 		work_submitted.emit(trimmed)
-	elif _input_mode == InputMode.VOICE:
-		_set_input_mode(InputMode.CHAT)
-		voice_named.emit(trimmed)
 	else:
 		submitted.emit(trimmed)
 
