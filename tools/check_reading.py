@@ -38,7 +38,7 @@ sentence from context regardless of how the syllable was actually said.
 
 Two acoustic shortcuts were measured and rejected before this one:
 
-- **Duration.** At temperature 0, 發覺/發決 and 銀行/銀航 both came out at
+- **Duration.** Held deterministic, 發覺/發決 and 銀行/銀航 both came out at
   *identical* lengths to six decimal places. One syllable is one syllable
   whichever way it is read.
 - **Whole-utterance difference.** The known-same pair (銀行/銀航, which the
@@ -50,15 +50,20 @@ Two acoustic shortcuts were measured and rejected before this one:
 So the comparison is restricted to the frames where the two references differ
 from *each other* — which is where the syllable is, located without anyone
 having to say where — and the target is aligned onto that window by DTW, since
-at production temperature it is not the same length.
+a take on another seed is not the same length.
 
-## Why it repeats
+## Why it repeats, and why every take gets its own seed
 
-The defect is probabilistic, and a single take says nothing. Measured on
-「我發覺事情不對」: wrong in 5 takes out of 15 at the temperature the pet
-speaks at, and 0 out of 1 at temperature 0, which is greedy decoding and only
-ever walks the most likely path. A tool that measured the greedy path would
-have reported this word as fine.
+The defect is probabilistic, and a single take says nothing: on the engine this
+replaced, 「我發覺事情不對」 came out wrong 5 times in 15 and right the other 10.
+
+**The seed is not a detail here.** VoxCPM is deterministic — the same
+(voice, text, seed) is byte-for-byte the same audio, and leaving the seed out
+picks a fixed default rather than a random one. So repeating without varying it
+is one take counted N times, and every word would score 0/N or N/N with nothing
+in between. The references are pinned to one seed for the opposite reason: they
+are the ruler, and a ruler that moved with the thing being measured would be
+no ruler at all.
 """
 
 from __future__ import annotations
@@ -79,6 +84,13 @@ import voice_lab as lab  # noqa: E402
 WINDOW = 512
 HOP = 128
 
+## The references never move: they are what "this reading" and "that reading"
+## sound like, and a reference that varied with the thing being measured would
+## be a ruler made of the same rubber as the object.
+REFERENCE_SEED = 7
+## Where the sampled takes start. Fixed so a run can be reproduced exactly.
+SEED_BASE = 40000
+
 
 def spectrogram(path: str) -> np.ndarray:
     audio = lab.samples(path)
@@ -91,8 +103,8 @@ def spectrogram(path: str) -> np.ndarray:
 def divergence(good: np.ndarray, bad: np.ndarray) -> np.ndarray:
     """The frames where the two references disagree — i.e. where the word is.
 
-    Both are synthesised at temperature 0 from sentences differing in one
-    character, so they are the same length and already frame-aligned; the
+    Both are synthesised on one fixed seed from sentences differing in a single
+    character, so they are as nearly frame-aligned as two renderings get; the
     frames that stand out are the syllable and nothing else.
     """
     length = min(len(good), len(bad))
@@ -142,36 +154,28 @@ def verdict(target: str, good: str, bad: str) -> tuple[float, float]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="量一個破音字在寵物實際的溫度下有多常唸錯。")
+        description="量一個破音字在寵物實際用的聲音上有多常唸錯。")
     parser.add_argument("sentence", help="包含那個詞的句子")
     parser.add_argument("word", help="要檢查的詞，例如 發覺")
     parser.add_argument("good", help="只能唸成【對】的讀音的同音寫法，例如 發決")
     parser.add_argument("bad", help="只能唸成【錯】的讀音的同音寫法，例如 發叫")
     parser.add_argument("-n", "--takes", type=int, default=15,
-                        help="重複幾次（預設 15；這個引擎隨機到三五次一致毫無意義）")
-    # Overriding this answers "would the pet mispronounce it less at another
-    # setting", which is the only question the config value cannot answer by
-    # itself. The references stay at 0 regardless — they define what the two
-    # readings sound like, and that must not move with the thing being measured.
-    parser.add_argument("-t", "--temperature", type=float, default=None,
-                        help="改用別的溫度（預設讀 config，也就是寵物實際用的）")
+                        help="重複幾次（預設 15；三五次一致毫無意義）")
+    parser.add_argument("-s", "--seed", type=int, default=SEED_BASE,
+                        help="起始 seed；每次 +1，換一組就能重跑一批不同的樣本")
     arguments = parser.parse_args()
 
     if arguments.word not in arguments.sentence:
         print(f"句子裡沒有「{arguments.word}」。", file=sys.stderr)
         return 1
-    if not os.path.isfile(lab.cli()):
-        print(f"找不到語音引擎 {lab.cli()}", file=sys.stderr)
+    speaking, message = lab.service_ready()
+    print(message)
+    if not speaking:
         return 1
-
-    tokens, configured = lab.parameters()
-    temperature = configured if arguments.temperature is None else arguments.temperature
-    voice = lab.current_voice()
     print(f"句子：{arguments.sentence}")
     print(f"對照：{arguments.good}（對）／{arguments.bad}（錯）")
-    note = "" if arguments.temperature is None else f"（config 是 {configured}）"
-    print(f"聲音：{voice or '預設嗓音'}　溫度 {temperature}{note}　上限 {tokens} tokens　"
-          f"{arguments.takes} 次\n")
+    print(f"聲音：{lab.current_voice()}　{arguments.takes} 次"
+          f"（seed {arguments.seed}–{arguments.seed + arguments.takes - 1}）\n")
 
     existing = dict(respell.load()).get(arguments.word)
     if existing:
@@ -182,12 +186,13 @@ def main() -> int:
         right = os.path.join(scratch, "good.wav")
         wrong = os.path.join(scratch, "bad.wav")
         try:
-            # References at temperature 0 so they are stable and frame-aligned
-            # with each other; only the target needs the pet's own randomness.
+            # Both references on one fixed seed, so they are stable and as
+            # nearly frame-aligned as two one-character-different sentences get;
+            # only the targets move, and they move by seed.
             lab.say(arguments.sentence.replace(arguments.word, arguments.good),
-                    right, temperature=0)
+                    right, seed=REFERENCE_SEED)
             lab.say(arguments.sentence.replace(arguments.word, arguments.bad),
-                    wrong, temperature=0)
+                    wrong, seed=REFERENCE_SEED)
         except subprocess.CalledProcessError as error:
             print(f"參照合成失敗：{error.returncode}", file=sys.stderr)
             return 1
@@ -196,7 +201,7 @@ def main() -> int:
         for take in range(arguments.takes):
             path = os.path.join(scratch, f"take{take}.wav")
             try:
-                lab.say(arguments.sentence, path, temperature=temperature)
+                lab.say(arguments.sentence, path, seed=arguments.seed + take)
             except subprocess.CalledProcessError:
                 print(f"  {take + 1:2d}. 合成失敗")
                 continue
@@ -209,7 +214,7 @@ def main() -> int:
     rate = misread / max(arguments.takes, 1)
     print(f"\n「{arguments.word}」唸錯 {misread}/{arguments.takes}（{rate:.0%}）")
     if misread == 0:
-        print(f"這個溫度下沒量到唸錯。要加規則的話，先用 tools/say.sh 親耳確認 —— "
+        print(f"這個聲音上沒量到唸錯。要加規則的話，先用 tools/say.sh 親耳確認 —— "
               f"每一條不必要的規則都是一次弄錯的機會。")
     elif existing:
         print(f"規則「{arguments.word}」→「{existing}」擋掉的就是這個。")

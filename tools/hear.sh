@@ -26,57 +26,31 @@ VOICE="$2"
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/godot/app_userdata/Godot Pet"
-VOICES="$DATA/qwen3_tts/voices"
 SAMPLES="$REPO/tools/say_samples.txt"
 OUTROOT="${GODOT_PET_HEAR_DIR:-$HOME/聽聽看}"
 
 [ -f "$SAMPLES" ] || { echo "找不到 $SAMPLES" >&2; exit 1; }
 
-LIB="${GODOT_PET_QWEN3_LIB:-$HOME/git_project/qwen3-tts.cpp/build/libqwen3tts.so}"
-MODELS="${GODOT_PET_QWEN3_MODELS:-$HOME/git_project/qwen3-tts.cpp/models}"
-CLI=$(dirname "$LIB")/qwen3-tts-cli
-[ -x "$CLI" ] || { echo "找不到 $CLI，本機語音引擎沒裝好。" >&2; exit 1; }
-
 # The voice: the argument, else whatever the pet is currently set to — the same
 # order say.sh uses, so the two tools never disagree about who is speaking.
+# Resolved inside voice_lab when left empty, which is also where the service and
+# the API key are known.
 if [ -z "$VOICE" ]; then
-	VOICE=$(sed -n 's/^qwen3_voice="\(.*\)"$/\1/p' "$DATA/config.cfg" 2>/dev/null | head -1)
+	VOICE=$(sed -n 's/^voxcpm_voice="\(.*\)"$/\1/p' "$DATA/config.cfg" 2>/dev/null | head -1)
 fi
-# Held in the positional parameters for the reason say.sh documents: the path
-# contains a space ("…/app_userdata/Godot Pet/…") and an unquoted expansion
-# splits it into two arguments.
-if [ -n "$VOICE" ] && [ -f "$VOICES/$VOICE.emb" ]; then
-	set -- --load-embedding "$VOICES/$VOICE.emb"
-	echo "聲音：$VOICE"
-else
-	set --
-	echo "聲音：預設嗓音"
-fi
-[ -n "$GROUP" ] && echo "只產 [$GROUP] 這一組"
-echo
 
-CURRENT=""
-INDEX=0
-MADE=0
-OUTDIR=""
-
-# Synthesis fails occasionally — measured once in about sixty renders, the same
-# line succeeding on its own immediately afterwards, so it is resource pressure
-# from reloading 2.6 GB of model per invocation rather than anything about the
-# text. Retried once, and whatever still fails is collected and reported at the
-# end: a missing wav is indistinguishable from a line that sounded fine, so a
-# failure buried in sixty lines of progress is the one outcome this must not
-# have.
 FAILED=$(mktemp)
 trap 'rm -f "$FAILED"' EXIT
 
+# Through voice_lab, which is what the pet and the checking tools use, so a
+# batch produced here sounds like what the pet will actually say. The retry is
+# kept: voice_lab already backs off on a full queue, and this covers the rest.
 synth() {
 	text=$1
 	out=$2
-	shift 2
-	"$CLI" -m "$MODELS" -l zh -t "$text" "$@" -o "$out" >/dev/null 2>&1 && return 0
+	python3 "$REPO/tools/voice_lab.py" "$text" "$out" "$VOICE" >/dev/null 2>&1 && return 0
 	sleep 2
-	"$CLI" -m "$MODELS" -l zh -t "$text" "$@" -o "$out" >/dev/null 2>&1
+	python3 "$REPO/tools/voice_lab.py" "$text" "$out" "$VOICE" >/dev/null 2>&1
 }
 
 # `printf %s` rather than echo: a line starting with "-" or containing a
@@ -123,7 +97,7 @@ print("".join(c for c in line if c not in drop)[:12])
 		printf '  %s %s\n' "$NUM" "$line"
 	fi
 
-	if synth "$SPOKEN" "$OUTDIR/$NUM-$STEM.wav" "$@"; then
+	if synth "$SPOKEN" "$OUTDIR/$NUM-$STEM.wav"; then
 		MADE=$((MADE + 1))
 	else
 		printf '%s\n' "  [$CURRENT] $NUM $line" >> "$FAILED"
@@ -134,7 +108,7 @@ print("".join(c for c in line if c not in drop)[:12])
 	# Only where a rule fired. Judging a substitution needs both versions, and
 	# rendering an identical second copy everywhere else would double the wait.
 	if [ "$SPOKEN" != "$line" ]; then
-		if synth "$line" "$OUTDIR/$NUM-$STEM-原句.wav" "$@"; then
+		if synth "$line" "$OUTDIR/$NUM-$STEM-原句.wav"; then
 			MADE=$((MADE + 1))
 		else
 			printf '%s\n' "  [$CURRENT] $NUM（原句對照）$line" >> "$FAILED"

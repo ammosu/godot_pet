@@ -53,6 +53,11 @@ import voice_lab as lab  # noqa: E402
 
 KEEP = os.path.expanduser("~/聽聽看/校對")
 
+## Fixed rather than random, so a flagged line can be reproduced exactly: the
+## same take number is the same audio, and the wav kept beside it is the one
+## that was judged.
+SEED_BASE = 90000
+
 # Interjections the recogniser spells its own way. 「欸」 comes back as 「哎」 in
 # every single take of every line that contains one, which is the same sound
 # written differently rather than the pet saying the wrong thing.
@@ -93,7 +98,10 @@ def check(original: str, takes: int, rules) -> tuple[str, list[str]]:
         for take in range(takes):
             wav = os.path.join(scratch, f"take{take}.wav")
             try:
-                lab.say(spoken, wav)
+                # A different seed each take. The service is deterministic, so
+                # repeating without this is one rendering counted N times and
+                # every rate comes out 0/N or N/N.
+                lab.say(spoken, wav, seed=SEED_BASE + take)
             except subprocess.CalledProcessError as error:
                 heard.append(f"（合成失敗：{error.returncode}）")
                 continue
@@ -111,7 +119,7 @@ def main() -> int:
         description="用語音辨識校對寵物講出來的話，把聽壞的挑出來。")
     parser.add_argument("lines", nargs="*", help="要檢查的句子")
     parser.add_argument("-n", "--takes", type=int, default=5,
-                        help="每句合成幾次（預設 5；引擎是隨機的，一次不算數）")
+                        help="每句合成幾次（預設 5；每次換一個 seed，一次不算數）")
     parser.add_argument("--nudges", action="store_true",
                         help="檢查 prompts/nudges.json 裡所有主動說的話")
     parser.add_argument("-f", "--file", help="從檔案讀，一行一句")
@@ -133,14 +141,13 @@ def main() -> int:
     print(message)
     if not ready:
         return 1
-    if not os.path.isfile(lab.cli()):
-        print(f"找不到語音引擎 {lab.cli()}", file=sys.stderr)
+    speaking, voice_message = lab.service_ready()
+    print(voice_message)
+    if not speaking:
         return 1
 
-    tokens, temperature = lab.parameters()
-    voice = lab.current_voice()
-    print(f"聲音：{voice or '預設嗓音'}　溫度 {temperature}　上限 {tokens} tokens　"
-          f"每句 {arguments.takes} 次\n")
+    print(f"聲音：{lab.current_voice()}　每句 {arguments.takes} 次"
+          f"（seed {SEED_BASE}–{SEED_BASE + arguments.takes - 1}）\n")
 
     rules = respell.load()
     flagged = []
