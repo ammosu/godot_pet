@@ -2,17 +2,44 @@ extends Node
 
 var _failures := 0
 var _checks := 0
+## Which tests reached their last line. **Counting checks is not enough:** a
+## runtime error inside a test aborts that function, `_ready()` carries straight
+## on to the next one, and the tally then reports only the checks that happened
+## to run. Measured in the sibling suite — a call to a method deleted an hour
+## earlier printed 「13 checks passed」 and exited 0, with seven checks never
+## reached. GDScript gives no way to catch that from inside, so each test says it
+## finished and this notices when one did not.
+var _finished: Array[String] = []
 
 
 func _ready() -> void:
-	_test_cursor_hit_region()
-	_test_hover_reaction_gate()
-	_test_default_pack_actions()
+	var tests := {
+		"hit region": _test_cursor_hit_region,
+		"reaction gate": _test_hover_reaction_gate,
+		"pack actions": _test_default_pack_actions,
+	}
+	for name: String in tests:
+		(tests[name] as Callable).call()
+
+	for name: String in tests:
+		if not _finished.has(name):
+			_failures += 1
+			push_error("PetVisual: the '%s' test did not run to the end — look for "
+				% name + "a SCRIPT ERROR above; its later checks never happened")
+
 	if _failures == 0:
-		print("PetVisual cursor interactions: %d checks passed" % _checks)
+		print("PetVisual cursor interactions: %d checks passed, all %d tests ran to the end"
+			% [_checks, tests.size()])
 	else:
-		push_error("PetVisual cursor interactions: %d of %d checks failed" % [_failures, _checks])
-	get_tree().quit(_failures)
+		push_error("PetVisual cursor interactions: %d failed, %d checks ran, %d/%d tests completed"
+			% [_failures, _checks, _finished.size(), tests.size()])
+	get_tree().quit(1 if _failures > 0 else 0)
+
+
+## Last line of every test. Anything that stops the function short of this —
+## including an engine-level error GDScript will not let us catch — is reported.
+func _done(name: String) -> void:
+	_finished.append(name)
 
 
 func _expect(condition: bool, message: String) -> void:
@@ -34,7 +61,7 @@ func _test_cursor_hit_region() -> void:
 		"cursor over the side of the body was not recognised")
 	_expect(not PetVisual.cursor_over_polygon(Vector2(0, -100), body),
 		"cursor outside the body suppressed directional look art")
-
+	_done("hit region")
 
 func _test_hover_reaction_gate() -> void:
 	_expect(not PetVisual.hover_reaction_ready(
@@ -49,7 +76,7 @@ func _test_hover_reaction_gate() -> void:
 	_expect(PetVisual.hover_reaction_ready(
 		PetVisual.HOVER_REACTION_TRAVEL, 0.0, false),
 		"enough cursor movement did not trigger an available reaction")
-
+	_done("reaction gate")
 
 func _test_default_pack_actions() -> void:
 	var pack := PetPack.load_builtin()
@@ -91,3 +118,5 @@ func _test_default_pack_actions() -> void:
 	_expect(sprite.scale.is_equal_approx(Vector2.ONE),
 		"position-only hop changed the pet's rendered size")
 	visual.queue_free()
+	_done("pack actions")
+
