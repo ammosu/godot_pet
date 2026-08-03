@@ -103,14 +103,29 @@ def spectrogram(path: str) -> np.ndarray:
 def divergence(good: np.ndarray, bad: np.ndarray) -> np.ndarray:
     """The frames where the two references disagree — i.e. where the word is.
 
-    Both are synthesised on one fixed seed from sentences differing in a single
-    character, so they are as nearly frame-aligned as two renderings get; the
-    frames that stand out are the syllable and nothing else.
+    **The two are aligned to each other first, and skipping that was a real
+    bug.** They come from sentences differing in one character, which sounds
+    like it should make them the same length; measured across five words, three
+    pairs matched to the frame and two differed by 160 ms. Compared frame by
+    frame, a pair that differs in length is out of step from the point where the
+    lengths diverge onward, so the "window" stops being the syllable and becomes
+    wherever the two drift apart — most of the sentence.
+
+    What that produced was not obviously broken, which is the worrying part:
+    「察覺」 scored 7 wrong out of 15, cleanly bimodal, distances separated by a
+    factor of fifteen. Every one of those takes transcribes as 察覺 and a person
+    confirmed all four they were given sound right. The number was measuring
+    timing drift and nothing else.
     """
-    length = min(len(good), len(bad))
-    profile = np.mean(np.abs(good[:length] - bad[:length]), axis=1)
-    if not len(profile):
+    if not len(good) or not len(bad):
         return np.zeros(0, dtype=bool)
+    mapping = alignment(bad, good)
+    profile = np.zeros(len(good))
+    for j in range(len(good)):
+        frames = mapping.get(j, [])
+        if frames:
+            profile[j] = float(np.mean([np.mean(np.abs(good[j] - bad[i]))
+                                        for i in frames]))
     return profile > profile.mean() + profile.std()
 
 
@@ -135,20 +150,61 @@ def alignment(target: np.ndarray, reference: np.ndarray) -> dict[int, list[int]]
     return mapping
 
 
+def separation(good: str, bad: str) -> float:
+    """How far apart the two references are inside the window they define.
+
+    Measured across the words checked so far it lands between 1.0 and 1.3, and
+    each verdict is decided by 10-17% of it. That is a modest margin, and
+    printing it is the point: this tool has twice produced confident-looking
+    numbers that were wrong, and a reader who cannot see how much room the
+    verdict had has no way to tell one of those from a real result.
+
+    An unusually small share means the "wrong" reference is not what the engine
+    is actually saying — the comparison is then between the take and two things
+    it equally is not.
+    """
+    right, wrong = spectrogram(good), spectrogram(bad)
+    window = divergence(right, wrong)
+    if not window.any():
+        return 0.0
+    mapping = alignment(wrong, right)
+    total, counted = 0.0, 0
+    for frame in np.flatnonzero(window):
+        aligned = mapping.get(int(frame), [])
+        if not aligned:
+            continue
+        total += float(np.mean(np.abs(right[frame] - wrong[aligned[len(aligned) // 2]])))
+        counted += 1
+    return total / counted if counted else 0.0
+
+
 def verdict(target: str, good: str, bad: str) -> tuple[float, float]:
-    """Distance from the take to each reference, inside the syllable window."""
+    """Distance from the take to each reference, inside the syllable window.
+
+    Everything is aligned onto the good reference's frames — the take by DTW,
+    and the bad reference by the same alignment `divergence()` used — so the two
+    distances are measured over the same span of sound. Comparing an aligned
+    take against an unaligned reference is what made the old version report
+    timing as pronunciation.
+    """
     take, right, wrong = spectrogram(target), spectrogram(good), spectrogram(bad)
     window = divergence(right, wrong)
     if not window.any() or not len(take):
         return 0.0, 0.0
-    mapping = alignment(take, right)
+    to_take = alignment(take, right)
+    to_wrong_frames = alignment(wrong, right)
     to_right = to_wrong = 0.0
     counted = 0
     for frame in np.flatnonzero(window):
-        for aligned in mapping.get(int(frame), []):
-            to_right += float(np.mean(np.abs(take[aligned] - right[frame])))
-            to_wrong += float(np.mean(np.abs(take[aligned] - wrong[frame])))
-            counted += 1
+        aligned_take = to_take.get(int(frame), [])
+        aligned_wrong = to_wrong_frames.get(int(frame), [])
+        if not aligned_take or not aligned_wrong:
+            continue
+        take_frame = take[aligned_take[len(aligned_take) // 2]]
+        wrong_frame = wrong[aligned_wrong[len(aligned_wrong) // 2]]
+        to_right += float(np.mean(np.abs(take_frame - right[frame])))
+        to_wrong += float(np.mean(np.abs(take_frame - wrong_frame)))
+        counted += 1
     return (to_right / counted, to_wrong / counted) if counted else (0.0, 0.0)
 
 
@@ -197,6 +253,8 @@ def main() -> int:
             print(f"參照合成失敗：{error.returncode}", file=sys.stderr)
             return 1
 
+        gap = separation(right, wrong)
+        margins: list[float] = []
         misread = 0
         for take in range(arguments.takes):
             path = os.path.join(scratch, f"take{take}.wav")
@@ -208,11 +266,25 @@ def main() -> int:
             to_right, to_wrong = verdict(path, right, wrong)
             bad = to_wrong < to_right
             misread += bad
+            margins.append(abs(to_right - to_wrong))
             print(f"  {take + 1:2d}. 距對照(對)={to_right:6.3f}　距對照(錯)={to_wrong:6.3f}"
                   f"　{'<== 唸錯' if bad else '唸對'}")
 
     rate = misread / max(arguments.takes, 1)
     print(f"\n「{arguments.word}」唸錯 {misread}/{arguments.takes}（{rate:.0%}）")
+
+    # How much of the instrument's own range each verdict actually used. A
+    # margin that is a few percent of the separation is a coin toss dressed up
+    # as a measurement, and this tool has twice been believed while doing that.
+    if margins and gap > 0.0:
+        share = (sum(margins) / len(margins)) / gap
+        print(f"對照組相隔 {gap:.2f}，每一票平均只用掉其中 {share:.0%}"
+              f"（量過的詞都落在 10–17%）。")
+        if share < 0.08:
+            print("**比這個範圍還低，上面的數字不要當真** —— 多半是錯誤對照字"
+                  "選得不夠貼近引擎實際唸出來的音。")
+        print("這個工具從來沒有壓倒性的鑑別力，所以每一次判定都要用耳朵收尾。"
+              "它兩次給過看起來很有把握的錯誤答案。")
     if misread == 0:
         print(f"這個聲音上沒量到唸錯。要加規則的話，先用 tools/say.sh 親耳確認 —— "
               f"每一條不必要的規則都是一次弄錯的機會。")
