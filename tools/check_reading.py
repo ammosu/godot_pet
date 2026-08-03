@@ -11,6 +11,23 @@ the same discipline `prompts/pronunciation.json` demands of its right-hand
 side, and for the same reason: a wrong reference makes the answer wrong with
 nothing to show for it.
 
+## What it cannot do, and the false negative that proves it
+
+**It only ever answers "A or B".** Given a word, a right-sounding spelling and a
+wrong-sounding one, it says which of those two the engine is closer to — so if
+the engine is saying a *third* thing, the wrong reference is far away, the right
+one wins by default, and the word is reported as fine.
+
+Measured, on 「螢幕」: this said qwen3 read it correctly, 0 mispronounced out of
+12. It does not. Asked to say 「我剛剛數了螢幕上有幾個視窗」 the engine produced
+「明木」「根木」「積木」「針目」 — five times out of five, none of them the
+「金幕」 the test was comparing against. `proofread.py` had flagged the same word
+5/5 and was overruled on the strength of this number.
+
+So the division of labour is the opposite of the obvious one. **ASR finds; this
+quantifies.** Reach for this once a person has heard the word and named the two
+readings in play — never to clear a word nobody has listened to.
+
 ## How it decides, and why it isn't any of the simpler things
 
 The sentence is synthesised in all three spellings and compared as audio, so no

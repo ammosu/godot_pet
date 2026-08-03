@@ -20,6 +20,18 @@ So: a line this flags is worth listening to. A line it passes has been shown
 nothing about, beyond not having fallen apart. For the tone of a single word,
 use `check_reading.py`, which never involves a language model at all.
 
+**But this is the one that finds things, and it was nearly not trusted.** It
+flagged 「螢幕」 5 times out of 5; `check_reading.py` was then pointed at the
+same word, reported it correct 12 times out of 12, and the flag was written off
+as noise. The flag was right. Both engines say 「螢幕」 as something else
+entirely — 「明木」 on the local model, 「墳墓」 on VoxCPM — and the A/B/X test
+missed it because a comparison against two candidate readings cannot see a third.
+A user listening to one sample found in seconds what a hundred automated takes
+had argued away.
+
+The rule that came out of it: what this flags is a **question**, and the only
+thing that closes it is an ear. Never the other tool alone.
+
 Anything flagged keeps its wav, because the point is to shorten the listening
 list rather than to replace listening.
 """
