@@ -9,8 +9,6 @@ class_name ChatPanel
 ## editor knows. Colours and edges all come from PetStyle.
 
 signal submitted(text: String)
-## A value typed into the masked input — a key, not something to say.
-signal secret_submitted(text: String)
 ## A job for the pet to hand to a coding-agent CLI, which goes to WorkService
 ## rather than into the conversation.
 signal work_submitted(text: String)
@@ -33,9 +31,16 @@ signal hit_region_changed
 const CHAT_PLACEHOLDER := "跟我說說話…"
 
 ## WORK is unmasked and styled like chat — the only thing separating it is the
-## placeholder and where the text is sent, which is what `secret` is checked for
-## rather than the mode itself.
-enum InputMode { CHAT, SECRET, WORK }
+## placeholder and where the text is sent.
+##
+## **Nothing here is masked any more, and that is the point.** Keys and service
+## addresses used to be typed into this field, which meant the app's settings
+## were collected through the pet's own mouth, inside the transparent
+## click-through window, behind a passthrough mask that has to be kept in step
+## with whatever the field is doing. They have their own window now
+## (`pet.gd::_ask_for_entry`), and everything that existed to serve them — a
+## second LineEdit, `_field()`, a `secret` styling branch — went with them.
+enum InputMode { CHAT, WORK }
 
 ## Design-unit sizes; everything is multiplied by the display scale.
 const BUBBLE_MAX_WIDTH := 300.0
@@ -82,20 +87,13 @@ const CLOSE_STROKE := 1.6
 @onready var _content: VBoxContainer = $Bubble/Content
 @onready var _text: RichTextLabel = $Bubble/Content/Text
 @onready var _holding_action: Button = $Bubble/Content/Action
-## Two fields, one visible at a time — see _field().
-##
-## The masked one has to stay a LineEdit: `secret` is a LineEdit property with no
-## TextEdit equivalent, and an API key is one line by definition, so there is
-## nothing for it to gain from growing. Everything the user *says* goes through
-## the TextEdit, which is the only one of the two that can hold more than a line
-## at all.
-@onready var _input: LineEdit = $Input
+## The one field. Everything the user says to the pet goes through it, and a
+## TextEdit is what it has to be: only that one grows past a single line.
 @onready var _area: TextEdit = $Area
 ## Built here rather than in the scene because it is sized off the display
-## scale, which nothing knows until configure() runs. Parented to whichever
-## field is on screen so it inherits that field's visibility — every existing
-## path that shows or hides the input gets the button for free, and none of them
-## can forget it.
+## scale, which nothing knows until configure() runs. Parented to the field so it
+## inherits its visibility — every existing path that shows or hides the input
+## gets the button for free, and none of them can forget it.
 var _close: Button
 
 var _scale := 1.0
@@ -136,11 +134,6 @@ func _ready() -> void:
 	_holding_action.visible = false
 	_holding_action.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	_holding_action.pressed.connect(holding_action_pressed.emit)
-	_input.visible = false
-	_input.text_submitted.connect(_on_submitted)
-	_input.caret_blink = true
-	_input.caret_blink_interval = 0.6
-
 	_area.visible = false
 	_area.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
 	_area.scroll_fit_content_height = false
@@ -528,13 +521,6 @@ func _offset_points(points: PackedVector2Array, by: Vector2) -> PackedVector2Arr
 
 # --- Input --------------------------------------------------------------------
 
-## Whichever of the two fields the current mode uses. Everything below works
-## through this rather than naming a node, so the split between the masked
-## LineEdit and the growable TextEdit stays in one place.
-func _field() -> Control:
-	return _input if _input_mode == InputMode.SECRET else _area
-
-
 func toggle_input() -> void:
 	set_input_open(not is_input_open())
 
@@ -542,7 +528,7 @@ func toggle_input() -> void:
 func set_input_open(open: bool) -> void:
 	if is_input_open() == open:
 		return
-	var field := _field()
+	var field := _area
 	field.visible = open
 	if open:
 		# Before the fade, not after: the field is sized to its content, and one
@@ -558,88 +544,49 @@ func set_input_open(open: bool) -> void:
 	input_toggled.emit(open)
 
 
-## Open the input masked, for a key rather than a sentence. Reverts to chat as
-## soon as it's submitted or dismissed, so the pet can't end up quietly
-## swallowing conversation into a settings field.
-func ask_for_secret(placeholder: String) -> void:
-	var was_open := is_input_open()
-	_set_input_mode(InputMode.SECRET, placeholder)
-	if was_open:
-		_field().grab_focus()
-	else:
-		set_input_open(true)
-
-
-## Open the input for a "go and do this" request. Reverts to chat on submit or
-## dismissal for the same reason ask_for_secret does — a field that quietly stayed
-## in a special mode would send the next ordinary sentence somewhere surprising,
-## and here "somewhere surprising" is an agent loose in a repository.
+## Open the input for a "go and do this" request — the one thing left that is not
+## ordinary conversation, and it stays here because it *is* conversational: you
+## are telling the pet what to go and do. Reverts to chat on submit or dismissal,
+## since a field that quietly stayed in a special mode would send the next
+## ordinary sentence somewhere surprising, and here "somewhere surprising" is an
+## agent loose in a repository.
 func ask_what_to_do(placeholder: String) -> void:
 	var was_open := is_input_open()
 	_set_input_mode(InputMode.WORK, placeholder)
 	if was_open:
-		_field().grab_focus()
+		_area.grab_focus()
 	else:
 		set_input_open(true)
 
 
-## Switching mode swaps which of the two fields is on screen, and the close
-## button moves with it — being its child is what makes it impossible to show a
-## field without its way out.
+## Only the placeholder and where the text is sent change now. The close button
+## is parented once, here, and being the field's child is what makes it
+## impossible to show the input without its way out.
 func _set_input_mode(mode: InputMode, placeholder := CHAT_PLACEHOLDER) -> void:
-	var was_open := is_input_open()
 	_input_mode = mode
-	_input.secret = mode == InputMode.SECRET
-	_input.placeholder_text = placeholder
 	_area.placeholder_text = placeholder
-	_input.text = ""
 	_area.text = ""
-
-	var field := _field()
 	if _close.get_parent() == null:
-		field.add_child(_close)
-	elif _close.get_parent() != field:
-		# Keeping the global transform would fight the layout below for a frame;
-		# _layout_input() places it in the new parent's space unconditionally.
-		_close.reparent(field, false)
-	_input.visible = was_open and field == _input
-	_area.visible = was_open and field == _area
+		_area.add_child(_close)
 
 	_apply_input_style()
 	_layout_input()
 
 
-## Typing a key is not conversation, so the field says so in colour as well as in
-## its placeholder — the accent switches from persimmon to a cool green.
+## One field, one style. The `secret` argument `PetStyle` still takes is passed
+## `false` from here for good: it switched the accent from persimmon to a cool
+## green to say "this is not conversation", which was the masked key field's job
+## and is now the entry window's — a window says it far better than a colour did.
 ##
-## Both fields are styled, not just the visible one: they are the same field to
-## everyone outside this file, and restyling on every mode switch would mean the
-## one that isn't showing is always a display-scale change out of date.
-##
-## The two controls do **not** share theme item names, and a wrong one is
+## Theme item names do **not** carry over from the bubble, and a wrong one is
 ## silent — it simply never applies, the same trap ChatLogPanel records for
 ## RichTextLabel. TextEdit wants `line_spacing` where the bubble wants
-## `line_separation`, and has no `read_only` colour worth setting here.
+## `line_separation`.
 func _apply_input_style() -> void:
-	var secret := _input_mode == InputMode.SECRET
 	var height := INPUT_HEIGHT * _scale
 	var reserve := PetStyle.input_close_reserve(height, _scale)
-	var caret := PetStyle.input_caret_color(secret)
+	var caret := PetStyle.input_caret_color(false)
 	var font_size := roundi(15.0 * _scale)
-
-	_input.add_theme_stylebox_override("normal",
-		PetStyle.input_style(_scale, height, secret, reserve))
-	_input.add_theme_stylebox_override("read_only",
-		PetStyle.input_style(_scale, height, secret, reserve))
-	_input.add_theme_stylebox_override("focus",
-		PetStyle.input_focus_style(_scale, height, secret, reserve))
-	_input.add_theme_color_override("font_color", PetStyle.INK)
-	_input.add_theme_color_override("font_placeholder_color", PetStyle.INK_SOFT)
-	_input.add_theme_color_override("font_selected_color", PetStyle.INK)
-	_input.add_theme_color_override("caret_color", caret)
-	_input.add_theme_color_override("selection_color", Color(caret, 0.20))
-	_input.add_theme_constant_override("caret_width", maxi(1, roundi(2.0 * _scale)))
-	_input.add_theme_font_size_override("font_size", font_size)
 
 	# Font and spacing before the boxes: the vertical padding below is derived
 	# from the line height, which is not knowable until they are applied.
@@ -709,7 +656,7 @@ func _layout_input() -> void:
 	var margin := SIDE_MARGIN * _scale
 	var single := INPUT_HEIGHT * _scale
 	var width := clampf(limit.size.x - margin * 2.0, single, INPUT_MAX_WIDTH * _scale)
-	var field := _field()
+	var field := _area
 	# Width first, and as its own assignment: how many rows the text wraps into
 	# depends on it, and the height depends on that. Setting both at once would
 	# measure the wrap against the width the field had a moment ago.
@@ -743,7 +690,7 @@ func _layout_input() -> void:
 
 
 func is_input_open() -> bool:
-	return _input.visible or _area.visible
+	return _area.visible
 
 
 ## Viewport-space rect that must receive clicks. Ordinary speech bubbles remain
@@ -752,7 +699,7 @@ func is_input_open() -> bool:
 func get_input_rect() -> Rect2:
 	var box := Rect2()
 	if is_input_open():
-		var field := _field()
+		var field := _area
 		box = Rect2(field.position, field.size)
 	if _bubble.visible and _holding_action.visible:
 		var bubble := Rect2(_bubble.position, _bubble.size)
@@ -799,7 +746,6 @@ func _on_area_gui_input(event: InputEvent) -> void:
 
 func _on_submitted(text: String) -> void:
 	var trimmed := text.strip_edges()
-	_input.text = ""
 	_area.text = ""
 	# Back to one row before anything else runs: the branches below can leave the
 	# field open, and a submitted five-line message must not leave a five-line
@@ -807,10 +753,7 @@ func _on_submitted(text: String) -> void:
 	_layout_input()
 	if trimmed.is_empty():
 		return
-	if _input_mode == InputMode.SECRET:
-		_set_input_mode(InputMode.CHAT)
-		secret_submitted.emit(trimmed)
-	elif _input_mode == InputMode.WORK:
+	if _input_mode == InputMode.WORK:
 		_set_input_mode(InputMode.CHAT)
 		work_submitted.emit(trimmed)
 	else:

@@ -28,6 +28,12 @@ signal warned(message: String)
 ## a line nobody is still making.
 signal line_prerendered(done: int, left: int)
 
+## A discovery attempt finished — the answer to `is_available()` is now this
+## run's, not the previous one's. Only backends that discover asynchronously emit
+## it, and it is the difference between a wrong service address surfacing when it
+## is typed and surfacing halfway through the pet's next sentence.
+signal checked(healthy: bool, reason: String)
+
 
 ## Say one sentence. Called once per sentence as a reply streams in, so an
 ## implementation queues rather than interrupting — consecutive sentences have to
@@ -78,8 +84,22 @@ func select_voice(_name: String) -> void:
 ## how many were actually asked for. Zero is the honest answer for a backend
 ## with nothing to gain from it — the OS voice loads no model and reaches no
 ## network, so there is nothing to save.
-func prerender(_lines: PackedStringArray) -> int:
+##
+## `voice` empty means whichever is selected. It is a parameter rather than being
+## read from the setting because the caller renders the *whole* library in one
+## go, so the voice being rendered is usually not the one in the menu.
+func prerender(_lines: PackedStringArray, _voice := "") -> int:
 	return 0
+
+
+## Drop anything cached for this voice that is not in `lines`, so a line whose
+## wording changed does not leave its old audio behind forever.
+##
+## Deliberately not part of `prerender()`: the two mean different things and only
+## this one can lose data, so a caller passing a partial set must not prune by
+## accident. Empty `lines` does nothing.
+func forget_unlisted(_lines: PackedStringArray, _voice := "") -> void:
+	pass
 
 
 ## Release whatever this is holding: a child process, an audio device. Called

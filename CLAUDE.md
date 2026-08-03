@@ -62,7 +62,26 @@ resolves to is then not something the import step will ever tell you, so a stray
 copy in the tree can quietly become the one that runs. `git status` is the check
 that catches this, not `--import`.
 
-There is no test suite. Verification is empirical:
+There is **almost** no test suite. Two scenes in `tests/` cover the parts of the
+HTTP voice backends that can be checked with no service running — the cache,
+telling a refusal from an absence, not playing audio the user cancelled, and
+which voice a pre-rendered clip is filed under:
+
+```sh
+godot --headless --path . res://tests/test_voxcpm_voice.tscn
+godot --headless --path . res://tests/test_eleven_voice.tscn
+```
+
+**A passing count is not a passing run, and this bit twice.** A runtime error
+inside a test aborts that function, `_ready()` carries straight on to the next,
+and the tally then reports only the checks that happened to run — measured, a
+call to a method that had just been deleted printed 「13 checks passed」 and
+exited **0**, with seven checks never reached. GDScript cannot catch that from
+inside, so each test ends with `_done("name")` and the harness reports any that
+never got there. Read the line: it says how many *tests ran to the end*, not just
+how many checks passed.
+
+Everything else is verified empirically:
 
 ```sh
 (godot --path . > /tmp/run.log 2>&1 &) ; sleep 4; grep -v TSM /tmp/run.log
@@ -766,6 +785,142 @@ reason, and `broke` falls back to the OS voice — which on Linux is espeak, so
 the fallback is a degradation rather than a substitute. On this machine the
 service is a systemd **user** unit with `Linger=yes`, which is what makes it
 come back at boot rather than at login.
+
+#### The local service is the default, and where it is can be typed in
+
+`DEFAULT_BACKEND` is `voxcpm`, not the OS voice: on Linux the latter is espeak,
+which reads Traditional Chinese as a run of syllables — usable as a fallback,
+indefensible as a first impression. A machine without the service still lands on
+the OS voice, but by **discovery rather than by a failed sentence**. `checked`
+fires about a second after startup, before the pet has said anything, so the swap
+happens while nobody is listening; without it every such machine paid one
+botched line per run.
+
+Two rows configure it, and both are **always shown** — unlike the ElevenLabs key
+row, which disappears once there is nothing to repair. The reason is that these
+two are what decides whether the backend row is selectable at all: gating them on
+availability makes a wrong address unrecoverable, since the only thing that would
+fix it sits behind the row it just disabled.
+
+- **服務位置…（http://127.0.0.1:8080）** — the value is in the *label*. It is the
+  one setting here that explains a failure by itself, and a row reading 服務位置…
+  tells you nothing about why the pet has gone quiet.
+- **設定/更換 VoxCPM 金鑰…** — was conditional on a 401 having been seen. That
+  made `needs_key()` necessary; unconditional, the flag was dead and went.
+
+Three things this flow had to get right, all found on screen rather than reasoned:
+
+- **A typed address gets exactly one answer, and `explained` is what guarantees
+  it.** `pet.gd` reports the outcome and `TTSService` announces the fallback, and
+  when the failure took the speaking backend down both fired — the second cutting
+  the first off half-typed. The signal now carries whether it has already been
+  said.
+- **Success has to re-adopt the backend.** A wrong address takes it down, so by
+  the time the right one is typed the pet is on the OS voice and nothing switches
+  back; 「連上了，有 5 種聲音」 would have been describing a service the pet was
+  not using. Same move `_on_secret_submitted` already makes after a key.
+- **The address is normalised, not validated.** `127.0.0.1:8080` is what people
+  type and what every tunnel's own instructions print. Whether it is *right* is
+  decided by the service answering, which is the check that follows anyway.
+
+#### Settings are typed in a window, never in the speech bubble
+
+Every key and the service address go through one `ConfirmationDialog`
+(`pet.gd::_ask_for_entry`), not through `ChatPanel`. Three reasons, in the order
+they matter:
+
+- A key typed into the pet's input is being typed into the **transparent,
+  click-through window**, behind a passthrough mask that has to be kept in step
+  with whatever the field is doing — the one surface here with a rule about not
+  eating desktop clicks. The dialog is a real OS window (subwindow embedding is
+  off project-wide) and touches no mask at all.
+- The input is conversation-shaped, and pasting a credential is not something you
+  say to a pet.
+- A bubble fades on a timer. A question whose answer is somewhere else — another
+  window, a password manager — could time out mid-paste.
+
+One window for four settings, differing only in title, blurb and whether the
+characters are hidden; four near-identical dialogs would be four places for a
+button style to drift. `register_text_enter()` is not optional — a settings field
+that only accepts a click on 儲存 reads as broken to anyone who has used a
+password box. The field is cleared on **both** confirm and cancel: it is one node
+that lives as long as the app, and a cancelled paste is still a credential
+sitting in it.
+
+**`AcceptDialog` gives every Control child the same content rect.** Adding a
+LineEdit beside the built-in `dialog_text` label drew them on top of each other —
+the blurb struck straight through the text being typed. One child is the only
+arrangement that lays out, so the label and the field live in a `VBoxContainer`
+and `dialog_text` goes unused.
+
+What this removed is the better half of the change. `ChatPanel` had **two
+fields** — a masked `LineEdit` and the growable `TextEdit` — because `secret` is
+a LineEdit property with no TextEdit equivalent. With keys gone there is nothing
+left to mask, so the LineEdit, `_field()`, the `InputMode.SECRET`/`SETTING`
+modes, two signals, the close button's re-parenting between fields and the whole
+`secret` styling branch went with it. `InputMode` is `{ CHAT, WORK }` now, and
+WORK stays because it genuinely is conversation: you are telling the pet what to
+go and do.
+
+`base_url()` falls back to the default when config holds an empty string —
+otherwise it builds `"" + "/health"`, which HTTPRequest rejects as unparseable,
+and the backend reports itself unavailable for a reason naming no address at all.
+Found by a test that restored a setting it had read back as empty.
+
+#### The fixed lines are rendered ahead of time, in every voice
+
+Only three things reach a backend, and one of them never changes wording: the
+nudges, plus the vision refusal — 18 lines. 先錄好固定台詞 renders them into
+`user://voxcpm/cache/<voice>/<sha256 of the text>.wav`, and `speak()` looks there
+before it looks at the network.
+
+**Every voice in the library, not the selected one.** The cache is per voice
+because the audio *is* the voice, so rendering only the ticked one means changing
+voice silently throws the whole thing away — and switching voice is something
+people do while listening, which is exactly when a pause before every canned line
+is most obvious. Measured on this machine: 18 lines x 5 voices = 90 clips in
+**207 s**, 32 MB. A second run costs nothing, so adding a sixth voice later pays
+for that voice alone.
+
+The key is the **respelled** text, the same string `_speak()` hands over, or the
+lookup could never hit what was written. Which also means editing a nudge simply
+misses rather than serving stale audio — self-correcting, but it would leave the
+old clip behind forever, so `forget_unlisted()` drops files not in the current
+set.
+
+**That is a separate call, and it started out inside `prerender()`.** There it
+pruned to whatever set that particular call carried, so any caller passing a
+subset silently deleted the rest — hit within minutes of writing it, by a test
+that pre-rendered twenty throwaway lines and took a whole voice's cache with it.
+Rendering and forgetting are two operations and only one of them can lose data.
+`prerender_fixed_lines()` is the one caller that knows it holds the complete set,
+which is what makes pruning safe *there*. An empty list is also refused:
+`nudges.json` failing to load looks exactly like "there are no fixed lines", and
+that must not empty the cache.
+
+Three things the batch has to get right, each verified rather than reasoned:
+
+- **The voice lives on the job, never read at dispatch.** The first version fixed
+  the directory when the batch started but still read `active_voice()` when each
+  request went out, so everything after a switch was filed under the wrong name —
+  permanently, the key being a hash of the text. Verified by synthesising the same
+  line through the app and through `curl` per voice: byte-identical, all five, and
+  five distinct files.
+- **A dropped connection or a 401 ends the batch; an HTTP error on one line does
+  not.** The tolerant path is for a sentence the service chokes on. A tunnel going
+  down is a property of the *service*, so carrying on means 87 doomed requests and
+  87 identical warnings. Verified against a dead port: one `broke`, batch at zero.
+- What it buys is the round trip, **not** surviving an outage. The service answers
+  a repeat from its own cache in about 3 ms, and a cached line would play with it
+  down — but `TTSService` swaps to the OS voice the moment `broke` fires, so
+  nothing asks this backend again that session.
+
+Also worth knowing: a `config.cfg` naming a backend that no longer exists used to
+leave `_backend_name` set to the dead name while `_for()` quietly handed back the
+OS voice. The menu then ticked *no* row, the pet spoke in espeak, and this feature
+asked the OS voice to pre-render — which correctly answers "nothing to do", so the
+pet said 「都錄好了」 having rendered nothing. `_set_backend()` normalises an
+unknown id now. Not persisted, per the rule below.
 
 `TTSBackend` asks for one thing `LLMProvider` does not — a backend that cannot
 run here has to say **why**, in a finished sentence. A voice depends on things

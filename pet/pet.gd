@@ -63,7 +63,8 @@ const DEFAULT_PET_SELECTION := "__default__"
 
 enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, MONITOR, SPEAK, ROAM, CALIBRATE,
-	RECENTRE, SET_KEY, SET_ELEVEN_KEY, SET_VOXCPM_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
+	RECENTRE, SET_KEY, SET_ELEVEN_KEY, SET_VOXCPM_KEY, SET_VOXCPM_URL,
+	CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
 	RECORD, PRERENDER, QUIT,
 }
 
@@ -77,6 +78,18 @@ enum MenuId {
 @onready var _work_consent: ConfirmationDialog = $WorkConsent
 @onready var _work_offer: ConfirmationDialog = $WorkOffer
 @onready var _dirty_warning: ConfirmationDialog = $DirtyWarning
+## Where every key and the service address are typed. One window reused rather
+## than four, because they differ only in what they are called and whether the
+## characters are hidden — and four near-identical dialogs is four places for a
+## theme or a button style to drift.
+@onready var _secret_entry: ConfirmationDialog = $SecretEntry
+@onready var _secret_field: LineEdit = $SecretEntry/Box/Field
+## The explanation, as a label of our own rather than `dialog_text`.
+## **`AcceptDialog` gives every Control child the same content rect**, so the
+## built-in label and the field were drawn on top of each other — measured on
+## screen, the blurb struck through the middle of the text being typed. One child
+## is the only arrangement that lays out, so both live in a VBox.
+@onready var _secret_blurb: Label = $SecretEntry/Box/Blurb
 @onready var _codex_login: ConfirmationDialog = $CodexLogin
 @onready var _memory: MemoryPanel = $Memory
 @onready var _chat_log: ChatLogPanel = $ChatLog
@@ -100,10 +113,16 @@ var _listed_voices := PackedStringArray()
 ## How many pre-rendered lines are still outstanding, so the menu row can say so
 ## and refuse to start a second batch on top of the first.
 var _prerender_left := 0
-## Which secret the open input is collecting. The field is shared, so the asker
-## has to say what it is for — otherwise the handler can only ever store one key
-## and the second one written would quietly land under the first one's name.
-var _pending_secret_key := OPENAI_KEY
+## What the entry window is collecting: a `Config` secret name, or `URL_ENTRY`
+## for the one thing it asks for that is not a secret. The window is one node
+## serving four settings, so the asker has to say which — otherwise the handler
+## could only ever store one, and the rest would quietly land under its name.
+const URL_ENTRY := "voxcpm_url"
+var _pending_entry := OPENAI_KEY
+## Whether the next discovery result is one the user is waiting on. Discovery
+## re-runs on every menu open, so without this the pet would report the state of
+## the voice service every time the menu is touched for anything at all.
+var _awaiting_url_check := false
 ## The pet's silhouette relative to where it stands. Measured only when the pet
 ## itself changes, so re-pushing the mask stays cheap.
 var _pet_shape := PackedVector2Array()
@@ -166,8 +185,8 @@ func _ready() -> void:
 	EventBus.files_dropped_on_window.connect(_on_files_dropped_on_window)
 
 	_chat.submitted.connect(_on_chat_submitted)
-	_chat.secret_submitted.connect(_on_secret_submitted)
 	_chat.work_submitted.connect(_on_work_submitted)
+	TTSService.backend_checked.connect(_on_backend_checked)
 	WorkService.finished.connect(_on_work_finished)
 	WorkService.failed.connect(_on_work_failed)
 	WorkService.progress.connect(_on_work_progress)
@@ -189,6 +208,7 @@ func _ready() -> void:
 	_setup_work_consent_dialog()
 	_setup_work_offer_dialog()
 	_setup_dirty_warning_dialog()
+	_setup_entry_dialog()
 	_setup_codex_login_dialog()
 	CodexCli.login_finished.connect(_on_codex_login_finished)
 	CodexCli.login_hint.connect(_on_codex_login_hint)
@@ -787,16 +807,24 @@ func _build_speech_menu() -> PopupMenu:
 		var reason := TTSService.backend_unavailable_reason(backend)
 		menu.set_item_disabled(index, not reason.is_empty())
 		menu.set_item_tooltip(index, reason)
-	# Same shape as the model download below: the row that repairs a disabled
-	# backend sits directly under it, and disappears once there is nothing to
-	# repair. A key is the cloud backend's only dependency.
+	# The rows that configure a backend sit directly under it. The local
+	# service's two are **always** shown, unlike ElevenLabs' key below: they are
+	# what decides whether that row is selectable at all, and gating them on the
+	# backend being available makes the failure unrecoverable — a wrong address
+	# disables the row, and the only thing that would fix it is behind the row
+	# that is now disabled.
+	# The current address is *in* the label rather than only in the dialog: it is
+	# the one setting here whose value explains a failure by itself, and a row
+	# reading 服務位置… tells you nothing about why the pet has gone quiet.
+	menu.add_item("服務位置…（%s）" % TTSService.voxcpm_url(), MenuId.SET_VOXCPM_URL)
+	menu.add_item("%s VoxCPM 金鑰…"
+		% ["更換" if Config.has_secret(VoxCPMVoice.KEY_NAME) else "設定"],
+		MenuId.SET_VOXCPM_KEY)
+	# Unlike the two above, this one disappears once there is nothing to repair:
+	# a key is the cloud backend's *only* dependency, so a working ElevenLabs row
+	# means there is nothing here worth a click.
 	if not TTSService.backend_is_available(TTSService.BACKEND_ELEVEN):
 		menu.add_item("設定 ElevenLabs 金鑰…", MenuId.SET_ELEVEN_KEY)
-	# Only when a key is what is missing. The local service is far more often
-	# just not running, and no key fixes that — offering one would send the user
-	# to paste something that changes nothing.
-	if TTSService.voxcpm_needs_key():
-		menu.add_item("設定 VoxCPM 金鑰…", MenuId.SET_VOXCPM_KEY)
 
 	# Which voice, once there is a choice. The model's own voice is always in the
 	# list and always first: it is the one that needs no file and cannot go
@@ -816,20 +844,23 @@ func _build_speech_menu() -> PopupMenu:
 			menu.add_radio_check_item(voices[i], VOICE_PICK_BASE + i)
 			menu.set_item_checked(menu.get_item_index(VOICE_PICK_BASE + i),
 				voices[i] == active)
-		# Under the voices because it renders *for whichever one is ticked* — the
-		# cache is per voice, so this row means something different depending on
-		# the row above it, and putting it anywhere else would hide that.
-		menu.add_item(_prerender_label(), MenuId.PRERENDER)
+		# Under the voices because it renders *all of them*, not the ticked one —
+		# so it belongs to the list rather than to any row in it. The count is in
+		# the label for the same reason: without it the row reads as being about
+		# the current voice, which is what it used to be.
+		menu.add_item(_prerender_label(voices.size()), MenuId.PRERENDER)
 		menu.set_item_disabled(menu.get_item_index(MenuId.PRERENDER), _prerender_left > 0)
 	_index_items(menu)
 	return menu
 
 
-## The fixed lines are the ones the pet says after a long silence, which is
-## exactly when the engine has unloaded — so without this each of them reloads
-## the model and takes a couple of GB of VRAM back to say one canned sentence.
-func _prerender_label() -> String:
-	return "先錄好固定台詞" if _prerender_left <= 0 else "先錄好固定台詞（還剩 %d 句）" % _prerender_left
+## The fixed lines are the ones the pet says most often and the ones whose
+## wording never changes, so they are the only ones that can be made ahead of
+## time at all — every other line is written fresh by the model.
+func _prerender_label(voices: int) -> String:
+	if _prerender_left > 0:
+		return "先錄好固定台詞（還剩 %d 段）" % _prerender_left
+	return "先錄好固定台詞（%d 個聲音）" % voices if voices > 1 else "先錄好固定台詞"
 
 
 func _build_behaviour_menu(current: PetPack) -> PopupMenu:
@@ -1059,12 +1090,22 @@ func _on_menu_pressed(id: int) -> void:
 			_window_ctl.park_at_default_spot()
 			_brain.set_home_here()
 		MenuId.SET_KEY:
-			_ask_for_api_key()
+			_ask_for_entry(OPENAI_KEY, "OpenAI API key",
+				"用來聊天跟看螢幕的。%s" % _entry_storage_note(), true)
 		MenuId.SET_ELEVEN_KEY:
-			_ask_for_eleven_key()
+			_ask_for_entry(ElevenVoice.KEY_NAME, "ElevenLabs API key",
+				"雲端語音要用的。%s" % _entry_storage_note(), true)
 		MenuId.SET_VOXCPM_KEY:
-			_pending_secret_key = VoxCPMVoice.KEY_NAME
-			_chat.ask_for_secret("貼上 VoxCPM 服務的 API key，Enter 儲存")
+			_ask_for_entry(VoxCPMVoice.KEY_NAME, "VoxCPM 服務的 API key",
+				"只有在服務開了驗證時才需要。%s" % _entry_storage_note(), true)
+		MenuId.SET_VOXCPM_URL:
+			# The one entry here that is not a secret, so it is not masked and it
+			# opens showing the current value: editing an address is a different
+			# act from retyping one from memory, and retyping is how a working
+			# setting becomes a typo.
+			_ask_for_entry(URL_ENTRY, "VoxCPM 服務位置",
+				"語音服務在哪裡。存好之後我會馬上連連看，連不上會跟你說。",
+				false, TTSService.voxcpm_url())
 		MenuId.LOOK:
 			EventBus.screen_look_requested.emit(VisionService.DEFAULT_QUESTION, true)
 		MenuId.WORK:
@@ -1091,14 +1132,93 @@ func _api_key_label() -> String:
 		% ["更換" if Config.has_secret(OPENAI_KEY) else "設定", suffix]
 
 
-func _ask_for_api_key() -> void:
-	_pending_secret_key = OPENAI_KEY
-	_chat.ask_for_secret("貼上 OpenAI API key，Enter 儲存")
+## Collect one setting in its own window.
+##
+## **Not in the speech bubble, which is where all of this used to happen.** Three
+## reasons, in the order they matter: a key typed into the pet's own input is
+## being typed into the *transparent, click-through* window, behind a passthrough
+## mask that has to be kept in step with whatever the field is doing — the one
+## surface in this app with a rule about not eating desktop clicks. It is also
+## conversation-shaped, and pasting a credential is not something you say to a
+## pet. And a bubble fades on a timer, so a dialog that asks a question the user
+## has to go and find the answer to could time out mid-paste.
+##
+## A `ConfirmationDialog` like every other question here, so it is a real OS
+## window (subwindow embedding is off project-wide) and touches no mask at all.
+func _ask_for_entry(what: String, title: String, blurb: String,
+		masked: bool, current := "") -> void:
+	_pending_entry = what
+	_secret_entry.title = title
+	_secret_blurb.text = blurb
+	_secret_field.secret = masked
+	_secret_field.text = current
+	_secret_field.caret_column = current.length()
+	_secret_entry.reset_size()
+	_secret_entry.popup_centered()
+	_secret_field.grab_focus()
 
 
-func _ask_for_eleven_key() -> void:
-	_pending_secret_key = ElevenVoice.KEY_NAME
-	_chat.ask_for_secret("貼上 ElevenLabs API key，Enter 儲存")
+func _entry_storage_note() -> String:
+	var where := Config.secret_backend_name()
+	return "會存進 %s。" % where if not where.is_empty() \
+		else "這台機器沒有安全儲存，只能存成明文設定檔。"
+
+
+func _on_entry_confirmed() -> void:
+	var value := _secret_field.text.strip_edges()
+	# Cleared straight away rather than on close: the field is one node reused by
+	# four settings, and a key left sitting in it is a key the next dialog opens
+	# showing — in plain text, if that one happens to be the address.
+	_secret_field.text = ""
+	if value.is_empty():
+		return
+	if _pending_entry == URL_ENTRY:
+		_on_url_submitted(value)
+	else:
+		_on_secret_submitted(value)
+
+
+## A service address the user typed.
+##
+## Normalised rather than validated: a bare `127.0.0.1:8080` is what people type
+## and what every tunnel's own instructions print, and refusing it to teach a
+## lesson about schemes helps nobody. Anything genuinely wrong is caught by the
+## thing that decides it — the service either answers or it does not — and that
+## answer arrives below.
+func _on_url_submitted(value: String) -> void:
+	var url := value.strip_edges()
+	if not url.contains("://"):
+		url = "http://" + url
+	url = url.rstrip("/")
+	_awaiting_url_check = true
+	TTSService.set_voxcpm_url(url)
+	_build_menu()
+	_on_pet_nudged("neutral", "好，我改連 %s，等我看看……" % url, false, false)
+
+
+## What the service said back, once. Reported here rather than assumed after a
+## timer: a tunnel answers slower than localhost, and a fixed wait long enough
+## for one is a wait nobody sits through for the other. `TTSService` swaps the
+## backend out by itself when this fails, so this only has to say so.
+func _on_backend_checked(healthy: bool, reason: String, explained: bool) -> void:
+	if not _awaiting_url_check:
+		return
+	_awaiting_url_check = false
+	_build_menu()
+	if healthy:
+		# Adopted right away, the same way pasting a key is — and here it is what
+		# makes the sentence true. A wrong address takes the backend down with it,
+		# so by the time the right one is typed the pet is on the OS voice and
+		# nothing switches back; 「連上了，有 5 種聲音」 would then be describing a
+		# service the pet is not using.
+		TTSService.select_backend(TTSService.BACKEND_VOXCPM)
+		_on_pet_nudged("happy", "連上了！有 %d 種聲音可以用。"
+			% TTSService.list_voices().size(), false, false)
+	elif not explained:
+		# Only when nothing else did. Where this address belongs to the voice the
+		# pet is speaking in, `TTSService` has already said so *and* said what it
+		# is falling back to, which is strictly more than this could.
+		_on_pet_nudged("sad", reason, false, false)
 
 
 func _on_secret_submitted(value: String) -> void:
@@ -1108,7 +1228,7 @@ func _on_secret_submitted(value: String) -> void:
 		_on_pet_nudged("sad", "這個 key 有奇怪的字元，是不是貼到多餘的東西了？")
 		return
 
-	var key := _pending_secret_key
+	var key := _pending_entry
 	var secured := Config.set_secret(key, value)
 	# Adopted right away rather than sending the user back to the menu — a key is
 	# the only thing standing between the mock and the real thing in both cases.
@@ -1353,6 +1473,38 @@ func _setup_work_consent_dialog() -> void:
 ## Per job rather than per folder, because the answer changes every time. It is
 ## only asked where it means something: an editable workspace, in a git repo, with
 ## something uncommitted in it.
+## The entry window. `register_text_enter` is what makes Enter save, which is
+## what everyone will try first — a settings field that only accepts a mouse
+## click on 儲存 reads as broken to anyone who has ever used a password box.
+func _setup_entry_dialog() -> void:
+	var scale := _window_ctl.get_ui_scale()
+	_secret_entry.exclusive = false
+	_secret_entry.theme = PetStyle.dialog_theme(scale)
+	# The primary treatment, not the ghost one: saving is the whole reason this
+	# window opened, and ghosting it makes the main action look disabled — the
+	# mistake ChatLogPanel's 關閉 button and the Codex login dialog both record.
+	var ok := _secret_entry.get_ok_button()
+	var primary := PetStyle.primary_button_styles(scale)
+	for state in primary:
+		ok.add_theme_stylebox_override(state, primary[state])
+	# The fill is the persimmon accent, so the label has to be ink on all three
+	# states or it stays near-white and vanishes into it.
+	ok.add_theme_color_override("font_color", PetStyle.INK)
+	ok.add_theme_color_override("font_hover_color", PetStyle.INK)
+	ok.add_theme_color_override("font_pressed_color", PetStyle.INK)
+	PetStyle.make_ghost_button(_secret_entry.get_cancel_button(), scale)
+	_secret_blurb.custom_minimum_size = Vector2(300.0 * scale, 0)
+	_secret_blurb.add_theme_font_size_override("font_size", roundi(13.0 * scale))
+	_secret_field.custom_minimum_size = Vector2(300.0 * scale, 0)
+	($SecretEntry/Box as VBoxContainer).add_theme_constant_override(
+		"separation", roundi(10.0 * scale))
+	_secret_entry.register_text_enter(_secret_field)
+	_secret_entry.confirmed.connect(_on_entry_confirmed)
+	# Not left to sit in the field: a cancelled paste is still a credential in a
+	# node that stays alive for the life of the app.
+	_secret_entry.canceled.connect(func() -> void: _secret_field.text = "")
+
+
 func _setup_dirty_warning_dialog() -> void:
 	var scale := _window_ctl.get_ui_scale()
 	_dirty_warning.exclusive = false
@@ -1809,23 +1961,28 @@ func _short_path(path: String) -> String:
 	return path
 
 
-## Render every fixed line for the voice that is ticked right now.
+## Render every fixed line, in every voice the speaking backend offers.
 ##
 ## Speaks its own progress rather than putting a bar anywhere: this takes about
-## a second a line and the pet is standing right there. Both lines go through
+## a second a clip and the pet is standing right there. Both lines go through
 ## `_on_pet_nudged(…, false, false)` — the pet answering something the user just
 ## clicked has to appear even while the chat input is open, and must not be
 ## recorded as something it said.
 func _start_prerender() -> void:
 	var count := TTSService.prerender_fixed_lines()
 	if count < 0:
-		_on_pet_nudged("sad", "這個要用本機模型的聲音才行喔。", false, false)
+		_on_pet_nudged("sad", "這個要用本機服務的聲音才行喔。", false, false)
 		return
 	if count == 0:
 		_on_pet_nudged("happy", "都錄好了，不用再錄一次。", false, false)
 		return
 	_prerender_left = count
-	_on_pet_nudged("neutral", "好，我把 %d 句先錄起來，等我一下。" % count, false, false)
+	# Naming the voices matters: the number is several times what the user can
+	# see in the menu, and 「17 句」 against 「85 段」 otherwise reads as a bug.
+	var voices := TTSService.list_voices().size()
+	var scope := "（%d 個聲音都錄）" % voices if voices > 1 else ""
+	_on_pet_nudged("neutral", "好，我把 %d 段先錄起來%s，等我一下。" % [count, scope],
+		false, false)
 
 
 func _on_prerender_progress(done: int, left: int) -> void:
@@ -1837,8 +1994,8 @@ func _on_prerender_progress(done: int, left: int) -> void:
 	# so "none" and "some" are different outcomes and claiming the whole set
 	# would be a lie the next silence exposes.
 	_on_pet_nudged("happy" if done > 0 else "sad",
-		"錄好 %d 句了，以後這幾句我馬上就能講。" % done if done > 0
-		else "一句都沒錄成，等一下再試試看？", false, false)
+		"錄好 %d 段了，以後這幾句我馬上就能講。" % done if done > 0
+		else "一段都沒錄成，等一下再試試看？", false, false)
 
 
 # --- Recording ----------------------------------------------------------------

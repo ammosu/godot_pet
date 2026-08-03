@@ -9,18 +9,44 @@ extends Node
 
 var _failures := 0
 var _checks := 0
+## Which tests reached their last line. **Counting checks is not enough:** a
+## runtime error inside a test aborts that function, `_ready()` carries straight
+## on to the next one, and the tally then reports only the checks that happened
+## to run. Measured — a call to a method that had been deleted printed
+## 「13 checks passed」 and exited 0, with seven checks never reached. GDScript
+## gives no way to catch that from inside, so the test says it finished and this
+## notices when one did not.
+var _finished: Array[String] = []
 
 
 func _ready() -> void:
-	_test_cache_round_trip()
-	_test_health_distinguishes_refusal_from_absence()
-	_test_stop_discards_in_flight()
-	_test_voice_selection_survives_a_missing_voice()
+	var tests := {
+		"cache": _test_cache_round_trip,
+		"health": _test_health_distinguishes_refusal_from_absence,
+		"cancel": _test_stop_discards_in_flight,
+		"voices": _test_voice_selection_survives_a_missing_voice,
+		"routing": _test_each_voice_lands_in_its_own_folder,
+		"forget": _test_forgetting_is_never_a_side_effect,
+		"outage": _test_a_dead_service_ends_the_batch,
+	}
+	for name: String in tests:
+		(tests[name] as Callable).call()
+
+	var aborted: Array[String] = []
+	for name: String in tests:
+		if not _finished.has(name):
+			aborted.append(name)
+	for name in aborted:
+		_failures += 1
+		push_error("VoxCPMVoice: the '%s' test did not run to the end — look for a "
+			% name + "SCRIPT ERROR above; its later checks never happened")
 
 	if _failures > 0:
-		push_error("VoxCPMVoice: %d of %d checks failed" % [_failures, _checks])
+		push_error("VoxCPMVoice: %d failed, %d checks ran, %d/%d tests completed"
+			% [_failures, _checks, _finished.size(), tests.size()])
 	else:
-		print("VoxCPMVoice: %d checks passed" % _checks)
+		print("VoxCPMVoice: %d checks passed, all %d tests ran to the end"
+			% [_checks, tests.size()])
 	get_tree().quit(1 if _failures > 0 else 0)
 
 
@@ -31,9 +57,24 @@ func _expect(condition: bool, message: String) -> void:
 		push_error("VoxCPMVoice: %s" % message)
 
 
+## Last line of every test. Anything that stops the function short of this —
+## including an engine-level error GDScript will not let us catch — is reported.
+func _done(name: String) -> void:
+	_finished.append(name)
+
+
+## A backend detached from the network, which is what this file claims to test.
+##
+## `_ready()` asks the service how it is, and every test below then hands it a
+## reply by hand — so without cancelling that first request, the fabricated
+## answers arrive while the real one is still in flight and the engine complains
+## that the HTTPRequest is busy. Nothing failed, but a test suite that prints
+## errors when it passes teaches you to stop reading them.
 func _voice() -> VoxCPMVoice:
 	var voice := VoxCPMVoice.new()
 	add_child(voice)
+	voice._meta_http.cancel_request()
+	voice._http.cancel_request()
 	return voice
 
 
@@ -76,34 +117,58 @@ func _test_cache_round_trip() -> void:
 			DirAccess.remove_absolute(directory.path_join(leaf))
 	DirAccess.remove_absolute(directory)
 	voice.free()
+	_done("cache")
 
 
-## A service that answered is not a service that is down, and the row offering to
-## paste a key must not appear when no key would help.
+## A service that answered is not a service that is down: the reason has to name
+## which, or the user is sent to restart something that is running perfectly
+## well. And every outcome must announce itself — the settings UI waits on
+## `checked` to say whether a newly-typed address reaches anything, so a path
+## that stays silent leaves it waiting forever.
 func _test_health_distinguishes_refusal_from_absence() -> void:
 	var voice := _voice()
+	var answers: Array = []
+	voice.checked.connect(func(healthy: bool, reason: String) -> void:
+		answers.append([healthy, reason]))
 
 	_reply(voice, 401, '{"detail":"未授權"}')
 	_expect(not voice.is_available(), "a 401 left the backend looking usable")
-	_expect(voice.needs_key(), "a 401 did not ask for a key")
 	_expect(voice.unavailable_reason().contains("key"),
 		"the 401 reason does not mention the key")
+	_expect(voice.unavailable_reason().contains(VoxCPMVoice.KEY_ROW_LABEL),
+		"the 401 reason does not name the menu row that fixes it")
 
 	voice._on_meta_received(HTTPRequest.RESULT_CANT_CONNECT, 0, PackedStringArray(),
 		PackedByteArray())
 	_expect(not voice.is_available(), "an unreachable service looked usable")
-	_expect(not voice.needs_key(),
-		"an unreachable service asked for a key no key would fix")
+	_expect(not voice.unavailable_reason().contains("key"),
+		"an unreachable service blamed the key, which no key would fix")
 
 	_reply(voice, 200, '{"status":"loading"}')
 	_expect(not voice.is_available(), "a loading service looked ready")
-	_expect(not voice.needs_key(), "a loading service asked for a key")
 
+	_expect(answers.size() == 3,
+		"one of the three failures never emitted `checked`, so anything waiting "
+		+ "on an answer would wait for ever")
+	_expect(not answers.any(func(a: Array) -> bool: return a[0]),
+		"a failure reported itself as healthy")
+	_expect(not answers.any(func(a: Array) -> bool: return str(a[1]).is_empty()),
+		"a failure was announced with no reason to show")
+
+	# `ok` with no voices yet is deliberately *not* settled: /health is exempt
+	# from the API key, so a service with auth on answers it and then refuses
+	# everything else. The voice list is what decides.
 	_reply(voice, 200, '{"status":"ok"}')
+	_expect(answers.size() == 3,
+		"a bare /health reply was treated as proof the backend works")
+
+	_reply(voice, 200, '{"voices":[{"voice_id":"a","name":"A"}]}')
 	_expect(voice.is_available(), "a healthy service was not believed")
 	_expect(voice.unavailable_reason().is_empty(),
 		"a healthy service still carries a reason")
+	_expect(answers.size() == 4 and answers[3][0], "success never announced itself")
 	voice.free()
+	_done("health")
 
 
 ## A request already sent cannot be unsent, so its audio still arrives. It must
@@ -125,6 +190,7 @@ func _test_stop_discards_in_flight() -> void:
 	_expect(voice._queue.is_empty(), "audio from before stop() was queued anyway")
 	_expect(complaints.is_empty(), "cancelling a sentence was reported as a failure")
 	voice.free()
+	_done("cancel")
 
 
 ## A voice library is rebuilt outside the pet, so the name in config can stop
@@ -144,6 +210,113 @@ func _test_voice_selection_survives_a_missing_voice() -> void:
 		"a voice that no longer exists did not fall back to a real one")
 	voice.select_voice("")
 	voice.free()
+	_done("voices")
+
+
+## Each clip has to land in the folder of the voice it was rendered in.
+##
+## The bug this exists for: the directory was fixed when the batch started while
+## the voice was read from the setting at dispatch time, so everything after a
+## switch was filed under the wrong name — permanently, the key being a hash of
+## the text rather than of the audio. Nothing downstream can notice, because a
+## wrong clip is a perfectly valid wav.
+func _test_each_voice_lands_in_its_own_folder() -> void:
+	var voice := _voice()
+	# Pointed at the discard port for the duration: `prerender()` dispatches the
+	# first job immediately, and a test must not make the user's real service
+	# generate audio nobody asked for.
+	var was: Variant = Config.get_value("tts", "voxcpm_url", VoxCPMVoice.DEFAULT_URL)
+	Config.set_value("tts", "voxcpm_url", "http://127.0.0.1:9")
+
+	voice.prerender(PackedStringArray(["一", "二"]), "alice")
+	voice.prerender(PackedStringArray(["一", "二"]), "bob")
+	var jobs: Array = [voice._current]
+	jobs.append_array(voice._pending)
+	_expect(jobs.size() == 4, "four clips were asked for, %d were queued" % jobs.size())
+
+	var wrong := 0
+	for job: Dictionary in jobs:
+		# The folder and the voice must agree *per job*, which is exactly what the
+		# old code got wrong — and both must be the job's own, not the setting's.
+		if not str(job.get("cache", "")).ends_with(str(job.get("voice", ""))):
+			wrong += 1
+	_expect(wrong == 0, "%d of %d clips would be filed under another voice" % [wrong, jobs.size()])
+	_expect(jobs.any(func(j: Dictionary) -> bool: return j.get("voice") == "alice")
+		and jobs.any(func(j: Dictionary) -> bool: return j.get("voice") == "bob"),
+		"a whole voice went missing from the batch")
+
+	voice.stop()
+	Config.set_value("tts", "voxcpm_url", was)
+	voice.free()
+	_done("routing")
+
+
+## Pruning must never be something `prerender()` does on the side.
+##
+## It used to be, and it pruned to whatever set that one call carried — so a
+## caller passing a subset silently deleted everything else. Measured: a probe
+## that pre-rendered twenty throwaway lines took a voice's entire cache with it.
+func _test_forgetting_is_never_a_side_effect() -> void:
+	var voice := _voice()
+	var was: Variant = Config.get_value("tts", "voxcpm_url", VoxCPMVoice.DEFAULT_URL)
+	Config.set_value("tts", "voxcpm_url", "http://127.0.0.1:9")
+	var directory := voice._cache_dir("ghost")
+	DirAccess.make_dir_recursive_absolute(directory)
+	for line in ["留下來的", "也留下來的"]:
+		voice._write_cache(line, directory, _tone_wav())
+
+	voice.prerender(PackedStringArray(["只有這一句"]), "ghost")
+	_expect(not voice._cached_path("留下來的", directory).is_empty(),
+		"prerender() with a partial list deleted a line it was simply not asked about")
+
+	voice.forget_unlisted(PackedStringArray([]), "ghost")
+	_expect(not voice._cached_path("留下來的", directory).is_empty(),
+		"an empty list emptied the cache — which is what a failed nudges.json "
+		+ "load looks like")
+
+	voice.forget_unlisted(PackedStringArray(["留下來的"]), "ghost")
+	_expect(not voice._cached_path("留下來的", directory).is_empty(),
+		"a listed line was forgotten")
+	_expect(voice._cached_path("也留下來的", directory).is_empty(),
+		"an unlisted line survived a deliberate forget")
+
+	voice.stop()
+	for leaf in DirAccess.get_files_at(directory):
+		DirAccess.remove_absolute(directory.path_join(leaf))
+	DirAccess.remove_absolute(directory)
+	Config.set_value("tts", "voxcpm_url", was)
+	voice.free()
+	_done("forget")
+
+
+## A batch is ninety requests. Losing the service part-way through must end it,
+## not fire the remaining eighty-seven at a socket that has gone — and must say
+## so once rather than once per clip.
+func _test_a_dead_service_ends_the_batch() -> void:
+	var voice := _voice()
+	var complaints: Array[String] = []
+	voice.broke.connect(func(reason: String) -> void: complaints.append(reason))
+	var progress: Array = []
+	voice.line_prerendered.connect(func(done: int, left: int) -> void:
+		progress.append([done, left]))
+
+	var fill := voice._cache_dir("gone")
+	voice._current = {"text": "第一句", "cache": fill, "voice": "gone"}
+	voice._request_epoch = voice._epoch
+	for i in 5:
+		voice._pending.append({"text": "第 %d 句" % i, "cache": fill, "voice": "gone"})
+	voice._fills_left = 6
+
+	voice._on_audio_received(HTTPRequest.RESULT_CANT_CONNECT, 0, PackedStringArray(),
+		PackedByteArray())
+	_expect(complaints.size() == 1,
+		"a dropped connection was reported %d times, not once" % complaints.size())
+	_expect(voice._pending.is_empty(),
+		"%d clips were still queued for a service that is gone" % voice._pending.size())
+	_expect(not progress.is_empty() and progress[-1][1] == 0,
+		"the batch never reached zero, so anything watching it waits for ever")
+	voice.free()
+	_done("outage")
 
 
 ## Half a second of 16-bit mono, as a WAV the engine will actually parse.

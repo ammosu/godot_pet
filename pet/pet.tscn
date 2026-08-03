@@ -61,9 +61,6 @@ visible = false
 focus_mode = 0
 text = "停止錄音"
 
-[node name="Input" type="LineEdit" parent="Chat"]
-visible = false
-
 [node name="Area" type="TextEdit" parent="Chat"]
 visible = false
 
@@ -93,6 +90,18 @@ cancel_button_text = "不用，用講的就好"
 title = "這個資料夾有沒存好的東西"
 ok_button_text = "就這樣開始"
 cancel_button_text = "我先去存"
+
+[node name="SecretEntry" type="ConfirmationDialog" parent="."]
+title = "設定金鑰"
+ok_button_text = "儲存"
+cancel_button_text = "取消"
+
+[node name="Box" type="VBoxContainer" parent="SecretEntry"]
+
+[node name="Blurb" type="Label" parent="SecretEntry/Box"]
+autowrap_mode = 3
+
+[node name="Field" type="LineEdit" parent="SecretEntry/Box"]
 
 [node name="CodexLogin" type="ConfirmationDialog" parent="."]
 title = "先讓 Codex 登入"

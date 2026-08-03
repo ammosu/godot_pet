@@ -42,6 +42,10 @@ const CACHE_DIR := "user://voxcpm/cache"
 ## machine. Sent as a bearer token, which it accepts alongside X-API-Key.
 const KEY_NAME := "VOXCPM_API_KEY"
 
+## The menu row that pastes one, named here so the sentence telling the user to
+## go and click it cannot drift from what the row actually says.
+const KEY_ROW_LABEL := "設定 VoxCPM 金鑰…"
+
 var _http: HTTPRequest
 var _meta_http: HTTPRequest
 var _player: AudioStreamPlayer
@@ -59,16 +63,12 @@ var _request_epoch := 0
 var _voices: Array = []
 var _healthy := true
 var _reason := ""
-## Set when the service answered 401. Something other code can branch on, so the
-## menu never has to match on the wording of `_reason` — a reworded sentence
-## would otherwise silently take the row that fixes it away.
-var _needs_key := false
 
-## Text being rendered into the cache rather than played, and where it goes. The
-## directory is fixed when the batch starts: it takes about a second a line and
-## switching voice is the obvious next thing to do, so following the setting
-## would file this voice's audio under the next one's name.
-var _fill_dir := ""
+## How a pre-render batch is going. Which voice each job is in lives on the job
+## itself, not here: a batch covers the whole library, so the voice being
+## rendered is usually not the one selected — and reading the setting at dispatch
+## time would file one voice's audio under another's name, permanently, since the
+## cache key is a hash of the text and so never expires.
 var _prerendered := 0
 var _fills_left := 0
 
@@ -92,8 +92,14 @@ func _ready() -> void:
 	refresh()
 
 
+## Empty falls back to the default rather than through. A blank value in config
+## is not "no service" — it produces `""` + `/health`, which HTTPRequest rejects
+## as an unparseable URL, and the backend then reports itself unavailable for a
+## reason that names no address at all. Found by a test that restored a setting
+## it had read back as empty.
 func base_url() -> String:
-	return str(Config.get_value("tts", "voxcpm_url", DEFAULT_URL)).rstrip("/")
+	var url := str(Config.get_value("tts", "voxcpm_url", DEFAULT_URL)).strip_edges()
+	return (url if not url.is_empty() else DEFAULT_URL).rstrip("/")
 
 
 func _headers(json: bool) -> PackedStringArray:
@@ -119,12 +125,6 @@ func is_available() -> bool:
 
 func unavailable_reason() -> String:
 	return _reason
-
-
-## Whether the row that pastes a key would help. False when the service is
-## simply not running, which no key fixes.
-func needs_key() -> bool:
-	return _needs_key
 
 
 ## Asks the service how it is, without blocking. `TTSService.rediscover()` calls
@@ -169,31 +169,37 @@ func speak(text: String) -> void:
 	var line := text.strip_edges()
 	if line.is_empty():
 		return
+	var voice := active_voice()
 	# Ahead of the request, which is the whole point of the cache: a fixed line
-	# costs a file read, and it still plays when the service is not running.
-	var cached := _cached_stream(line, _cache_dir())
+	# costs a file read rather than a round trip to the service.
+	var cached := _cached_stream(line, _cache_dir(voice))
 	if cached != null:
 		_queue.append(cached)
 		_play_next()
 		return
-	_pending.append({"text": line, "cache": ""})
+	_pending.append({"text": line, "cache": "", "voice": voice})
 	_send_next()
 
 
-## Render `lines` into the cache without playing any of them. Returns how many
-## were actually asked for; one already cached costs nothing.
-func prerender(lines: PackedStringArray) -> int:
-	_fill_dir = _cache_dir()
+## Render `lines` into the cache without playing any of them, in `voice` — or in
+## whichever one is selected, when that is empty.
+##
+## Returns how many were actually asked for. One already cached costs nothing,
+## which is what makes running this again after adding a single voice pay for
+## that voice alone.
+func prerender(lines: PackedStringArray, voice := "") -> int:
+	var id := voice if not voice.is_empty() else active_voice()
+	var directory := _cache_dir(id)
 	var wanted := 0
 	for line in lines:
 		var text := line.strip_edges()
-		if text.is_empty() or not _cached_path(text, _fill_dir).is_empty():
+		if text.is_empty() or not _cached_path(text, directory).is_empty():
 			continue
-		_pending.append({"text": text, "cache": _fill_dir})
+		_pending.append({"text": text, "cache": directory, "voice": id})
 		wanted += 1
 	if wanted == 0:
 		return 0
-	DirAccess.make_dir_recursive_absolute(_fill_dir)
+	DirAccess.make_dir_recursive_absolute(directory)
 	_fills_left += wanted
 	_send_next()
 	return wanted
@@ -228,8 +234,12 @@ func _send_next() -> void:
 
 
 func _dispatch() -> void:
+	# The job's own voice, never the setting: a pre-render batch walks the whole
+	# library, and by the time this job is sent the selected voice is somebody
+	# else's.
+	var voice := str(_current.get("voice", ""))
 	var body := JSON.stringify({
-		"voice_id": active_voice(),
+		"voice_id": voice if not voice.is_empty() else active_voice(),
 		"text": str(_current.get("text", "")),
 		"format": "wav",
 	})
@@ -263,8 +273,18 @@ func _on_audio_received(result: int, code: int, _headers: PackedStringArray,
 		return
 
 	_current = {}
+	# **Where the failure belongs decides whether the batch survives it.** A
+	# pre-render is ninety requests, and the tolerant path below — one line failing
+	# is not the backend failing — is written for a line the service chokes on. A
+	# connection that has gone away, or a key it will not accept, is a property of
+	# the *service*: every remaining clip will fail the same way, so carrying on
+	# means eighty-seven doomed requests and eighty-seven identical warnings. Both
+	# end the batch instead.
 	if result != HTTPRequest.RESULT_SUCCESS:
-		_fail_job(fill, "跟本機語音服務斷了（%d），先用系統語音。" % result)
+		_give_up("跟本機語音服務斷了（%d），先用系統語音。" % result)
+		return
+	if code == 401:
+		_give_up(_explain(code, body))
 		return
 	if code != 200:
 		_fail_job(fill, _explain(code, body))
@@ -328,52 +348,69 @@ func _explain(code: int, body: PackedByteArray) -> String:
 
 func _on_meta_received(result: int, code: int, _headers: PackedStringArray,
 		body: PackedByteArray) -> void:
-	# Cleared on every path, not only the ones that set it: a service that has
-	# stopped answering at all is not refusing for want of a key, and leaving the
-	# flag set keeps offering a row that would change nothing.
-	_needs_key = false
 	if result != HTTPRequest.RESULT_SUCCESS:
-		_healthy = false
-		_reason = "本機語音服務沒有回應（%s）。在那台機器上啟動 voxcpm-voice-api 再試。" % base_url()
+		_settle(false, "連不上語音服務（%s）。檢查網址對不對，或在那台機器上啟動 "
+			% base_url() + "voxcpm-voice-api。")
 		return
 	if code != 200:
 		# It answered, so telling the user to go and start it would send them to
 		# restart something that is running perfectly well. 401 is the one that
 		# actually happens: the service turns auth on the moment VOXCPM_API_KEY
 		# is set, and /health stays open, so this is the first request to notice.
-		_healthy = false
-		_needs_key = code == 401
-		_reason = ("本機語音服務要 API key。用下面那列「設定 VoxCPM 金鑰…」貼上，"
-			+ "或把 %s 放進環境變數。") % KEY_NAME if _needs_key \
-			else "本機語音服務回了 HTTP %d（%s）。" % [code, base_url()]
+		_settle(false, ("語音服務要 API key。用下面那列「%s」貼上，或把 %s 放進環境變數。"
+			% [KEY_ROW_LABEL, KEY_NAME]) if code == 401
+			else "語音服務回了 HTTP %d（%s）。" % [code, base_url()])
 		return
-	_needs_key = false
 	var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
 	if typeof(parsed) != TYPE_DICTIONARY:
 		return
 	var data := parsed as Dictionary
 	if data.has("voices") and typeof(data["voices"]) == TYPE_ARRAY:
+		# Only ever asked for once /health said ok, so arriving here settles the
+		# whole exchange rather than half of it.
 		_voices = data["voices"]
+		_settle(true, "")
 		return
 	# A health reply. `loading` is not a failure — the model takes about a minute
 	# from cold — but it is not something to speak through either.
 	var status := str(data.get("status", ""))
-	_healthy = status == "ok"
-	_reason = ("" if _healthy else
-		"本機語音服務還在載入模型（%s），等一下再試。" % base_url() if status == "loading"
-		else "本機語音服務還沒準備好（%s）。" % base_url())
-	if _healthy and _voices.is_empty():
+	var ok := status == "ok"
+	if ok and _voices.is_empty():
+		# Not settled: /health is exempt from the API key, so a service with auth
+		# on answers it happily and then refuses everything that matters. Whether
+		# this backend actually works is decided by the voices request below.
+		_healthy = true
+		_reason = ""
 		_meta_http.request(base_url() + VOICES_PATH, _headers(false), HTTPClient.METHOD_GET)
+		return
+	_settle(ok, "" if ok
+		else "語音服務還在載入模型（%s），等一下再試。" % base_url() if status == "loading"
+		else "語音服務還沒準備好（%s）。" % base_url())
+
+
+## Record what a discovery attempt found, and say so once.
+##
+## One place rather than five assignments, because `checked` has to fire on every
+## outcome — a listener waiting to hear whether a newly-typed address works would
+## otherwise hang on exactly the paths that fail.
+func _settle(healthy: bool, reason: String) -> void:
+	_healthy = healthy
+	_reason = reason
+	checked.emit(healthy, reason)
 
 
 # --- The cache ----------------------------------------------------------------
 
-## Per voice, because the audio *is* the voice. The service keeps its own output
-## cache and answers a hit in about 3 ms, so this is not about the model's time —
-## it is the HTTP round trip, and the fact that a cached line still plays when
-## the service is not running at all.
-func _cache_dir() -> String:
-	var voice := active_voice()
+## Per voice, because the audio *is* the voice. Which is also why the batch
+## covers the whole library rather than the selected voice: switching voice would
+## otherwise silently discard the lot.
+##
+## What this saves is the round trip, not the model's time — the service keeps
+## its own output cache and answers a repeat in about 3 ms. Note what it does
+## **not** buy: surviving an outage. A cached line would play with the service
+## down, but `TTSService` swaps to the OS voice the moment this backend reports
+## `broke`, so nothing asks it again that session.
+func _cache_dir(voice: String) -> String:
 	return ProjectSettings.globalize_path(CACHE_DIR).path_join(
 		voice if not voice.is_empty() else ".default")
 
@@ -407,6 +444,38 @@ func _write_cache(text: String, directory: String, wav: PackedByteArray) -> void
 		return
 	file.store_buffer(wav)
 	file.close()
+
+
+## Drop cached audio for lines the pet no longer says. The key is a hash of the
+## text, so editing a nudge does not invalidate anything — the old clip simply
+## stops being asked for, and would sit there for the life of the install. Not
+## expensive, but it makes the folder a record of every wording that ever existed
+## rather than of what the pet says now.
+##
+## **Separate from `prerender()`, which is what it was written inside.** There it
+## pruned to whatever set that call happened to carry, so any caller passing a
+## subset silently deleted the rest — measured within minutes of writing it, by a
+## test that pre-rendered twenty throwaway lines and took a voice's whole cache
+## with it. Rendering and forgetting are two operations and only one of them can
+## lose data; a caller that wants both now has to say so.
+##
+## `lines` empty does nothing. A `prompts/nudges.json` that failed to load looks
+## exactly like "there are no fixed lines", and the one thing that must not do is
+## empty the cache.
+func forget_unlisted(lines: PackedStringArray, voice := "") -> void:
+	if lines.is_empty():
+		return
+	var directory := _cache_dir(voice if not voice.is_empty() else active_voice())
+	if not DirAccess.dir_exists_absolute(directory):
+		return
+	var keep := {}
+	for line in lines:
+		var text := line.strip_edges()
+		if not text.is_empty():
+			keep[text.sha256_text() + ".wav"] = true
+	for name in DirAccess.get_files_at(directory):
+		if name.ends_with(".wav") and not keep.has(name):
+			DirAccess.remove_absolute(directory.path_join(name))
 
 
 func _report_prerender(ok: bool) -> void:

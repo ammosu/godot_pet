@@ -27,6 +27,14 @@ const BACKEND_OS := "os"
 const BACKEND_ELEVEN := "eleven"
 const BACKEND_VOXCPM := "voxcpm"
 
+## What a machine that has never chosen gets, and where an unrecognised choice
+## lands. The local service rather than the OS voice: on Linux the latter is
+## espeak, which reads Traditional Chinese as a string of syllables — usable as a
+## fallback, not as a first impression. A machine without the service still ends
+## up on the OS voice within a second, by the discovery below, and pays only a
+## menu row that says why.
+const DEFAULT_BACKEND := BACKEND_VOXCPM
+
 ## Something happened to the voice that the pet should say out loud. Carried on a
 ## signal rather than spoken here, because `pet.gd` is the only thing that
 ## decides how the pet reacts to anything.
@@ -37,6 +45,18 @@ signal voice_changed()
 
 ## A pre-render batch moved on. `left` reaching zero ends it, however it ended.
 signal prerender_progress(done: int, left: int)
+
+## A backend finished asking itself whether it can run here. Carried out so the
+## settings UI can report whether a service address that was just typed actually
+## reaches anything — the one moment where "it did not work" has to arrive while
+## the user is still looking at what they changed.
+##
+## `explained` says this already went out on `remarked`, which happens whenever
+## the failure took the *speaking* backend down with it. Without it both owners
+## say the same sentence and the second cuts the first off half-typed — measured
+## on screen. The listener still gets told, because it has to stop waiting either
+## way; it just must not repeat it.
+signal backend_checked(healthy: bool, reason: String, explained: bool)
 
 var _enabled := false
 var _buffer := ""
@@ -65,13 +85,14 @@ func _ready() -> void:
 		backend.warned.connect(func(message: String) -> void: remarked.emit(message))
 		backend.line_prerendered.connect(func(done: int, left: int) -> void:
 			prerender_progress.emit(done, left))
+		backend.checked.connect(_on_backend_checked.bind(backend))
 
 	# Startup picks a backend but never writes one back — persisting what merely
 	# happened to work on first run is how auto-detection gets permanently
 	# defeated, the same rule LLMService.set_provider() follows. So a machine
 	# without the engine falls back for this session only, and plugging it back
 	# in restores the choice with nothing to re-select.
-	_set_backend(str(Config.get_value("tts", "backend", BACKEND_OS)))
+	_set_backend(str(Config.get_value("tts", "backend", DEFAULT_BACKEND)))
 	_enabled = bool(Config.get_value("tts", "enabled", true)) and is_available()
 
 	EventBus.reply_chunk.connect(_on_chunk)
@@ -162,10 +183,19 @@ func backend_is_available(id: String) -> bool:
 	return _for(id).is_available()
 
 
-## Whether the local service is refusing for want of a key, as opposed to simply
-## not being there. Only that first case has a row worth offering.
-func voxcpm_needs_key() -> bool:
-	return _voxcpm != null and _voxcpm.needs_key()
+## Where the local service is, and where to point it instead. Read back from the
+## backend rather than from config so the default shows through when nothing has
+## been set — an empty box is not an address anyone can correct.
+func voxcpm_url() -> String:
+	return _voxcpm.base_url() if _voxcpm != null else ""
+
+
+func set_voxcpm_url(url: String) -> void:
+	Config.set_value("tts", "voxcpm_url", url)
+	# `base_url()` reads config on every call, so there is nothing to restart —
+	# but nothing has re-asked the service either, and until it does
+	# `is_available()` still answers about the old address.
+	_voxcpm.refresh()
 
 
 func backend_unavailable_reason(id: String) -> String:
@@ -192,6 +222,20 @@ func select_backend(id: String) -> void:
 
 
 func _set_backend(id: String) -> void:
+	# A name that is no longer a backend, which is what `config.cfg` holds on every
+	# machine that had selected one since removed. `_for()` already hands back the
+	# OS voice for anything it does not know, but keeping the dead name in
+	# `_backend_name` made that invisible: the menu ticked no row at all, the pet
+	# spoke in espeak, and 先錄好固定台詞 asked the OS voice to pre-render — which
+	# correctly answers "nothing to do", so the pet said 「都錄好了」 having rendered
+	# nothing.
+	#
+	# It lands on the default, not on the OS voice, because the one name this
+	# actually catches is `qwen3` — a local neural backend, replaced by a local
+	# neural backend. Normalised here rather than persisted, so plugging a backend
+	# back in still restores the choice with nothing to re-select.
+	if not list_backends().has(id):
+		id = DEFAULT_BACKEND
 	var wanted := _for(id)
 	# Order matters: the OS voice is the fallback and asking it is free, while
 	# asking the neural one runs discovery. Nothing should pay for that at startup
@@ -216,6 +260,26 @@ func _for(id: String) -> TTSBackend:
 			return _eleven
 		_:
 			return _os_voice
+
+
+## A backend finished discovering. Two jobs, and the second is why this exists at
+## all rather than being left to the first failed sentence.
+##
+## `checked` lands about a second after startup, which is *before* the pet has
+## said anything — so a default that cannot run here is swapped out while nobody
+## is listening, instead of the first nudge coming out half-spoken with an
+## apology after it. That matters now that the default is the local service:
+## every machine without it would otherwise pay one botched line per run.
+##
+## It only speaks up when the backend that failed is the one in use. Discovery
+## re-runs on every menu open, so reporting unconditionally would announce a
+## service that has been down all along each time the user opens the menu for
+## something else entirely.
+func _on_backend_checked(healthy: bool, reason: String, backend: TTSBackend) -> void:
+	var speaking := backend == _backend and backend != _os_voice
+	if not healthy and speaking:
+		_on_backend_broke(reason)
+	backend_checked.emit(healthy, reason, not healthy and speaking)
 
 
 ## The neural backend fell over. Falling back rather than going quiet, because
@@ -350,9 +414,18 @@ func fixed_lines() -> PackedStringArray:
 
 ## Render the fixed lines in advance so saying one costs a file read.
 ##
-## Returns how many are being made, or -1 when the active backend cannot do it.
-## The OS voice is not a failure to report: it has nothing to pre-render, since
-## `DisplayServer.tts_speak()` has no file output and no model to load either.
+## **Every voice, not the selected one.** The cache is per voice, so rendering
+## only the one that happens to be ticked means changing voice silently throws
+## the whole benefit away and pays for the set again — and switching voice is
+## something a user does while listening, which is exactly when a pause before
+## every canned line is most obvious. The extra cost is bounded and paid once:
+## seventeen nudges plus the vision refusal, at about a second a clip, and a
+## second run only pays for whatever is new.
+##
+## Returns how many clips are being made, or -1 when the active backend cannot do
+## it. The OS voice is not a failure to report: it has nothing to pre-render,
+## since `DisplayServer.tts_speak()` has no file output and no model to load
+## either.
 func prerender_fixed_lines() -> int:
 	if _backend == null or not _backend.is_available():
 		return -1
@@ -365,7 +438,20 @@ func prerender_fixed_lines() -> int:
 		var text := _respell(line.strip_edges())
 		if not text.is_empty():
 			spoken.append(text)
-	return _backend.prerender(spoken)
+	var voices := _backend.list_voices()
+	# A backend with no notion of voices still has one cache to fill, and asking
+	# for "" gets it rather than nothing.
+	if voices.is_empty():
+		_backend.forget_unlisted(spoken)
+		return _backend.prerender(spoken)
+	var total := 0
+	for voice in voices:
+		# Forgetting first, and only from here: this is the one caller that knows
+		# `spoken` is the *complete* set, which is what makes pruning safe. See
+		# `TTSBackend.forget_unlisted()`.
+		_backend.forget_unlisted(spoken, voice)
+		total += _backend.prerender(spoken, voice)
+	return total
 
 
 func _respell(line: String) -> String:
