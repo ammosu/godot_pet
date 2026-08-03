@@ -59,3 +59,18 @@ func voice_name() -> String:
 ## leave the object usable if `speak()` is called again afterwards.
 func shutdown() -> void:
 	pass
+
+
+## Raw PCM16 mono as something the audio server will play.
+##
+## Shared because two backends now produce exactly this — the local helper's
+## spool and a Pro-tier `pcm_*` download — and a second copy of four lines is
+## how the two would end up disagreeing about `stereo` or the sample rate on
+## some future edit.
+static func pcm_stream(pcm: PackedByteArray, rate: int) -> AudioStreamWAV:
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = rate
+	stream.stereo = false
+	stream.data = pcm
+	return stream

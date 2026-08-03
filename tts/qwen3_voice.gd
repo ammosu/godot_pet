@@ -902,16 +902,7 @@ func _cached_stream(text: String) -> AudioStreamWAV:
 		# ordinary utterance and nothing else.
 		push_warning("Qwen3Voice: ignoring unreadable cached line %s" % path.get_file())
 		return null
-	return _pcm_stream(wav["data"], int(wav["rate"]))
-
-
-func _pcm_stream(pcm: PackedByteArray, rate: int) -> AudioStreamWAV:
-	var stream := AudioStreamWAV.new()
-	stream.format = AudioStreamWAV.FORMAT_16_BITS
-	stream.mix_rate = rate
-	stream.stereo = false
-	stream.data = pcm
-	return stream
+	return TTSBackend.pcm_stream(wav["data"], int(wav["rate"]))
 
 
 func _write_cache(directory: String, text: String, pcm: PackedByteArray, rate: int) -> void:
@@ -920,7 +911,7 @@ func _write_cache(directory: String, text: String, pcm: PackedByteArray, rate: i
 		return
 	DirAccess.make_dir_recursive_absolute(directory)
 	var path := directory.path_join("%s-%d-%d.wav" % [_cache_key(text), rate, samples])
-	if _pcm_stream(pcm, rate).save_to_wav(path) != OK:
+	if TTSBackend.pcm_stream(pcm, rate).save_to_wav(path) != OK:
 		push_warning("Qwen3Voice: could not write cached line to %s" % path)
 
 
@@ -1778,7 +1769,7 @@ func _on_audio(data: Dictionary) -> void:
 		return
 	_watch_speed(int(data.get("ms", 0)), samples, rate)
 
-	_queue.append(_pcm_stream(bytes, rate))
+	_queue.append(TTSBackend.pcm_stream(bytes, rate))
 	_play_next()
 
 

@@ -63,7 +63,7 @@ const DEFAULT_PET_SELECTION := "__default__"
 
 enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, MONITOR, SPEAK, ROAM, CALIBRATE,
-	RECENTRE, SET_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
+	RECENTRE, SET_KEY, SET_ELEVEN_KEY, CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
 	RECORD, CLEAR_VOICE, MANAGE_VOICES, FETCH_MODELS, PRERENDER, QUIT,
 }
 
@@ -102,6 +102,10 @@ var _listed_voices := PackedStringArray()
 ## How many pre-rendered lines are still outstanding, so the menu row can say so
 ## and refuse to start a second batch on top of the first.
 var _prerender_left := 0
+## Which secret the open input is collecting. The field is shared, so the asker
+## has to say what it is for — otherwise the handler can only ever store one key
+## and the second one written would quietly land under the first one's name.
+var _pending_secret_key := OPENAI_KEY
 ## The pet's silhouette relative to where it stands. Measured only when the pet
 ## itself changes, so re-pushing the mask stays cheap.
 var _pet_shape := PackedVector2Array()
@@ -793,6 +797,11 @@ func _build_speech_menu() -> PopupMenu:
 		var reason := TTSService.backend_unavailable_reason(backend)
 		menu.set_item_disabled(index, not reason.is_empty())
 		menu.set_item_tooltip(index, reason)
+	# Same shape as the model download below: the row that repairs a disabled
+	# backend sits directly under it, and disappears once there is nothing to
+	# repair. A key is the cloud backend's only dependency.
+	if not TTSService.backend_is_available(TTSService.BACKEND_ELEVEN):
+		menu.add_item("設定 ElevenLabs 金鑰…", MenuId.SET_ELEVEN_KEY)
 
 	# Directly under the backend it repairs, so the disabled row and the way to
 	# undisable it read as one thing. Shown only when the download would actually
@@ -1074,6 +1083,8 @@ func _on_menu_pressed(id: int) -> void:
 			_brain.set_home_here()
 		MenuId.SET_KEY:
 			_ask_for_api_key()
+		MenuId.SET_ELEVEN_KEY:
+			_ask_for_eleven_key()
 		MenuId.LOOK:
 			EventBus.screen_look_requested.emit(VisionService.DEFAULT_QUESTION, true)
 		MenuId.WORK:
@@ -1101,7 +1112,13 @@ func _api_key_label() -> String:
 
 
 func _ask_for_api_key() -> void:
+	_pending_secret_key = OPENAI_KEY
 	_chat.ask_for_secret("貼上 OpenAI API key，Enter 儲存")
+
+
+func _ask_for_eleven_key() -> void:
+	_pending_secret_key = ElevenVoice.KEY_NAME
+	_chat.ask_for_secret("貼上 ElevenLabs API key，Enter 儲存")
 
 
 func _on_secret_submitted(value: String) -> void:
@@ -1111,10 +1128,16 @@ func _on_secret_submitted(value: String) -> void:
 		_on_pet_nudged("sad", "這個 key 有奇怪的字元，是不是貼到多餘的東西了？")
 		return
 
-	var secured := Config.set_secret(OPENAI_KEY, value)
-	# A key is the only thing standing between mock and the real model, so adopt
-	# it right away rather than making the user go back to the menu.
-	if LLMService.get_provider_name() != "openai":
+	var key := _pending_secret_key
+	var secured := Config.set_secret(key, value)
+	# Adopted right away rather than sending the user back to the menu — a key is
+	# the only thing standing between the mock and the real thing in both cases.
+	if key == ElevenVoice.KEY_NAME:
+		# `Config.get_secret()` caches per process and the backend caches its
+		# reason, so both have to be told before the row can stop being disabled.
+		TTSService.rediscover()
+		TTSService.select_backend(TTSService.BACKEND_ELEVEN)
+	elif LLMService.get_provider_name() != "openai":
 		LLMService.select_provider("openai")
 	_build_menu()
 

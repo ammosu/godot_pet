@@ -1,9 +1,10 @@
 extends Node
 
 ## Speaks the pet's lines. Which voice does the speaking is a backend — the
-## operating system's own (`OSVoice`, no dependency at all) or a local neural
-## model (`Qwen3Voice`, several) — swapped the same way `LLMService` swaps
-## providers, so everything below this line is written once.
+## operating system's own (`OSVoice`, no dependency at all), a local neural model
+## (`Qwen3Voice`, several), or a paid API (`ElevenVoice`, none of them local) —
+## swapped the same way `LLMService` swaps providers, so everything below this
+## line is written once.
 ##
 ## Sentences are spoken as they arrive rather than after the whole reply lands,
 ## so the pet starts talking at roughly the moment the bubble starts typing. That
@@ -24,6 +25,7 @@ const RESPELL_PATH := "res://prompts/pronunciation.json"
 
 const BACKEND_OS := "os"
 const BACKEND_QWEN3 := "qwen3"
+const BACKEND_ELEVEN := "eleven"
 
 ## Something happened to the voice that the pet should say out loud. Carried on a
 ## signal rather than spoken here, because `pet.gd` is the only thing that
@@ -41,6 +43,7 @@ var _buffer := ""
 var _backend_name := BACKEND_OS
 var _backend: TTSBackend
 var _os_voice: OSVoice
+var _eleven: ElevenVoice
 var _qwen3: Qwen3Voice
 ## [[from, to], …] sorted longest-first — see _load_respellings().
 var _respellings: Array = []
@@ -57,7 +60,10 @@ func _ready() -> void:
 	_qwen3.line_prerendered.connect(func(done: int, left: int) -> void:
 		prerender_progress.emit(done, left))
 	add_child(_qwen3)
-	for backend in [_os_voice, _qwen3]:
+	_eleven = ElevenVoice.new()
+	_eleven.name = "ElevenVoice"
+	add_child(_eleven)
+	for backend in [_os_voice, _qwen3, _eleven]:
 		backend.broke.connect(_on_backend_broke)
 		backend.warned.connect(func(message: String) -> void: remarked.emit(message))
 
@@ -117,11 +123,17 @@ func stop() -> void:
 # --- Which voice --------------------------------------------------------------
 
 func list_backends() -> PackedStringArray:
-	return PackedStringArray([BACKEND_OS, BACKEND_QWEN3])
+	return PackedStringArray([BACKEND_OS, BACKEND_QWEN3, BACKEND_ELEVEN])
 
 
 func backend_label(id: String) -> String:
-	return "系統語音" if id == BACKEND_OS else "本機模型（Qwen3）"
+	match id:
+		BACKEND_QWEN3:
+			return "本機模型（Qwen3）"
+		BACKEND_ELEVEN:
+			return "ElevenLabs（雲端）"
+		_:
+			return "系統語音"
 
 
 func get_backend_name() -> String:
@@ -140,6 +152,10 @@ func get_backend_name() -> String:
 ## if no well-known Python is where it should be.
 func rediscover() -> void:
 	_qwen3.refresh()
+	# The cloud one has no discovery to speak of, but a key pasted through the
+	# menu a moment ago is exactly the thing that would otherwise need a restart
+	# to be believed — `Config.get_secret()` caches per process.
+	_eleven.refresh()
 
 
 func backend_is_available(id: String) -> bool:
@@ -191,7 +207,13 @@ func _set_backend(id: String) -> void:
 
 
 func _for(id: String) -> TTSBackend:
-	return _qwen3 if id == BACKEND_QWEN3 else _os_voice
+	match id:
+		BACKEND_QWEN3:
+			return _qwen3
+		BACKEND_ELEVEN:
+			return _eleven
+		_:
+			return _os_voice
 
 
 ## The neural backend fell over. Falling back rather than going quiet, because
