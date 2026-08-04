@@ -29,6 +29,11 @@ const BASE_DPI := 96.0
 ## visible in the same frame.
 const WM_PROBE_FRAMES := 3
 
+## Godot's macOS backend converts physical-pixel positions through integer
+## native point coordinates. On a mixed Retina/non-Retina desktop, that round
+## trip can move an odd coordinate by one pixel even when macOS honoured it.
+const WM_POSITION_TOLERANCE := 1
+
 var _win: Window
 var _hit_region := PackedVector2Array()
 ## The visible pet's extent, *relative to where the pet stands*. The window is
@@ -234,7 +239,9 @@ func _process(_delta: float) -> void:
 		return
 	set_process(false)
 	_wm_probed = true
-	if _win.position == _wm_probe_want:
+	var correction := (_win.position - _wm_probe_want).abs()
+	if correction.x <= WM_POSITION_TOLERANCE \
+			and correction.y <= WM_POSITION_TOLERANCE:
 		return
 	_wm_confines_window = true
 	# Redo the move now that the real limits are known.

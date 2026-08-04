@@ -268,6 +268,13 @@ lands at `(66, 32)` — both work-area corners exactly. Godot reports the reques
 value for a frame or two before the WM's `ConfigureNotify` overwrites it, so a
 readback taken immediately looks like it worked.
 
+The delayed readback is tolerant of a one-pixel difference. Godot's macOS
+backend converts the physical-pixel coordinate through integer native points;
+with a Retina primary display and a non-Retina extended display, an odd x such
+as `2345` comes back as `2344` even though macOS honoured the request. Treating
+that rounding as confinement switches `_clamp_window()` to the current screen's
+work area and makes crossing to the other screen impossible.
+
 That defeats the overhang outright. With the pet anchored 220px inside a 440-wide
 window, it stopped 220px short of the screen edge and no clamping on our side
 could move it further — the symptom being a pet that can be dragged, but not into
