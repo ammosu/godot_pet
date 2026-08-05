@@ -57,6 +57,10 @@ signal prerender_progress(done: int, left: int)
 ## on screen. The listener still gets told, because it has to stop waiting either
 ## way; it just must not repeat it.
 signal backend_checked(healthy: bool, reason: String, explained: bool)
+## The explicit VoxCPM library refresh requested from the advanced speech menu
+## finished. `explained` prevents the UI from repeating a failure that already
+## made the speaking backend fall back and announce why.
+signal voice_library_refreshed(healthy: bool, reason: String, voices: int, explained: bool)
 
 var _enabled := false
 var _buffer := ""
@@ -65,6 +69,7 @@ var _backend: TTSBackend
 var _os_voice: OSVoice
 var _eleven: ElevenVoice
 var _voxcpm: VoxCPMVoice
+var _voice_library_refreshing := false
 ## [[from, to], …] sorted longest-first — see _load_respellings().
 var _respellings: Array = []
 
@@ -179,6 +184,23 @@ func rediscover() -> void:
 	_voxcpm.refresh()
 
 
+## A deliberate network refresh, unlike rediscover(), which only checks whether
+## services are reachable. Returns false while the previous click is still in
+## flight so the UI can make repeated clicks harmless.
+func refresh_voice_library() -> bool:
+	if _voice_library_refreshing:
+		return false
+	_voice_library_refreshing = true
+	_voxcpm.refresh_voice_library()
+	# request() can fail synchronously (for example, an invalid URL). In that
+	# case the checked signal above already cleared the flag and reported why.
+	return _voice_library_refreshing
+
+
+func is_voice_library_refreshing() -> bool:
+	return _voice_library_refreshing
+
+
 func backend_is_available(id: String) -> bool:
 	return _for(id).is_available()
 
@@ -279,7 +301,11 @@ func _on_backend_checked(healthy: bool, reason: String, backend: TTSBackend) -> 
 	var speaking := backend == _backend and backend != _os_voice
 	if not healthy and speaking:
 		_on_backend_broke(reason)
-	backend_checked.emit(healthy, reason, not healthy and speaking)
+	var explained := not healthy and speaking
+	backend_checked.emit(healthy, reason, explained)
+	if backend == _voxcpm and _voice_library_refreshing:
+		_voice_library_refreshing = false
+		voice_library_refreshed.emit(healthy, reason, _voxcpm.list_voices().size(), explained)
 
 
 ## The neural backend fell over. Falling back rather than going quiet, because

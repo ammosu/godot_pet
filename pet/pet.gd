@@ -64,7 +64,7 @@ enum MenuId {
 	FALLBACK, GET_PETS, FEED, NUDGES, PRESENCE, MONITOR, SPEAK, ROAM, CALIBRATE,
 	RECENTRE, SET_KEY, SET_ELEVEN_KEY, SET_VOXCPM_KEY, SET_VOXCPM_URL,
 	CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
-	RECORD, PRERENDER, MODEL_SETTINGS, QUIT,
+	RECORD, PRERENDER, REFRESH_VOICES, MODEL_SETTINGS, QUIT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -191,6 +191,7 @@ func _ready() -> void:
 	_chat.submitted.connect(_on_chat_submitted)
 	_chat.work_submitted.connect(_on_work_submitted)
 	TTSService.backend_checked.connect(_on_backend_checked)
+	TTSService.voice_library_refreshed.connect(_on_voice_library_refreshed)
 	WorkService.finished.connect(_on_work_finished)
 	WorkService.failed.connect(_on_work_failed)
 	WorkService.progress.connect(_on_work_progress)
@@ -632,19 +633,22 @@ func _style_menu() -> void:
 	_menu.theme = PetStyle.menu_theme(_window_ctl.get_ui_scale())
 
 
-## Reused between rebuilds. Submenus have to exist as child nodes before
-## add_submenu_node_item() can point at them, and the theme doesn't reach a
-## popup that isn't parented yet, so it's set here.
-func _submenu(key: String) -> PopupMenu:
+## Reused between rebuilds. Submenus have to exist under the menu that points at
+## them before add_submenu_node_item() can use them. Most belong to the root;
+## nested advanced settings pass their immediate parent explicitly.
+func _submenu(key: String, parent: PopupMenu = null) -> PopupMenu:
+	var owner := _menu if parent == null else parent
 	if _submenus.has(key):
 		var existing: PopupMenu = _submenus[key]
 		existing.clear()
+		if existing.get_parent() != owner:
+			existing.reparent(owner)
 		return existing
 	var menu := PopupMenu.new()
 	menu.name = key
 	menu.theme = _menu.theme
 	menu.id_pressed.connect(_on_menu_pressed)
-	_menu.add_child(menu)
+	owner.add_child(menu)
 	_submenus[key] = menu
 	return menu
 
@@ -812,24 +816,10 @@ func _build_speech_menu() -> PopupMenu:
 		var reason := TTSService.backend_unavailable_reason(backend)
 		menu.set_item_disabled(index, not reason.is_empty())
 		menu.set_item_tooltip(index, reason)
-	# The rows that configure a backend sit directly under it. The local
-	# service's two are **always** shown, unlike ElevenLabs' key below: they are
-	# what decides whether that row is selectable at all, and gating them on the
-	# backend being available makes the failure unrecoverable — a wrong address
-	# disables the row, and the only thing that would fix it is behind the row
-	# that is now disabled.
-	# The current address is *in* the label rather than only in the dialog: it is
-	# the one setting here whose value explains a failure by itself, and a row
-	# reading 服務位置… tells you nothing about why the pet has gone quiet.
-	menu.add_item("服務位置…（%s）" % TTSService.voxcpm_url(), MenuId.SET_VOXCPM_URL)
-	menu.add_item("%s VoxCPM 金鑰…"
-		% ["更換" if Config.has_secret(VoxCPMVoice.KEY_NAME) else "設定"],
-		MenuId.SET_VOXCPM_KEY)
-	# Unlike the two above, this one disappears once there is nothing to repair:
-	# a key is the cloud backend's *only* dependency, so a working ElevenLabs row
-	# means there is nothing here worth a click.
-	if not TTSService.backend_is_available(TTSService.BACKEND_ELEVEN):
-		menu.add_item("設定 ElevenLabs 金鑰…", MenuId.SET_ELEVEN_KEY)
+	# Network addresses, credentials and an explicit library fetch are repair and
+	# maintenance actions, not everyday voice choices. Keep them one level deeper
+	# so the rows people use to switch voices remain easy to scan.
+	menu.add_submenu_node_item("進階設定", _build_speech_advanced_menu(menu))
 
 	# Which voice, once there is a choice. The model's own voice is always in the
 	# list and always first: it is the one that needs no file and cannot go
@@ -855,6 +845,28 @@ func _build_speech_menu() -> PopupMenu:
 		# the current voice, which is what it used to be.
 		menu.add_item(_prerender_label(voices.size()), MenuId.PRERENDER)
 		menu.set_item_disabled(menu.get_item_index(MenuId.PRERENDER), _prerender_left > 0)
+	_index_items(menu)
+	return menu
+
+
+func _build_speech_advanced_menu(parent: PopupMenu) -> PopupMenu:
+	var menu := _submenu("SpeechAdvanced", parent)
+	# Always reachable, even when VoxCPM is down: a wrong address or key is exactly
+	# what makes the backend unavailable, so hiding its repair controls would make
+	# the failure permanent from inside the app.
+	menu.add_item("服務位置…（%s）" % TTSService.voxcpm_url(), MenuId.SET_VOXCPM_URL)
+	menu.add_item("%s VoxCPM 金鑰…"
+		% ["更換" if Config.has_secret(VoxCPMVoice.KEY_NAME) else "設定"],
+		MenuId.SET_VOXCPM_KEY)
+	# A working ElevenLabs backend already has everything it needs; this is only a
+	# repair row, matching the previous first-level behaviour.
+	if not TTSService.backend_is_available(TTSService.BACKEND_ELEVEN):
+		menu.add_item("設定 ElevenLabs 金鑰…", MenuId.SET_ELEVEN_KEY)
+	menu.add_separator()
+	menu.add_item("正在重新整理聲音庫…" if TTSService.is_voice_library_refreshing()
+		else "重新整理聲音庫", MenuId.REFRESH_VOICES)
+	menu.set_item_disabled(menu.get_item_index(MenuId.REFRESH_VOICES),
+		TTSService.is_voice_library_refreshing())
 	_index_items(menu)
 	return menu
 
@@ -1080,6 +1092,8 @@ func _on_menu_pressed(id: int) -> void:
 			_toggle_speech()
 		MenuId.PRERENDER:
 			_start_prerender()
+		MenuId.REFRESH_VOICES:
+			_refresh_voice_library()
 		MenuId.ROAM:
 			_toggle_roaming()
 		MenuId.CALIBRATE:
@@ -1220,6 +1234,23 @@ func _on_backend_checked(healthy: bool, reason: String, explained: bool) -> void
 		# Only when nothing else did. Where this address belongs to the voice the
 		# pet is speaking in, `TTSService` has already said so *and* said what it
 		# is falling back to, which is strictly more than this could.
+		_on_pet_nudged("sad", reason, false, false)
+
+
+func _refresh_voice_library() -> void:
+	if not TTSService.refresh_voice_library():
+		return
+	_build_menu()
+	_on_pet_nudged("neutral", "好，我重新讀一次聲音庫……", false, false)
+
+
+func _on_voice_library_refreshed(healthy: bool, reason: String, voices: int,
+		explained: bool) -> void:
+	_build_menu()
+	if healthy:
+		_on_pet_nudged("happy", "聲音庫更新好了，現在有 %d 種聲音可以用。" % voices,
+			false, false)
+	elif not explained:
 		_on_pet_nudged("sad", reason, false, false)
 
 

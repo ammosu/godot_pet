@@ -821,17 +821,22 @@ fires about a second after startup, before the pet has said anything, so the swa
 happens while nobody is listening; without it every such machine paid one
 botched line per run.
 
-Two rows configure it, and both are **always shown** — unlike the ElevenLabs key
-row, which disappears once there is nothing to repair. The reason is that these
-two are what decides whether the backend row is selectable at all: gating them on
-availability makes a wrong address unrecoverable, since the only thing that would
-fix it sits behind the row it just disabled.
+The repair and maintenance rows live under **說話 → 進階設定**, keeping network
+details out of the everyday backend and voice picker. The two rows that configure
+VoxCPM are **always shown** — unlike the ElevenLabs key row, which disappears once
+there is nothing to repair. They decide whether the backend row is selectable at
+all: gating them on availability makes a wrong address unrecoverable, since the
+only thing that would fix it sits behind the row it just disabled.
 
 - **服務位置…（http://127.0.0.1:8080）** — the value is in the *label*. It is the
   one setting here that explains a failure by itself, and a row reading 服務位置…
   tells you nothing about why the pet has gone quiet.
 - **設定/更換 VoxCPM 金鑰…** — was conditional on a 401 having been seen. That
   made `needs_key()` necessary; unconditional, the flag was dead and went.
+- **重新整理聲音庫** — deliberately re-fetches `/v1/voices`, even after startup
+  already found a non-empty library. If the menu-open health check is still in
+  flight, the refresh waits behind it; otherwise the most normal click would be
+  rejected as `HTTPRequest` busy. The row disables itself until the reply lands.
 
 Three things this flow had to get right, all found on screen rather than reasoned:
 

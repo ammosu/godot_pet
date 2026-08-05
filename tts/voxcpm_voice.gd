@@ -63,6 +63,11 @@ var _request_epoch := 0
 var _voices: Array = []
 var _healthy := true
 var _reason := ""
+## An explicit library refresh requested while the metadata client is busy waits
+## for that request to finish, then asks /v1/voices. Opening the menu starts a
+## health check just before the user can press the refresh row, so rejecting a
+## busy client here would make the row fail precisely when it is used normally.
+var _voice_refresh_requested := false
 
 ## How a pre-render batch is going. Which voice each job is in lives on the job
 ## itself, not here: a batch covers the whole library, so the voice being
@@ -133,6 +138,23 @@ func unavailable_reason() -> String:
 func refresh() -> void:
 	if _meta_http != null and _meta_http.get_http_client_status() == HTTPClient.STATUS_DISCONNECTED:
 		_meta_http.request(base_url() + HEALTH_PATH, _headers(false), HTTPClient.METHOD_GET)
+
+
+## Force a fresh copy of the service's voice library, even when one was already
+## discovered this session. If another metadata request is in flight, its reply
+## continues the refresh instead of cancelling a useful health check.
+func refresh_voice_library() -> void:
+	_voice_refresh_requested = true
+	if _meta_http != null and _meta_http.get_http_client_status() == HTTPClient.STATUS_DISCONNECTED:
+		_request_voice_library()
+
+
+func _request_voice_library() -> void:
+	var error := _meta_http.request(base_url() + VOICES_PATH, _headers(false),
+		HTTPClient.METHOD_GET)
+	if error != OK:
+		_voice_refresh_requested = false
+		_settle(false, "拿不到 VoxCPM 的聲音清單（錯誤 %d）。" % error)
 
 
 func voice_name() -> String:
@@ -349,10 +371,12 @@ func _explain(code: int, body: PackedByteArray) -> String:
 func _on_meta_received(result: int, code: int, _headers: PackedStringArray,
 		body: PackedByteArray) -> void:
 	if result != HTTPRequest.RESULT_SUCCESS:
+		_voice_refresh_requested = false
 		_settle(false, "連不上語音服務（%s）。檢查網址對不對，或在那台機器上啟動 "
 			% base_url() + "voxcpm-voice-api。")
 		return
 	if code != 200:
+		_voice_refresh_requested = false
 		# It answered, so telling the user to go and start it would send them to
 		# restart something that is running perfectly well. 401 is the one that
 		# actually happens: the service turns auth on the moment VOXCPM_API_KEY
@@ -363,26 +387,30 @@ func _on_meta_received(result: int, code: int, _headers: PackedStringArray,
 		return
 	var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
 	if typeof(parsed) != TYPE_DICTIONARY:
+		_voice_refresh_requested = false
+		_settle(false, "語音服務的聲音清單看不懂（%s）。" % base_url())
 		return
 	var data := parsed as Dictionary
 	if data.has("voices") and typeof(data["voices"]) == TYPE_ARRAY:
-		# Only ever asked for once /health said ok, so arriving here settles the
-		# whole exchange rather than half of it.
+		# Whether this was startup discovery or an explicit refresh, the voice list
+		# is the final answer for the whole metadata exchange.
 		_voices = data["voices"]
+		_voice_refresh_requested = false
 		_settle(true, "")
 		return
 	# A health reply. `loading` is not a failure — the model takes about a minute
 	# from cold — but it is not something to speak through either.
 	var status := str(data.get("status", ""))
 	var ok := status == "ok"
-	if ok and _voices.is_empty():
+	if ok and (_voices.is_empty() or _voice_refresh_requested):
 		# Not settled: /health is exempt from the API key, so a service with auth
 		# on answers it happily and then refuses everything that matters. Whether
 		# this backend actually works is decided by the voices request below.
 		_healthy = true
 		_reason = ""
-		_meta_http.request(base_url() + VOICES_PATH, _headers(false), HTTPClient.METHOD_GET)
+		_request_voice_library()
 		return
+	_voice_refresh_requested = false
 	_settle(ok, "" if ok
 		else "語音服務還在載入模型（%s），等一下再試。" % base_url() if status == "loading"
 		else "語音服務還沒準備好（%s）。" % base_url())

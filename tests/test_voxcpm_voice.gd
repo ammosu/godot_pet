@@ -25,6 +25,7 @@ func _ready() -> void:
 		"health": _test_health_distinguishes_refusal_from_absence,
 		"cancel": _test_stop_discards_in_flight,
 		"voices": _test_voice_selection_survives_a_missing_voice,
+		"voice_refresh": _test_explicit_refresh_replaces_a_loaded_library,
 		"routing": _test_each_voice_lands_in_its_own_folder,
 		"forget": _test_forgetting_is_never_a_side_effect,
 		"outage": _test_a_dead_service_ends_the_batch,
@@ -211,6 +212,41 @@ func _test_voice_selection_survives_a_missing_voice() -> void:
 	voice.select_voice("")
 	voice.free()
 	_done("voices")
+
+
+## Opening the menu starts a health request before the refresh row can be
+## pressed. The explicit refresh must wait for that reply, then replace a
+## non-empty library; otherwise adding a voice remotely still needs a restart.
+func _test_explicit_refresh_replaces_a_loaded_library() -> void:
+	var voice := _voice()
+	var answers: Array = []
+	voice.checked.connect(func(healthy: bool, reason: String) -> void:
+		answers.append([healthy, reason]))
+	voice._voices = [{"voice_id": "old", "name": "Old"}]
+
+	voice.refresh()
+	voice.refresh_voice_library()
+	_expect(voice._voice_refresh_requested,
+		"a refresh pressed during the health request was discarded")
+	# A real request_completed signal is emitted after HTTPRequest leaves its busy
+	# state. `_reply()` calls the handler directly, so reproduce that transition.
+	voice._meta_http.cancel_request()
+	_reply(voice, 200, '{"status":"ok"}')
+	_expect(answers.is_empty(),
+		"the health reply completed the refresh before /v1/voices answered")
+	_expect(voice._voice_refresh_requested,
+		"the queued library request was cleared by the health reply")
+
+	_reply(voice, 200, '{"voices":[{"voice_id":"old","name":"Old"},' +
+		'{"voice_id":"new","name":"New"}]}')
+	_expect(voice.list_voices() == PackedStringArray(["old", "new"]),
+		"the explicit refresh did not replace the loaded library")
+	_expect(not voice._voice_refresh_requested,
+		"the completed refresh still looked in flight")
+	_expect(answers.size() == 1 and answers[0][0],
+		"the completed library refresh did not announce success")
+	voice.free()
+	_done("voice_refresh")
 
 
 ## Each clip has to land in the folder of the voice it was rendered in.
