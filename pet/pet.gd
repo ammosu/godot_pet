@@ -29,9 +29,6 @@ const PROVIDER_BASE := 300
 const GAME_BASE := 400
 const WORKSPACE_BASE := 600
 const VOICE_BASE := 700
-## Which cloned voice speaks. Above VOICE_BASE, so it is tested first — every
-## test in _on_menu_pressed is "at or above".
-const VOICE_PICK_BASE := 800
 
 ## Multipliers on the display scale. Pixel art prefers integers, but on a 2x
 ## display the odd ones land on a whole physical pixel often enough to look fine.
@@ -65,6 +62,7 @@ enum MenuId {
 	RECENTRE, SET_KEY, SET_ELEVEN_KEY, SET_VOXCPM_KEY, SET_VOXCPM_URL,
 	CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
 	RECORD, PRERENDER, REFRESH_VOICES, MODEL_SETTINGS, QUIT,
+	VOICE_SETTINGS,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -82,6 +80,9 @@ enum MenuId {
 @onready var _model_picker: OptionButton = $ModelSettings/Box/Grid/Model
 @onready var _reasoning_picker: OptionButton = $ModelSettings/Box/Grid/Reasoning
 @onready var _model_settings_hint: Label = $ModelSettings/Box/Hint
+@onready var _voice_settings: ConfirmationDialog = $VoiceSettings
+@onready var _voice_settings_current: Label = $VoiceSettings/Box/Current
+@onready var _voice_picker: OptionButton = $VoiceSettings/Box/Grid/Voice
 ## Where every key and the service address are typed. One window reused rather
 ## than four, because they differ only in what they are called and whether the
 ## characters are hidden — and four near-identical dialogs is four places for a
@@ -214,6 +215,7 @@ func _ready() -> void:
 	_setup_work_offer_dialog()
 	_setup_dirty_warning_dialog()
 	_setup_model_settings_dialog()
+	_setup_voice_settings_dialog()
 	_setup_entry_dialog()
 	_setup_codex_login_dialog()
 	CodexCli.login_finished.connect(_on_codex_login_finished)
@@ -821,32 +823,35 @@ func _build_speech_menu() -> PopupMenu:
 	# so the rows people use to switch voices remain easy to scan.
 	menu.add_submenu_node_item("進階設定", _build_speech_advanced_menu(menu))
 
-	# Which voice, once there is a choice. The model's own voice is always in the
-	# list and always first: it is the one that needs no file and cannot go
-	# missing, so it is what every other row is measured against.
-	# The voices belong to whichever backend is speaking, so the list is asked for
-	# unconditionally and the *cloning* rows are what stay behind a capability
-	# check. A backend that only reads a library it was given has no 預設嗓音 to
-	# fall back to and no folder worth opening.
-	# The voices belong to whichever backend is speaking, so the list is asked for
-	# unconditionally rather than gated on one of them being the local engine.
+	# Voice libraries are allowed to grow without growing this menu. Report the
+	# active character here, then open the complete list only when the user asks
+	# to change it — the same staged pattern used by language-model settings.
 	var voices := TTSService.list_voices()
+	_listed_voices = voices
 	if not voices.is_empty():
-		_listed_voices = voices
-		var active := TTSService.active_voice()
-		menu.add_separator()
-		for i in voices.size():
-			menu.add_radio_check_item(voices[i], VOICE_PICK_BASE + i)
-			menu.set_item_checked(menu.get_item_index(VOICE_PICK_BASE + i),
-				voices[i] == active)
+		_append_voice_summary(menu, voices, TTSService.active_voice())
 		# Under the voices because it renders *all of them*, not the ticked one —
-		# so it belongs to the list rather than to any row in it. The count is in
+		# so it belongs beside the picker rather than inside it. The count is in
 		# the label for the same reason: without it the row reads as being about
 		# the current voice, which is what it used to be.
 		menu.add_item(_prerender_label(voices.size()), MenuId.PRERENDER)
 		menu.set_item_disabled(menu.get_item_index(MenuId.PRERENDER), _prerender_left > 0)
 	_index_items(menu)
 	return menu
+
+
+## Keep the everyday menu constant-size even when a service supplies dozens of
+## characters. The disabled line is status; the verb below it is the only path
+## to the full picker.
+func _append_voice_summary(menu: PopupMenu, voices: PackedStringArray,
+		active: String) -> void:
+	if voices.is_empty():
+		return
+	var shown := active if not active.is_empty() else voices[0]
+	menu.add_separator()
+	menu.add_item("目前角色：%s" % shown)
+	menu.set_item_disabled(menu.item_count - 1, true)
+	menu.add_item("更換角色…", MenuId.VOICE_SETTINGS)
 
 
 func _build_speech_advanced_menu(parent: PopupMenu) -> PopupMenu:
@@ -1043,12 +1048,6 @@ func _open_menu() -> void:
 func _on_menu_pressed(id: int) -> void:
 	# Highest base first: every one of these tests is "at or above", so a game id
 	# at 400 also satisfies the provider test at 300.
-	if id >= VOICE_PICK_BASE:
-		var voices := TTSService.list_voices()
-		var pick := id - VOICE_PICK_BASE
-		if pick < voices.size():
-			TTSService.select_voice(voices[pick])
-		return
 	if id >= VOICE_BASE:
 		# No _build_menu() here: select_backend emits voice_changed, which is
 		# already wired to it, and a second rebuild in the same frame would drop
@@ -1105,6 +1104,8 @@ func _on_menu_pressed(id: int) -> void:
 			_brain.set_home_here()
 		MenuId.MODEL_SETTINGS:
 			_open_model_settings()
+		MenuId.VOICE_SETTINGS:
+			_open_voice_settings()
 		MenuId.SET_KEY:
 			_ask_for_entry(OPENAI_KEY, "OpenAI API key",
 				"用來聊天跟看螢幕的。%s" % _entry_storage_note(), true)
@@ -1625,6 +1626,79 @@ func _apply_model_settings() -> void:
 	LLMService.select_model(model)
 	LLMService.select_reasoning_effort(effort)
 	_build_menu()
+
+
+## Voice characters follow the model dialog's staged interaction: opening and
+## browsing changes nothing, and the selected character takes effect only after
+## 套用. The picker can grow and scroll without making the speech menu taller.
+func _setup_voice_settings_dialog() -> void:
+	var scale := _window_ctl.get_ui_scale()
+	_voice_settings.exclusive = false
+	_voice_settings.theme = PetStyle.dialog_theme(scale)
+	_voice_settings_current.custom_minimum_size = Vector2(340.0 * scale, 0)
+	_voice_settings_current.add_theme_color_override("font_color", PetStyle.ACCENT_TEXT)
+	_voice_settings_current.add_theme_font_size_override("font_size", roundi(17.0 * scale))
+	_voice_picker.custom_minimum_size = Vector2(250.0 * scale, 0)
+	($VoiceSettings/Box as VBoxContainer).add_theme_constant_override(
+		"separation", roundi(14.0 * scale))
+	($VoiceSettings/Box/Grid as GridContainer).add_theme_constant_override(
+		"h_separation", roundi(18.0 * scale))
+	($VoiceSettings/Box/Grid/VoiceLabel as Label).add_theme_color_override(
+		"font_color", PetStyle.NIGHT_MUTED)
+	_voice_picker.get_popup().theme = PetStyle.menu_theme(scale)
+
+	var ok := _voice_settings.get_ok_button()
+	var primary := PetStyle.primary_button_styles(scale)
+	for state in primary:
+		ok.add_theme_stylebox_override(state, primary[state])
+	ok.add_theme_color_override("font_color", PetStyle.INK)
+	ok.add_theme_color_override("font_hover_color", PetStyle.INK)
+	ok.add_theme_color_override("font_pressed_color", PetStyle.INK)
+	PetStyle.make_ghost_button(_voice_settings.get_cancel_button(), scale)
+
+	_voice_picker.item_selected.connect(_on_voice_settings_selected)
+	_voice_settings.confirmed.connect(_apply_voice_settings)
+
+
+func _open_voice_settings() -> void:
+	var voices := TTSService.list_voices()
+	if voices.is_empty():
+		return
+	_fill_voice_picker(voices, TTSService.active_voice())
+	_voice_settings.reset_size()
+	_voice_settings.popup_centered()
+
+
+## Separate from opening the window so a large synthetic library can exercise
+## the scaling behaviour without depending on voices installed on the machine.
+func _fill_voice_picker(voices: PackedStringArray, active: String) -> void:
+	_voice_picker.clear()
+	var selected := 0
+	for i in voices.size():
+		_voice_picker.add_item(voices[i])
+		_voice_picker.set_item_metadata(i, voices[i])
+		if voices[i] == active:
+			selected = i
+	if not voices.is_empty():
+		_voice_picker.select(selected)
+	_refresh_voice_settings_readout()
+
+
+func _on_voice_settings_selected(_index: int) -> void:
+	_refresh_voice_settings_readout()
+
+
+func _refresh_voice_settings_readout() -> void:
+	var selected := _selected_picker_value(_voice_picker)
+	var changed := not selected.is_empty() and selected != TTSService.active_voice()
+	_voice_settings_current.text = "%s　%s" % [
+		"準備改成" if changed else "現在使用", selected]
+
+
+func _apply_voice_settings() -> void:
+	var voice := _selected_picker_value(_voice_picker)
+	if not voice.is_empty():
+		TTSService.select_voice(voice)
 
 
 ## The entry window. `register_text_enter` is what makes Enter save, which is

@@ -121,6 +121,27 @@ size_flags_horizontal = 3
 [node name="Hint" type="Label" parent="ModelSettings/Box"]
 autowrap_mode = 3
 
+[node name="VoiceSettings" type="ConfirmationDialog" parent="."]
+title = "更換語音角色"
+ok_button_text = "套用"
+cancel_button_text = "取消"
+
+[node name="Box" type="VBoxContainer" parent="VoiceSettings"]
+
+[node name="Current" type="Label" parent="VoiceSettings/Box"]
+text = "現在使用"
+
+[node name="Rule" type="HSeparator" parent="VoiceSettings/Box"]
+
+[node name="Grid" type="GridContainer" parent="VoiceSettings/Box"]
+columns = 2
+
+[node name="VoiceLabel" type="Label" parent="VoiceSettings/Box/Grid"]
+text = "角色"
+
+[node name="Voice" type="OptionButton" parent="VoiceSettings/Box/Grid"]
+size_flags_horizontal = 3
+
 [node name="SecretEntry" type="ConfirmationDialog" parent="."]
 title = "設定金鑰"
 ok_button_text = "儲存"
