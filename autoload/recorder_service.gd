@@ -19,10 +19,10 @@ extends Node
 const BUS_NAME := "Record"
 
 ## A forgotten recording is the failure mode here, not a long one. At the mixer's
-## 44.1 kHz stereo 16-bit this is about 50 MB, which is a lot for a folder meant
-## to be browsed — so it stops itself and says so, rather than filling the disk
-## while the user is in another app.
-const MAX_SECONDS := 300.0
+## 44.1 kHz stereo 16-bit this can reach about 600 MB, which is a lot for a folder
+## meant to be browsed — so it stops itself after an hour and says so, rather
+## than filling the disk while the user is in another app.
+const MAX_SECONDS := 3600.0
 
 ## Below this it is a misclick, not a recording. Saving it would leave a 0-second
 ## file to delete by hand.

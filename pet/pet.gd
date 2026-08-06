@@ -2203,7 +2203,7 @@ func _on_recording_tick(elapsed_text: String) -> void:
 	_chat.show_holding("● 錄音中 %s" % elapsed_text, "停止錄音")
 
 
-## Dedicated rather than routed through _toggle_recording(): if the five-minute
+## Dedicated rather than routed through _toggle_recording(): if the one-hour
 ## cap ends between the pointer going down and the signal arriving, a late click
 ## must do nothing instead of immediately starting a new recording.
 func _on_recording_stop_pressed() -> void:
