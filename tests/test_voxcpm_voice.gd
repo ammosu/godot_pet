@@ -27,6 +27,7 @@ func _ready() -> void:
 		"cancel": _test_stop_discards_in_flight,
 		"voices": _test_voice_selection_survives_a_missing_voice,
 		"voice_refresh": _test_explicit_refresh_replaces_a_loaded_library,
+		"credential_refresh": _test_credential_refresh_replaces_an_in_flight_check,
 		"routing": _test_each_voice_lands_in_its_own_folder,
 		"forget": _test_forgetting_is_never_a_side_effect,
 		"outage": _test_a_dead_service_ends_the_batch,
@@ -254,6 +255,30 @@ func _test_explicit_refresh_replaces_a_loaded_library() -> void:
 		"the completed library refresh did not announce success")
 	voice.free()
 	_done("voice_refresh")
+
+
+## Setting URL first starts a metadata check with the old credential. Pasting a
+## key must replace that request, otherwise its stale 401 wins and the backend
+## remains disabled until the URL is edited a second time.
+func _test_credential_refresh_replaces_an_in_flight_check() -> void:
+	var voice := _voice()
+	var answers: Array = []
+	voice.checked.connect(func(healthy: bool, reason: String) -> void:
+		answers.append([healthy, reason]))
+
+	voice.refresh()
+	voice.refresh_after_credentials_change()
+	_expect(voice._voice_refresh_requested,
+		"credential change did not queue a protected voice-list check")
+	voice._meta_http.cancel_request()
+	_reply(voice, 200, '{"voices":[{"voice_id":"fresh","name":"Fresh"}]}')
+	_expect(voice.is_available(), "new credential result did not restore availability")
+	_expect(voice.list_voices() == PackedStringArray(["fresh"]),
+		"new credential result did not replace the voice list")
+	_expect(answers.size() == 1 and answers[0][0],
+		"credential refresh did not announce successful validation")
+	voice.free()
+	_done("credential_refresh")
 
 
 ## Each clip has to land in the folder of the voice it was rendered in.

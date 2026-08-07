@@ -818,10 +818,11 @@ func _build_speech_menu() -> PopupMenu:
 		var reason := TTSService.backend_unavailable_reason(backend)
 		menu.set_item_disabled(index, not reason.is_empty())
 		menu.set_item_tooltip(index, reason)
-	# Network addresses, credentials and an explicit library fetch are repair and
-	# maintenance actions, not everyday voice choices. Keep them one level deeper
-	# so the rows people use to switch voices remain easy to scan.
-	menu.add_submenu_node_item("進階設定", _build_speech_advanced_menu(menu))
+	# Keep repair controls in this submenu rather than a third popup. Native
+	# Windows menus may open that popup back across the first-level menu near a
+	# screen edge; crossing it then changes the hovered first-level item and makes
+	# the key row effectively unreachable.
+	_append_speech_connection_settings(menu)
 
 	# Voice libraries are allowed to grow without growing this menu. Report the
 	# active character here, then open the complete list only when the user asks
@@ -854,8 +855,8 @@ func _append_voice_summary(menu: PopupMenu, voices: PackedStringArray,
 	menu.add_item("更換角色…", MenuId.VOICE_SETTINGS)
 
 
-func _build_speech_advanced_menu(parent: PopupMenu) -> PopupMenu:
-	var menu := _submenu("SpeechAdvanced", parent)
+func _append_speech_connection_settings(menu: PopupMenu) -> void:
+	menu.add_separator()
 	# Always reachable, even when VoxCPM is down: a wrong address or key is exactly
 	# what makes the backend unavailable, so hiding its repair controls would make
 	# the failure permanent from inside the app.
@@ -872,8 +873,6 @@ func _build_speech_advanced_menu(parent: PopupMenu) -> PopupMenu:
 		else "重新整理聲音庫", MenuId.REFRESH_VOICES)
 	menu.set_item_disabled(menu.get_item_index(MenuId.REFRESH_VOICES),
 		TTSService.is_voice_library_refreshing())
-	_index_items(menu)
-	return menu
 
 
 ## The fixed lines are the ones the pet says most often and the ones whose
@@ -1266,14 +1265,14 @@ func _on_secret_submitted(value: String) -> void:
 	var secured := Config.set_secret(key, value)
 	# Adopted right away rather than sending the user back to the menu — a key is
 	# the only thing standing between the mock and the real thing in both cases.
+	# VoxCPM adoption waits for its protected endpoint to accept the new key;
+	# selecting synchronously here would still see the previous 401 result.
 	if key == VoxCPMVoice.KEY_NAME:
-		TTSService.rediscover()
-		TTSService.select_backend(TTSService.BACKEND_VOXCPM)
+		TTSService.rediscover_and_select(TTSService.BACKEND_VOXCPM)
 	elif key == ElevenVoice.KEY_NAME:
-		# `Config.get_secret()` caches per process and the backend caches its
-		# reason, so both have to be told before the row can stop being disabled.
-		TTSService.rediscover()
-		TTSService.select_backend(TTSService.BACKEND_ELEVEN)
+		# The backend caches its availability reason, so it has to reconsider the
+		# newly stored key before the row can stop being disabled.
+		TTSService.rediscover_and_select(TTSService.BACKEND_ELEVEN)
 	elif LLMService.get_provider_name() != "openai":
 		LLMService.select_provider("openai")
 	_build_menu()

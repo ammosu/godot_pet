@@ -34,6 +34,19 @@ func _ready() -> void:
 		"voice picker did not stage the active character")
 	summary.free()
 
+	# Windows may open a third-level native popup back across its parent near a
+	# screen edge. Connection repair rows therefore live directly in 說話.
+	var speech: PopupMenu = pet.call("_build_speech_menu")
+	var labels: Array[String] = []
+	for i in speech.item_count:
+		labels.append(speech.get_item_text(i))
+	_expect(not labels.has("進階設定"),
+		"speech settings still create the unreliable third-level popup")
+	_expect(labels.any(func(label: String) -> bool: return label.begins_with("服務位置…")),
+		"service URL is not directly reachable from the speech menu")
+	_expect(labels.any(func(label: String) -> bool: return label.contains("VoxCPM 金鑰")),
+		"VoxCPM key is not directly reachable from the speech menu")
+
 	if _failures == 0:
 		print("Voice settings dialog: %d checks passed" % _checks)
 	else:

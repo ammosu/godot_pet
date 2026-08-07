@@ -138,6 +138,18 @@ func refresh() -> void:
 		_meta_http.request(base_url() + HEALTH_PATH, _headers(false), HTTPClient.METHOD_GET)
 
 
+## A metadata request already in flight was created with the previous key, so
+## waiting for it would make the freshly pasted credential look ineffective.
+## Cancel that stale request and validate the new key against the protected
+## voices endpoint; /health alone cannot prove authentication works.
+func refresh_after_credentials_change() -> void:
+	_voice_refresh_requested = true
+	if _meta_http == null:
+		return
+	_meta_http.cancel_request()
+	_request_voice_library()
+
+
 ## Force a fresh copy of the service's voice library, even when one was already
 ## discovered this session. If another metadata request is in flight, its reply
 ## continues the refresh instead of cancelling a useful health check.

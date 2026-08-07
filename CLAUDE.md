@@ -838,8 +838,10 @@ fires about a second after startup, before the pet has said anything, so the swa
 happens while nobody is listening; without it every such machine paid one
 botched line per run.
 
-The repair and maintenance rows live under **說話 → 進階設定**, keeping network
-details out of the everyday backend and voice picker. The two rows that configure
+The repair and maintenance rows live directly under **說話**. A third native
+popup could open back across the first-level menu near a Windows screen edge;
+moving the pointer through it then changed the first-level hover and made the
+key row unreliable to reach. The two rows that configure
 VoxCPM are **always shown** — unlike the ElevenLabs key row, which disappears once
 there is nothing to repair. They decide whether the backend row is selectable at
 all: gating them on availability makes a wrong address unrecoverable, since the
@@ -865,7 +867,9 @@ Three things this flow had to get right, all found on screen rather than reasone
 - **Success has to re-adopt the backend.** A wrong address takes it down, so by
   the time the right one is typed the pet is on the OS voice and nothing switches
   back; 「連上了，有 5 種聲音」 would have been describing a service the pet was
-  not using. Same move `_on_secret_submitted` already makes after a key.
+  not using. A newly pasted key does the same only after the protected voices
+  endpoint accepts it; selecting synchronously would still see the cached 401
+  from the previous request.
 - **The address is normalised, not validated.** `127.0.0.1:8080` is what people
   type and what every tunnel's own instructions print. Whether it is *right* is
   decided by the service answering, which is the check that follows anyway.

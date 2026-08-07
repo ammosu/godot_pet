@@ -70,6 +70,10 @@ var _os_voice: OSVoice
 var _eleven: ElevenVoice
 var _voxcpm: VoxCPMVoice
 var _voice_library_refreshing := false
+## A newly pasted VoxCPM key is not usable until the protected voice-list
+## request accepts it. Remember the user's choice across that asynchronous
+## check instead of consulting the previous attempt's cached failure.
+var _select_after_check := ""
 ## [[from, to], …] sorted longest-first — see _load_respellings().
 var _respellings: Array = []
 
@@ -176,12 +180,23 @@ func get_backend_name() -> String:
 ## Cheap: a handful of `file_exists` calls, plus at most one short-lived process
 ## if no well-known Python is where it should be.
 func rediscover() -> void:
-	# A key pasted through the menu a moment ago is exactly the thing that would
-	# otherwise need a restart to be believed — `Config.get_secret()` caches per
-	# process — and the VoxCPM service may have been started or stopped since the
-	# last look.
+	# A key pasted through the menu or a VoxCPM service started/stopped since the
+	# last look both need the backends to reconsider their cached availability.
 	_eleven.refresh()
 	_voxcpm.refresh()
+
+
+## Re-check a backend after its credential changes and adopt it only once the
+## new credential has actually been accepted. ElevenLabs discovery is local and
+## synchronous; VoxCPM has to wait for the protected /v1/voices response.
+func rediscover_and_select(id: String) -> void:
+	if id == BACKEND_VOXCPM:
+		_select_after_check = id
+		_voxcpm.refresh_after_credentials_change()
+		return
+	if id == BACKEND_ELEVEN:
+		_eleven.refresh()
+		select_backend(id)
 
 
 ## A deliberate network refresh, unlike rediscover(), which only checks whether
@@ -302,6 +317,16 @@ func _on_backend_checked(healthy: bool, reason: String, backend: TTSBackend) -> 
 	if not healthy and speaking:
 		_on_backend_broke(reason)
 	var explained := not healthy and speaking
+	if backend == _voxcpm and _select_after_check == BACKEND_VOXCPM:
+		_select_after_check = ""
+		if healthy:
+			select_backend(BACKEND_VOXCPM)
+		elif not explained:
+			# The address dialog owns its own result, but a key submission does not.
+			# Say why the saved key was refused instead of leaving only the generic
+			# "saved" acknowledgement on screen.
+			remarked.emit(reason)
+			explained = true
 	backend_checked.emit(healthy, reason, explained)
 	if backend == _voxcpm and _voice_library_refreshing:
 		_voice_library_refreshing = false

@@ -148,7 +148,7 @@ npx codex-pets add <pet-id>
   `~/.local/share` 底下就違背了「你找得到、打得開」這件事）。目前唯一的產出是對話記錄匯出，
   那個完全不需要 LLM
 - **語音** —— 句子邊串流邊念。系統內建語音（`DisplayServer.tts_speak()`）不需 API；預設的
-  VoxCPM 神經網路語音服務位於 `https://voice.anfucwbot.uk`，需在「說話 → 進階設定」填入
+  VoxCPM 神經網路語音服務位於 `https://voice.anfucwbot.uk`，需在「說話」填入
   VoxCPM API key，語音文字會送到該服務生成音訊。也可以把服務位置改回自己架設的 VoxCPM。
   用「錄一段話」存下來的聲音可在「我做的東西」設成角色；聲音可以存好幾個，要換時到
   「說話」→「更換角色…」選擇
