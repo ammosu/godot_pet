@@ -123,7 +123,7 @@ func _ready() -> void:
 >   解法是 `WindowController.display_scale()`：`screen_get_scale()` 大於 1 就用它（macOS），否則退回 `screen_get_dpi() / 96`（Windows／Linux 回報的是 DPI 不是倍率）。
 >   **不要把結果取整**。像素美術偏好整數倍率，但 125% 就是 125%——取整回 1.0 正是原本的 bug，取整到 2.0 則會讓寵物大到誇張。實測 1.25 倍下 pixel art 沒有破圖。
 > - 沒有 Windows 憑證庫後端，`SecretStore` 落到 `Backend.NONE`，API key 會明文存進 `config.cfg`。
-> - 顯卡驅動若不支援 Vulkan，Godot 會自動退到 Direct3D 12，透明與 passthrough 都照常運作。
+> - 第一份 Win11／GTX 1650 實機 build 在 Forward+／Vulkan 冷啟動時會間歇性 heap corruption，並出現透明區域黑底。這個純 2D 專案不需要 Forward+，所以統一改用 GL Compatibility；修正版要在同一台機器清空 userdata 後反覆啟動回歸。
 
 ### Phase 2 — 動畫狀態機（1–2 天）
 **改用 Codex Pets 的素材生態**：
@@ -372,8 +372,9 @@ desktop entry，`Icon=` 指向那個 PNG。裝一次之後圖示就自己跟著�
 `export_templates/4.7.1.stable/`（從同一包 `.tpz` 挑 `windows_*.exe` 與
 `linux_*.x86_64` 複製過去即可，不用重載）。
 
-**匯出成功不代表跑得起來。** 這兩個 build 從來沒有在真的 Windows／Ubuntu 上執行過，
-下面「還沒驗」的部分就是字面意思。
+**匯出成功不代表跑得起來。** Windows 第一份實機 build 已跑到主場景，但暴露了
+Vulkan 冷啟動崩潰、黑底與工作區定位問題；目前的 GL Compatibility 修正版仍待回歸。
+Ubuntu 已從原始碼執行，匯出 build 尚未跑過。
 
 程式碼裡本來就已經處理掉的（不是這次才做的）：
 

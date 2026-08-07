@@ -80,8 +80,19 @@ func _ready() -> void:
 	_win.always_on_top = true
 	_win.files_dropped.connect(_on_files_dropped)
 	_apply_dpi_scale()
+	# Windows' mouse-passthrough implementation shapes the native window itself
+	# with SetWindowRgn(). Keeping our deliberately oversized transparent window
+	# partly outside the desktop then makes DPI conversion and the render region
+	# disagree about which pixels are visible. Keep the native window inside the
+	# work area there; `_clamp_anchor()` still lets the pet reach the corner.
+	_wm_confines_window = platform_confines_window(OS.get_name())
+	_wm_probed = _wm_confines_window
 	# Only ticks while a probe is in flight, which is once per run at most.
 	set_process(false)
+
+
+static func platform_confines_window(os_name: String) -> bool:
+	return os_name == "Windows"
 
 
 ## Godot reports window size and screen rects in physical pixels, so on a 2x

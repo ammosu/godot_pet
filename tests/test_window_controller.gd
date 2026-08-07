@@ -7,6 +7,7 @@ var _finished: Array[String] = []
 
 func _ready() -> void:
 	var tests := {
+		"platform window policy": _test_platform_window_policy,
 		"display rounding": _test_display_rounding_is_not_window_confinement,
 		"window confinement": _test_large_correction_is_window_confinement,
 	}
@@ -34,6 +35,16 @@ func _expect(condition: bool, message: String) -> void:
 
 func _done(name: String) -> void:
 	_finished.append(name)
+
+
+func _test_platform_window_policy() -> void:
+	_expect(WindowController.platform_confines_window("Windows"),
+		"Windows was allowed to leave the native window outside its work area")
+	_expect(not WindowController.platform_confines_window("macOS"),
+		"macOS lost the transparent-window overhang used for edge placement")
+	_expect(not WindowController.platform_confines_window("Linux"),
+		"Linux skipped its measured window-manager confinement probe")
+	_done("platform window policy")
 
 
 ## macOS converts Godot's physical-pixel positions through native point

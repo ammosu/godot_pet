@@ -216,6 +216,22 @@ menu drawn at design size: correct in pixels, visibly too small. Windows and
 Linux report a DPI instead, so the fallback is `screen_get_dpi() / 96`. The
 result is not rounded to an integer — 125% means 125%.
 
+**Windows does not use the off-screen-window trick.** Its passthrough path uses
+`SetWindowRgn()`, which shapes rendering as well as input; on the first real
+Windows run, a 125%-scaled native window hanging past the right and bottom edges
+also left the visible pet clipped. `_wm_confines_window` therefore starts true
+on Windows and `_clamp_anchor()` moves the pet inside a work-area-confined
+window. macOS keeps the overhang, while Linux still measures the WM because
+mutter confines it and lighter X11 WMs do not.
+
+The same Windows run found a timing-sensitive cold-start crash while Forward+
+was compiling Vulkan pipelines, plus an opaque black region around the pet.
+This app is entirely 2D and uses none of Forward+'s advanced features, so the
+project now selects GL Compatibility and declares
+`rendering/viewport/transparent_background` before the first frame. Do not move
+transparency back to only `WindowController._ready()`; an exported process has
+already created its root viewport by then.
+
 Anything measured in design units gets multiplied by
 `WindowController.get_ui_scale()` at the point of use. That includes UI theme
 constants — popups and controls are laid out in physical pixels, so the default
@@ -785,7 +801,8 @@ Two Godot specifics:
 *which* voice does the speaking is a backend in `tts/`, swapped the way
 `LLMService` swaps providers. Three of them: `tts/os_voice.gd` is the OS voices
 (`DisplayServer.tts_speak()` — no API, no cost, nothing to install),
-`tts/voxcpm_voice.gd` is the VoxCPM service running on this machine, and
+`tts/voxcpm_voice.gd` is a VoxCPM HTTP service (hosted by default, optionally
+running on this machine), and
 `tts/eleven_voice.gd` is ElevenLabs. Sentences are spoken as they stream in
 rather than after the reply completes.
 
@@ -811,7 +828,7 @@ the fallback is a degradation rather than a substitute. On this machine the
 service is a systemd **user** unit with `Linger=yes`, which is what makes it
 come back at boot rather than at login.
 
-#### The local service is the default, and where it is can be typed in
+#### The hosted service is the default, and where it is can be typed in
 
 `DEFAULT_BACKEND` is `voxcpm`, not the OS voice: on Linux the latter is espeak,
 which reads Traditional Chinese as a run of syllables — usable as a fallback,
@@ -828,7 +845,7 @@ there is nothing to repair. They decide whether the backend row is selectable at
 all: gating them on availability makes a wrong address unrecoverable, since the
 only thing that would fix it sits behind the row it just disabled.
 
-- **服務位置…（http://127.0.0.1:8080）** — the value is in the *label*. It is the
+- **服務位置…（https://voice.anfucwbot.uk）** — the value is in the *label*. It is the
   one setting here that explains a failure by itself, and a row reading 服務位置…
   tells you nothing about why the pet has gone quiet.
 - **設定/更換 VoxCPM 金鑰…** — was conditional on a 401 having been seen. That
@@ -1241,12 +1258,12 @@ effect on restart.
 
 `config.cfg`'s `[tts]` section carries the voice: `backend`
 (`os` / `voxcpm` / `eleven`), `voice` to pin an OS voice id, `voxcpm_url` and
-`voxcpm_voice` for the local service, and `eleven_voice_id` / `eleven_model` /
+`voxcpm_voice` for the VoxCPM service, and `eleven_voice_id` / `eleven_model` /
 `eleven_format` for the cloud one. All are optional. The two API keys are
 secrets rather than settings and go through `Config.get_secret()`:
-`VOXCPM_API_KEY` — which the service only requires once someone sets it, and
-which `/health` is exempt from, so a service with auth on answers that happily
-and then refuses everything else — and `ELEVENLABS_API_KEY`.
+`VOXCPM_API_KEY` — required by the hosted default but optional for a local
+service, while `/health` is exempt from auth and therefore cannot prove the key
+works — and `ELEVENLABS_API_KEY`.
 
 `config.cfg`'s `[monitor]` section carries the load monitor's working hours
 (`start_hour`, `end_hour`, `weekdays_only`) and its three alert thresholds

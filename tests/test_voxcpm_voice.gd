@@ -21,6 +21,7 @@ var _finished: Array[String] = []
 
 func _ready() -> void:
 	var tests := {
+		"default endpoint": _test_default_endpoint,
 		"cache": _test_cache_round_trip,
 		"health": _test_health_distinguishes_refusal_from_absence,
 		"cancel": _test_stop_discards_in_flight,
@@ -77,6 +78,12 @@ func _voice() -> VoxCPMVoice:
 	voice._meta_http.cancel_request()
 	voice._http.cancel_request()
 	return voice
+
+
+func _test_default_endpoint() -> void:
+	_expect(VoxCPMVoice.DEFAULT_URL == "https://voice.anfucwbot.uk",
+		"the shipped VoxCPM endpoint is not the hosted HTTPS service")
+	_done("default endpoint")
 
 
 func _reply(voice: VoxCPMVoice, code: int, body: String) -> void:

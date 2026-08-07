@@ -3,7 +3,7 @@ class_name ElevenVoice
 
 ## ElevenLabs, as a third voice beside the operating system's and the local model.
 ##
-## The trade against the local service is the opposite one in every respect: nothing to
+## The trade against VoxCPM is the opposite one in every respect: nothing to
 ## install, no 2.6 GB of VRAM and no model load, in exchange for every sentence
 ## the pet says leaving this machine and costing money. It is not the default and
 ## never becomes one — `TTSService` picks a backend at startup and never writes

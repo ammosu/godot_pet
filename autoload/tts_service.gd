@@ -1,7 +1,7 @@
 extends Node
 
 ## Speaks the pet's lines. Which voice does the speaking is a backend — the
-## operating system's own (`OSVoice`, no dependency at all), a local service
+## operating system's own (`OSVoice`, no dependency at all), a VoxCPM service
 ## (`VoxCPMVoice`), or a paid API (`ElevenVoice`) —
 ## swapped the same way `LLMService` swaps providers, so everything below this
 ## line is written once.
@@ -28,7 +28,7 @@ const BACKEND_ELEVEN := "eleven"
 const BACKEND_VOXCPM := "voxcpm"
 
 ## What a machine that has never chosen gets, and where an unrecognised choice
-## lands. The local service rather than the OS voice: on Linux the latter is
+## lands. VoxCPM rather than the OS voice: on Linux the latter is
 ## espeak, which reads Traditional Chinese as a string of syllables — usable as a
 ## fallback, not as a first impression. A machine without the service still ends
 ## up on the OS voice within a second, by the discovery below, and pays only a
@@ -154,7 +154,7 @@ func list_backends() -> PackedStringArray:
 func backend_label(id: String) -> String:
 	match id:
 		BACKEND_VOXCPM:
-			return "本機服務（VoxCPM）"
+			return "VoxCPM 語音服務"
 		BACKEND_ELEVEN:
 			return "ElevenLabs（雲端）"
 		_:
@@ -178,7 +178,7 @@ func get_backend_name() -> String:
 func rediscover() -> void:
 	# A key pasted through the menu a moment ago is exactly the thing that would
 	# otherwise need a restart to be believed — `Config.get_secret()` caches per
-	# process — and the local service may have been started or stopped since the
+	# process — and the VoxCPM service may have been started or stopped since the
 	# last look.
 	_eleven.refresh()
 	_voxcpm.refresh()
@@ -205,7 +205,7 @@ func backend_is_available(id: String) -> bool:
 	return _for(id).is_available()
 
 
-## Where the local service is, and where to point it instead. Read back from the
+## Where the VoxCPM service is, and where to point it instead. Read back from the
 ## backend rather than from config so the default shows through when nothing has
 ## been set — an empty box is not an address anyone can correct.
 func voxcpm_url() -> String:
@@ -290,7 +290,7 @@ func _for(id: String) -> TTSBackend:
 ## `checked` lands about a second after startup, which is *before* the pet has
 ## said anything — so a default that cannot run here is swapped out while nobody
 ## is listening, instead of the first nudge coming out half-spoken with an
-## apology after it. That matters now that the default is the local service:
+## apology after it. That matters now that the default is VoxCPM:
 ## every machine without it would otherwise pay one botched line per run.
 ##
 ## It only speaks up when the backend that failed is the one in use. Discovery
@@ -313,7 +313,7 @@ func _on_backend_checked(healthy: bool, reason: String, backend: TTSBackend) -> 
 ## choice is *not* persisted, so the next run tries again.
 ##
 ## **The reason is said whether or not there is anything to fall back from.**
-## A backend can break while it is not the one speaking — the local service is
+## A backend can break while it is not the one speaking — the VoxCPM service is
 ## asked how it is on every menu open — and guarding the whole handler on "am I
 ## on it" would make those failures silent, which is how the user ends up with a
 ## disabled row and no idea why.

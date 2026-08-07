@@ -1,13 +1,12 @@
 extends TTSBackend
 class_name VoxCPMVoice
 
-## VoxCPM2, through the HTTP service running on this machine.
+## VoxCPM2, through an HTTP service. The shipped default is the hosted Anfu
+## endpoint; the settings menu can still point it at a service on this machine.
 ##
-## Local — nothing leaves the machine, nothing is billed — but
-## reached the way `ElevenVoice` is reached, which is most of the point. The
-## engine lives in somebody else's process, so this class has no child to spawn,
-## no spool to guard, no crash to survive and no model to load; a sentence is one
-## POST and one `load_from_buffer`.
+## The engine lives in somebody else's process, so this class has no child to
+## spawn, no spool to guard, no crash to survive and no model to load; a sentence
+## is one POST and one `load_from_buffer`.
 ##
 ## Measured against the in-process engine it replaced, on the same line and the same
 ## voice: 0.63–0.83 s end to end against 383–1278 ms *plus* a 754 ms model load,
@@ -22,7 +21,7 @@ class_name VoxCPMVoice
 const TTS_PATH := "/v1/tts"
 const VOICES_PATH := "/v1/voices"
 const HEALTH_PATH := "/health"
-const DEFAULT_URL := "http://127.0.0.1:8080"
+const DEFAULT_URL := "https://voice.anfucwbot.uk"
 
 ## Long: the service's own ceiling is 180 s, and a request that outlives it
 ## should be ended by the service saying 504 rather than by us giving up first
@@ -37,9 +36,8 @@ const RETRY_SECONDS := 1.5
 
 const CACHE_DIR := "user://voxcpm/cache"
 
-## Optional, and empty is the normal case: the service leaves auth off while it
-## is bound to 127.0.0.1, and only needs a key once it is reachable from another
-## machine. Sent as a bearer token, which it accepts alongside X-API-Key.
+## Optional for a local service, required by the hosted default. Sent as a bearer
+## token, which the service accepts alongside X-API-Key.
 const KEY_NAME := "VOXCPM_API_KEY"
 
 ## The menu row that pastes one, named here so the sentence telling the user to
@@ -268,7 +266,7 @@ func _dispatch() -> void:
 	var error := _http.request(base_url() + TTS_PATH, _headers(true),
 		HTTPClient.METHOD_POST, body)
 	if error != OK:
-		_give_up("連不上本機語音服務（錯誤 %d），先用系統語音。" % error)
+		_give_up("連不上 VoxCPM 語音服務（錯誤 %d），先用系統語音。" % error)
 
 
 func _on_audio_received(result: int, code: int, _headers: PackedStringArray,
@@ -303,7 +301,7 @@ func _on_audio_received(result: int, code: int, _headers: PackedStringArray,
 	# means eighty-seven doomed requests and eighty-seven identical warnings. Both
 	# end the batch instead.
 	if result != HTTPRequest.RESULT_SUCCESS:
-		_give_up("跟本機語音服務斷了（%d），先用系統語音。" % result)
+		_give_up("跟 VoxCPM 語音服務斷了（%d），先用系統語音。" % result)
 		return
 	if code == 401:
 		_give_up(_explain(code, body))
@@ -313,7 +311,7 @@ func _on_audio_received(result: int, code: int, _headers: PackedStringArray,
 		return
 	var stream := AudioStreamWAV.load_from_buffer(body)
 	if stream == null or stream.get_length() <= 0.0:
-		_fail_job(fill, "本機語音服務傳回來的聲音解不開，先用系統語音。")
+		_fail_job(fill, "VoxCPM 語音服務傳回來的聲音解不開，先用系統語音。")
 		return
 
 	if not fill.is_empty():
@@ -356,16 +354,16 @@ func _explain(code: int, body: PackedByteArray) -> String:
 		detail = str((parsed as Dictionary).get("detail", ""))
 	match code:
 		401:
-			return "本機語音服務要 API key，先用系統語音。"
+			return "VoxCPM 語音服務要 API key，先用系統語音。"
 		404:
-			return "本機語音服務找不到這個音色，%s" % (detail if not detail.is_empty()
+			return "VoxCPM 語音服務找不到這個音色，%s" % (detail if not detail.is_empty()
 				else "請到選單重選一個。")
 		503:
-			return "本機語音服務忙不過來，先用系統語音。"
+			return "VoxCPM 語音服務忙不過來，先用系統語音。"
 		504:
-			return "本機語音服務生成逾時，先用系統語音。"
+			return "VoxCPM 語音服務生成逾時，先用系統語音。"
 		_:
-			return "本機語音服務回了 HTTP %d，先用系統語音。" % code
+			return "VoxCPM 語音服務回了 HTTP %d，先用系統語音。" % code
 
 
 func _on_meta_received(result: int, code: int, _headers: PackedStringArray,
@@ -378,9 +376,9 @@ func _on_meta_received(result: int, code: int, _headers: PackedStringArray,
 	if code != 200:
 		_voice_refresh_requested = false
 		# It answered, so telling the user to go and start it would send them to
-		# restart something that is running perfectly well. 401 is the one that
-		# actually happens: the service turns auth on the moment VOXCPM_API_KEY
-		# is set, and /health stays open, so this is the first request to notice.
+		# restart something that is running perfectly well. /health stays open on
+		# the hosted default and on authenticated self-hosted deployments, so the
+		# voices request is the first one that can notice a missing or wrong key.
 		_settle(false, ("語音服務要 API key。用下面那列「%s」貼上，或把 %s 放進環境變數。"
 			% [KEY_ROW_LABEL, KEY_NAME]) if code == 401
 			else "語音服務回了 HTTP %d（%s）。" % [code, base_url()])

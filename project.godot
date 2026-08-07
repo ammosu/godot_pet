@@ -8,7 +8,7 @@ config_version=5
 
 config/name="Godot Pet"
 run/main_scene="res://pet/pet.tscn"
-config/features=PackedStringArray("4.7", "Forward Plus")
+config/features=PackedStringArray("4.7", "GL Compatibility")
 config/icon="res://icon.png"
 run/max_fps=60
 
@@ -58,8 +58,10 @@ theme/custom="res://ui/theme.tres"
 
 [rendering]
 
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+viewport/transparent_background=true
 ; Pixel art: never interpolate.
 textures/canvas_textures/default_texture_filter=0
 ; Required to export arm64 / universal macOS builds.
 textures/vram_compression/import_etc2_astc=true
-anti_aliasing/quality/msaa_2d=2
