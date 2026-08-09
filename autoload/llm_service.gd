@@ -8,10 +8,17 @@ extends Node
 ## alongside the one being persisted is how the two drift apart.
 
 const PERSONA_PATH := "res://prompts/persona.md"
+const FUNCTIONS_PATH := "res://prompts/functions.md"
 const PERSONA_SECTION := "prompts"
 const DEFAULT_PERSONA_KEY := "default"
 const PET_PERSONAS_SECTION := "pet_prompts"
 const DEFAULT_PET_ID := "__default__"
+const LEGACY_FUNCTION_SECTIONS := [
+	"回話格式（一定要遵守）",
+	"看螢幕",
+	"界線",
+]
+const LEGACY_PERSONALITY_BOUNDARY := "- 使用者問技術問題時可以認真回答，但仍然保持你的語氣"
 
 const PROVIDERS := {
 	"mock": "res://llm/providers/mock_provider.gd",
@@ -48,8 +55,8 @@ const LOOK_TAG := "look"
 ## the model knows what to write.
 const WORK_TAG := "work"
 
-## Heading of the persona section that teaches `[look]`, dropped for one turn
-## after the user says no. Must match `prompts/persona.md`.
+## Heading of the shared function section that teaches `[look]`, dropped for one turn
+## after the user says no. Must match `prompts/functions.md`.
 const LOOK_SECTION := "看螢幕"
 
 ## Replaces it for that turn.
@@ -62,6 +69,7 @@ var _provider: LLMProvider = null
 var _provider_name := ""
 var _bundled_persona := ""
 var _persona := ""
+var _shared_functions := ""
 var _active_pet_id := DEFAULT_PET_ID
 
 ## Leading-tag parser state. Text is held back until the tag resolves one way or
@@ -88,6 +96,7 @@ var _last_question := ""
 
 func _ready() -> void:
 	_bundled_persona = _load_persona()
+	_shared_functions = _load_functions()
 	_active_pet_id = _normalise_pet_id(str(Config.get_value("pet", "id", DEFAULT_PET_ID)))
 	_refresh_persona()
 	set_provider(str(Config.get_value("llm", "provider", _default_provider())))
@@ -112,6 +121,10 @@ func get_bundled_persona() -> String:
 	return _bundled_persona
 
 
+func get_shared_functions() -> String:
+	return _shared_functions
+
+
 func has_default_persona_override() -> bool:
 	var saved := str(Config.get_value(PERSONA_SECTION, DEFAULT_PERSONA_KEY, ""))
 	return Config.has_value(PERSONA_SECTION, DEFAULT_PERSONA_KEY) \
@@ -120,7 +133,8 @@ func has_default_persona_override() -> bool:
 
 func get_default_persona() -> String:
 	if has_default_persona_override():
-		return str(Config.get_value(PERSONA_SECTION, DEFAULT_PERSONA_KEY, ""))
+		return _without_legacy_function_sections(
+			str(Config.get_value(PERSONA_SECTION, DEFAULT_PERSONA_KEY, "")))
 	return _bundled_persona
 
 
@@ -149,7 +163,8 @@ func has_pet_persona_override(pet_id: String) -> bool:
 func get_persona_for_pet(pet_id: String) -> String:
 	var key := _normalise_pet_id(pet_id)
 	if has_pet_persona_override(key):
-		return str(Config.get_value(PET_PERSONAS_SECTION, key, ""))
+		return _without_legacy_function_sections(
+			str(Config.get_value(PET_PERSONAS_SECTION, key, "")))
 	return get_default_persona()
 
 
@@ -184,6 +199,37 @@ func _normalise_pet_id(pet_id: String) -> String:
 
 func _refresh_persona() -> void:
 	_persona = get_persona_for_pet(_active_pet_id)
+
+
+## The first prompt editor shipped with the functional protocol mixed into every
+## editable persona. Existing overrides may therefore be copies of that file.
+## Recognise the complete old shape and hide only its three known protocol
+## sections; arbitrary user-authored headings are left alone.
+func _without_legacy_function_sections(text: String) -> String:
+	for heading in LEGACY_FUNCTION_SECTIONS:
+		if not text.contains("\n## %s" % heading):
+			return text
+	var kept := PackedStringArray()
+	for section in text.split("\n## "):
+		var is_function := false
+		for heading in LEGACY_FUNCTION_SECTIONS:
+			if section.begins_with(heading):
+				is_function = true
+				break
+		if not is_function:
+			kept.append(section)
+	var cleaned := "\n## ".join(kept).strip_edges()
+	# The old 界線 section had one personality instruction mixed in with the
+	# protocol. Preserve it while removing the functional remainder.
+	if text.contains(LEGACY_PERSONALITY_BOUNDARY) \
+			and not cleaned.contains(LEGACY_PERSONALITY_BOUNDARY):
+		var speaking_heading := "## 說話方式"
+		if cleaned.contains(speaking_heading):
+			cleaned = cleaned.replace(speaking_heading,
+				"%s\n%s" % [speaking_heading, LEGACY_PERSONALITY_BOUNDARY])
+		else:
+			cleaned += "\n\n## 對話習慣\n%s" % LEGACY_PERSONALITY_BOUNDARY
+	return cleaned
 
 
 func list_providers() -> PackedStringArray:
@@ -331,7 +377,8 @@ func request_background(system: String, prompt: String, on_done: Callable) -> bo
 
 
 func build_system_prompt(allow_look := true) -> String:
-	var sections := PackedStringArray([_persona if allow_look else _persona_without_looking()])
+	var functions := _shared_functions if allow_look else _functions_without_looking()
+	var sections := PackedStringArray([_persona, functions])
 	var work := _work_block()
 	if not work.is_empty():
 		sections.append(work)
@@ -381,14 +428,14 @@ func _work_block() -> String:
 	]))
 
 
-## The persona with its screen section cut out, for the turn after the user says
-## no. Merely appending "you can't look this time" doesn't work: the persona
-## tells the model to answer a screen question with nothing but `[look]`, and a
-## small model follows the character sheet over the footnote — it asked again,
-## the tag was swallowed, and the pet ended up saying nothing at all.
-func _persona_without_looking() -> String:
+## The shared function prompt with its screen section cut out, for the turn after
+## the user says no. Merely appending "you can't look this time" doesn't work:
+## the function rules tell the model to answer a screen question with nothing
+## but `[look]`, and a small model follows them over the footnote — it asked
+## again, the tag was swallowed, and the pet ended up saying nothing at all.
+func _functions_without_looking() -> String:
 	var kept := PackedStringArray()
-	for section in _persona.split("\n## "):
+	for section in _shared_functions.split("\n## "):
 		if not section.begins_with(LOOK_SECTION):
 			kept.append(section)
 	return "\n## ".join(kept) + NO_LOOK_NOTE
@@ -599,8 +646,8 @@ func _request_work(space_name: String) -> void:
 ##
 ## `_work_declined` is what stops the model offering again on the retry, and the
 ## 做事 section is cut for that one turn rather than merely contradicted: the
-## persona tells it to answer such a request with nothing but the tag, and a
-## small model follows the character sheet over an appended footnote — which is
+## shared work rules tell it to answer such a request with nothing but the tag,
+## and a small model follows them over an appended footnote — which is
 ## exactly how the `[look]` refusal path ended up saying nothing at all.
 func answer_without_working() -> void:
 	if _provider == null or _last_question.is_empty():
@@ -638,4 +685,12 @@ func _load_persona() -> String:
 	if text.is_empty():
 		push_warning("LLMService: no persona at %s" % PERSONA_PATH)
 		return "你是一隻住在使用者桌面上的小寵物，用繁體中文簡短回話。"
+	return text
+
+
+func _load_functions() -> String:
+	var text := FileAccess.get_file_as_string(FUNCTIONS_PATH)
+	if text.is_empty():
+		push_warning("LLMService: no shared functions at %s" % FUNCTIONS_PATH)
+		return "每次回話開頭都要標一個情緒，再用繁體中文回答。"
 	return text

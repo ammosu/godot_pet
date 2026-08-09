@@ -1254,14 +1254,16 @@ the menu item after turning it off doesn't re-ask something already agreed to.
 
 ## Tuning without code changes
 
-`prompts/persona.md` (the bundled fallback for character and reply format), `prompts/nudges.json`
+`prompts/persona.md` (the editable fallback personality and conversation style),
+`prompts/functions.md` (the non-editable protocol shared by every pet), `prompts/nudges.json`
 (unprompted lines, including the `{fact}` templates in the `memory` pool),
 `prompts/pronunciation.json` (破音字 the voice reads wrongly — see below), and
 the `DECAY` / `STARTING` constants in `autoload/pet_state.gd`. The 造型 submenu
 can override the default persona and the current pet's persona in `config.cfg`;
 pet-specific values inherit the editable default rather than copying it, and
-take effect on the next request. Direct edits to prompt files take effect on
-restart.
+take effect on the next request. The editor never exposes the shared emotion,
+screen, file and work rules, so changing a character cannot disable an app
+capability. Direct edits to prompt files take effect on restart.
 
 `config.cfg`'s `[tts]` section carries the voice: `backend`
 (`os` / `voxcpm` / `eleven`), `voice` to pin an OS voice id, `voxcpm_url` and
@@ -1312,10 +1314,10 @@ mandatory even though the user-selected default is now `gpt-5.6-luna`.
 
 `_in_vision_pass` stops a second `[look]` looping. `_look_declined` stops the
 model re-asking after a refusal — and suppressing the tag is *not* enough on its
-own: the persona tells the model to answer a screen question with nothing but
-`[look]`, a small model follows the character sheet over any appended footnote,
+own: the shared function prompt tells the model to answer a screen question with nothing but
+`[look]`, a small model follows that rule over any appended footnote,
 and the swallowed tag left the pet saying nothing at all. So
-`build_system_prompt(false)` cuts the `## 看螢幕` section out of the persona for
+`build_system_prompt(false)` cuts the `## 看螢幕` section out of `functions.md` for
 that one turn.
 
 Related: `_on_finished` must take `_clean_reply` whenever the tag parser
@@ -1396,7 +1398,7 @@ and belongs in history like any other turn.
   pet mid-sentence and doesn't count as an interaction for `PetState`, where
   dropped text does both.
 
-`persona.md` needs the same kind of explicit exception the screen look does — it
+`functions.md` needs the same kind of explicit exception the screen look does — it
 states flatly that the pet cannot see files, and the model will refuse to discuss
 one it is plainly being handed unless told otherwise.
 
@@ -1640,7 +1642,7 @@ than promising a containment that isn't there.
 The menu is a three-level walk (幫我做事 → a workspace → type). That is the right
 shape when you know what you want, and it is useless when you just say the thing.
 Asked 「這個專案在做什麼？stats.py 裡有沒有寫錯的地方？」 in ordinary chat, the pet
-had **no path to the workspace at all**: `persona.md` told it flatly
+had **no path to the workspace at all**: the shared function prompt told it flatly
 「你看不到使用者電腦上的檔案」, so it reached for `[look]` instead, screenshotted
 the desktop, and reported it couldn't see the file. Measured, on the user's own
 first attempt.
@@ -1649,9 +1651,9 @@ So `[work]` joins `[look]` in the mood-tag slot, the same two-trigger shape the
 screen look already proves. Three things this forces:
 
 - **The workspace list is built per request** (`LLMService._work_block()`), never
-  written into `prompts/persona.md`. Folders are added and removed while the app
-  runs, and a persona loaded once at startup goes stale the moment they are. The
-  block is empty when there is nothing to work in, so the persona's flat denial
+  written into `prompts/functions.md`. Folders are added and removed while the app
+  runs, and a prompt loaded once at startup goes stale the moment they are. The
+  block is empty when there is nothing to work in, so the shared prompt's flat denial
   stands unmodified on a fresh install — it only became *untrue* once a workspace
   existed.
 - **The tag carries the folder**, as `[work:名字]`, because an unnamed tag is only
@@ -1670,9 +1672,9 @@ ordinary chat still produced a mood tag. The two triggers do not fight.
 
 Backing out of a job has to answer the question anyway — the same repair
 `answer_without_looking()` makes, and for the same reason. `_work_declined` and
-cutting the 做事 section for that one turn are both needed: the persona tells the
-model to answer such a request with nothing but the tag, and a small model
-follows the character sheet over an appended footnote. That is exactly how the
+cutting the 做事 section for that one turn are both needed: the shared rules tell
+the model to answer such a request with nothing but the tag, and a small model
+follows them over an appended footnote. That is exactly how the
 `[look]` refusal path once ended up saying nothing at all.
 
 `_abandon_pending_work()` is the single exit for every refusal. Besides speaking,

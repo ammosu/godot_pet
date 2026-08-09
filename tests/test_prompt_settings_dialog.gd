@@ -32,10 +32,10 @@ func _ready() -> void:
 
 func _test_menu_entries(pet: Node) -> void:
 	var menu: PopupMenu = pet.get_node("Menu/Looks")
-	_expect(_menu_has_text(menu, "編輯這個造型的 prompt…"),
-		"looks menu has no current-pet prompt editor")
-	_expect(_menu_has_text(menu, "編輯預設 prompt…"),
-		"looks menu has no default prompt editor")
+	_expect(_menu_has_text(menu, "編輯這個造型的個性…"),
+		"looks menu has no current-pet personality editor")
+	_expect(_menu_has_text(menu, "編輯預設個性…"),
+		"looks menu has no default personality editor")
 	_done("menu")
 
 
@@ -51,6 +51,10 @@ func _test_default_editor(pet: Node) -> void:
 		"inherited default prompt remains editable")
 	_expect(editor.text == LLMService.get_default_persona(),
 		"default editor did not show the effective default prompt")
+	_expect(not editor.text.contains("## 回話格式（一定要遵守）"),
+		"shared response protocol leaked into the personality editor")
+	_expect(not editor.text.contains("## 看螢幕"),
+		"shared screen function leaked into the personality editor")
 
 	var draft := editor.text + "\n\n測試中的草稿，不會儲存。"
 	toggle.set_pressed_no_signal(true)
@@ -78,6 +82,22 @@ func _test_current_pet_editor(pet: Node) -> void:
 	_expect(LLMService.build_system_prompt().begins_with(
 		LLMService.get_persona_for_pet(pet_id)),
 		"system prompt does not start with the active pet persona")
+	_expect(LLMService.build_system_prompt().contains(LLMService.get_shared_functions()),
+		"system prompt omitted the functions shared by every pet")
+	var declined := LLMService.build_system_prompt(false)
+	_expect(not declined.contains("系統會幫你截圖，然後把同一個問題"),
+		"declined screen request kept the shared look instructions")
+	_expect(declined.contains("使用者剛剛拒絕了截圖"),
+		"declined screen request omitted its replacement rule")
+
+	var legacy := "自訂個性\n\n## 回話格式（一定要遵守）\n舊格式\n\n## 看螢幕\n舊功能\n\n## 界線\n舊界線"
+	var migrated := str(LLMService.call("_without_legacy_function_sections", legacy))
+	_expect(migrated == "自訂個性",
+		"legacy full-prompt override did not migrate to personality-only content")
+	legacy = "自訂個性\n\n## 回話格式（一定要遵守）\n舊格式\n\n## 看螢幕\n舊功能\n\n## 界線\n- 使用者問技術問題時可以認真回答，但仍然保持你的語氣\n- 舊功能"
+	migrated = str(LLMService.call("_without_legacy_function_sections", legacy))
+	_expect(migrated.contains("使用者問技術問題時可以認真回答"),
+		"legacy migration discarded the personality instruction from its boundary section")
 
 	pet.call("_open_prompt_settings", true)
 	var dialog: ConfirmationDialog = pet.get_node("PromptSettings")
