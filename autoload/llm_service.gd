@@ -8,6 +8,10 @@ extends Node
 ## alongside the one being persisted is how the two drift apart.
 
 const PERSONA_PATH := "res://prompts/persona.md"
+const PERSONA_SECTION := "prompts"
+const DEFAULT_PERSONA_KEY := "default"
+const PET_PERSONAS_SECTION := "pet_prompts"
+const DEFAULT_PET_ID := "__default__"
 
 const PROVIDERS := {
 	"mock": "res://llm/providers/mock_provider.gd",
@@ -56,7 +60,9 @@ const TAG_SCAN_LIMIT := 24
 
 var _provider: LLMProvider = null
 var _provider_name := ""
+var _bundled_persona := ""
 var _persona := ""
+var _active_pet_id := DEFAULT_PET_ID
 
 ## Leading-tag parser state. Text is held back until the tag resolves one way or
 ## the other, so a partially-arrived "[hap" never reaches the bubble.
@@ -81,7 +87,9 @@ var _last_question := ""
 
 
 func _ready() -> void:
-	_persona = _load_persona()
+	_bundled_persona = _load_persona()
+	_active_pet_id = _normalise_pet_id(str(Config.get_value("pet", "id", DEFAULT_PET_ID)))
+	_refresh_persona()
 	set_provider(str(Config.get_value("llm", "provider", _default_provider())))
 	EventBus.user_said.connect(_on_user_said)
 	EventBus.file_content_said.connect(_on_file_content_said)
@@ -95,6 +103,87 @@ func _default_provider() -> String:
 
 func get_provider_name() -> String:
 	return _provider_name
+
+
+## The file in the project is the last safe fallback. User changes live in
+## config.cfg so an exported build can edit them and an update cannot overwrite
+## them.
+func get_bundled_persona() -> String:
+	return _bundled_persona
+
+
+func has_default_persona_override() -> bool:
+	var saved := str(Config.get_value(PERSONA_SECTION, DEFAULT_PERSONA_KEY, ""))
+	return Config.has_value(PERSONA_SECTION, DEFAULT_PERSONA_KEY) \
+		and not saved.strip_edges().is_empty()
+
+
+func get_default_persona() -> String:
+	if has_default_persona_override():
+		return str(Config.get_value(PERSONA_SECTION, DEFAULT_PERSONA_KEY, ""))
+	return _bundled_persona
+
+
+func set_default_persona(text: String) -> bool:
+	if text.strip_edges().is_empty():
+		return false
+	Config.set_value(PERSONA_SECTION, DEFAULT_PERSONA_KEY, text)
+	_refresh_persona()
+	return true
+
+
+func reset_default_persona() -> void:
+	Config.erase_value(PERSONA_SECTION, DEFAULT_PERSONA_KEY)
+	_refresh_persona()
+
+
+func has_pet_persona_override(pet_id: String) -> bool:
+	var key := _normalise_pet_id(pet_id)
+	var saved := str(Config.get_value(PET_PERSONAS_SECTION, key, ""))
+	return Config.has_value(PET_PERSONAS_SECTION, key) \
+		and not saved.strip_edges().is_empty()
+
+
+## A pet with no override follows the editable default rather than copying it.
+## Changing the default therefore updates every inheriting character at once.
+func get_persona_for_pet(pet_id: String) -> String:
+	var key := _normalise_pet_id(pet_id)
+	if has_pet_persona_override(key):
+		return str(Config.get_value(PET_PERSONAS_SECTION, key, ""))
+	return get_default_persona()
+
+
+func set_persona_for_pet(pet_id: String, text: String) -> bool:
+	if text.strip_edges().is_empty():
+		return false
+	Config.set_value(PET_PERSONAS_SECTION, _normalise_pet_id(pet_id), text)
+	_refresh_persona()
+	return true
+
+
+func reset_persona_for_pet(pet_id: String) -> void:
+	Config.erase_value(PET_PERSONAS_SECTION, _normalise_pet_id(pet_id))
+	_refresh_persona()
+
+
+## Called by the composition root after a pack has actually loaded. This matters
+## for broken community packs: their art falls back to the bundled pet, so their
+## personality must fall back with it instead of surviving on the wrong body.
+func select_persona_for_pet(pet_id: String) -> void:
+	_active_pet_id = _normalise_pet_id(pet_id)
+	_refresh_persona()
+
+
+func get_active_pet_id() -> String:
+	return _active_pet_id
+
+
+func _normalise_pet_id(pet_id: String) -> String:
+	return DEFAULT_PET_ID if pet_id.is_empty() else pet_id
+
+
+func _refresh_persona() -> void:
+	_persona = get_persona_for_pet(_active_pet_id)
 
 
 func list_providers() -> PackedStringArray:

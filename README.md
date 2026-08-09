@@ -207,14 +207,16 @@ claude 沒有，它跑的 shell 指令能碰到你能碰的任何地方。同意
 
 | 檔案 | 調什麼 |
 |---|---|
-| `prompts/persona.md` | 角色人設與回覆格式 |
+| 右鍵「造型」→ prompt 編輯器 | 調整共用預設 prompt，或讓目前造型使用自己的 prompt；套用後下一次對話生效 |
+| `prompts/persona.md` | 還沒有使用者設定時採用的內建人設與回覆格式 |
 | `prompts/nudges.json` | 主動搭話的台詞池（`hungry` / `tired` / `lonely` / `focus` / `cheerful` / `memory`） |
 | `autoload/pet_state.gd` 的 `DECAY` / `STARTING` | 需求衰減速度與初始值 |
 | `config.cfg` 的 `[pet_rows]` | 每隻寵物的動畫列對應 |
 | `config.cfg` 的 `[monitor]` | 掃描的工作時段與三個警戒門檻 |
 
 門檻放在設定檔而不是程式裡，因為「多少算太多」是機器的性質：8 GB 的 12% 跟 64 GB 的 12%
-不是同一種麻煩。prompt 檔案要重開才生效。
+不是同一種麻煩。介面裡改的 prompt 存在 `config.cfg` 的 `[prompts]` / `[pet_prompts]`，不會改到
+repo 或造型套件；沒有專屬 prompt 的造型會一直繼承預設值。
 
 ## 平台狀態
 

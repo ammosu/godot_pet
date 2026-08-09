@@ -83,8 +83,23 @@ func get_value(section: String, key: String, default: Variant = null) -> Variant
 	return _file.get_value(section, key, default)
 
 
+func has_value(section: String, key: String) -> bool:
+	return _file.has_section_key(section, key)
+
+
 func set_value(section: String, key: String, value: Variant) -> void:
 	_file.set_value(section, key, value)
+	_save()
+
+
+func erase_value(section: String, key: String) -> void:
+	if not _file.has_section_key(section, key):
+		return
+	_file.erase_section_key(section, key)
+	_save()
+
+
+func _save() -> void:
 	var err := _file.save(PATH)
 	if err != OK:
 		push_warning("Config: failed to save %s (%d)" % [PATH, err])

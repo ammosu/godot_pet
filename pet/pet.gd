@@ -62,7 +62,7 @@ enum MenuId {
 	RECENTRE, SET_KEY, SET_ELEVEN_KEY, SET_VOXCPM_KEY, SET_VOXCPM_URL,
 	CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
 	RECORD, PRERENDER, REFRESH_VOICES, MODEL_SETTINGS, QUIT,
-	VOICE_SETTINGS,
+	VOICE_SETTINGS, PROMPT_DEFAULT, PROMPT_CURRENT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -83,6 +83,11 @@ enum MenuId {
 @onready var _voice_settings: ConfirmationDialog = $VoiceSettings
 @onready var _voice_settings_current: Label = $VoiceSettings/Box/Current
 @onready var _voice_picker: OptionButton = $VoiceSettings/Box/Grid/Voice
+@onready var _prompt_settings: ConfirmationDialog = $PromptSettings
+@onready var _prompt_settings_current: Label = $PromptSettings/Box/Current
+@onready var _prompt_override: CheckBox = $PromptSettings/Box/Override
+@onready var _prompt_editor: TextEdit = $PromptSettings/Box/Editor
+@onready var _prompt_settings_hint: Label = $PromptSettings/Box/Hint
 ## Where every key and the service address are typed. One window reused rather
 ## than four, because they differ only in what they are called and whether the
 ## characters are hidden — and four near-identical dialogs is four places for a
@@ -157,6 +162,11 @@ var _pending_work := {}
 ## A request the user has already typed, so the walk through _begin_work's gates
 ## ends by starting the job rather than asking them to type it a second time.
 var _queued_request := ""
+## Empty means the shared default; every concrete value is a pet selection id.
+## The draft survives turning inheritance off and back on before applying.
+var _prompt_target_id := ""
+var _prompt_inherited_text := ""
+var _prompt_draft := ""
 
 
 func _ready() -> void:
@@ -216,6 +226,7 @@ func _ready() -> void:
 	_setup_dirty_warning_dialog()
 	_setup_model_settings_dialog()
 	_setup_voice_settings_dialog()
+	_setup_prompt_settings_dialog()
 	_setup_entry_dialog()
 	_setup_codex_login_dialog()
 	CodexCli.login_finished.connect(_on_codex_login_finished)
@@ -377,6 +388,7 @@ func _apply_pack(pet_id: String) -> void:
 	# per-pet row corrections have already been applied.
 	AppIcon.apply(pack, int(_visual.state_rows().get(&"idle", 0)))
 	Config.set_value("pet", "id", selection)
+	LLMService.select_persona_for_pet(selection)
 
 
 # --- Brain --------------------------------------------------------------------
@@ -736,6 +748,9 @@ func _build_looks_menu(_current: PetPack) -> PopupMenu:
 	menu.add_radio_check_item("預設造型（芽尾）", MenuId.FALLBACK)
 	menu.set_item_checked(menu.get_item_index(MenuId.FALLBACK),
 		current_id.is_empty() or current_id == DEFAULT_PET_SELECTION)
+	menu.add_separator()
+	menu.add_item("編輯這個造型的 prompt…", MenuId.PROMPT_CURRENT)
+	menu.add_item("編輯預設 prompt…", MenuId.PROMPT_DEFAULT)
 	menu.add_separator()
 	menu.add_item("找更多造型…", MenuId.GET_PETS)
 	if _installed_pets.is_empty():
@@ -1105,6 +1120,10 @@ func _on_menu_pressed(id: int) -> void:
 			_open_model_settings()
 		MenuId.VOICE_SETTINGS:
 			_open_voice_settings()
+		MenuId.PROMPT_DEFAULT:
+			_open_prompt_settings(false)
+		MenuId.PROMPT_CURRENT:
+			_open_prompt_settings(true)
 		MenuId.SET_KEY:
 			_ask_for_entry(OPENAI_KEY, "OpenAI API key",
 				"用來聊天跟看螢幕的。%s" % _entry_storage_note(), true)
@@ -1698,6 +1717,134 @@ func _apply_voice_settings() -> void:
 	var voice := _selected_picker_value(_voice_picker)
 	if not voice.is_empty():
 		TTSService.select_voice(voice)
+
+
+## One editor serves both levels of the inheritance chain:
+##
+##   bundled persona.md <- editable default <- current pet override
+##
+## Keeping inheritance explicit matters more than saving a click. Copying the
+## default into every pet would make a later default edit appear to save while
+## most characters quietly kept stale copies.
+func _setup_prompt_settings_dialog() -> void:
+	var scale := _window_ctl.get_ui_scale()
+	_prompt_settings.exclusive = false
+	_prompt_settings.theme = PetStyle.dialog_theme(scale)
+	_prompt_settings_current.custom_minimum_size = Vector2(620.0 * scale, 0)
+	_prompt_settings_current.add_theme_color_override("font_color", PetStyle.ACCENT_TEXT)
+	_prompt_settings_current.add_theme_font_size_override("font_size", roundi(17.0 * scale))
+	_prompt_settings_hint.custom_minimum_size = Vector2(620.0 * scale, 0)
+	_prompt_settings_hint.add_theme_color_override("font_color", PetStyle.NIGHT_MUTED)
+	_prompt_settings_hint.add_theme_font_size_override("font_size", roundi(13.0 * scale))
+	_prompt_editor.custom_minimum_size = Vector2(620.0 * scale, 360.0 * scale)
+	_prompt_editor.scroll_fit_content_height = false
+	_prompt_editor.caret_blink = true
+	_prompt_editor.caret_blink_interval = 0.6
+	_prompt_editor.add_theme_font_size_override("font_size", roundi(14.0 * scale))
+	_prompt_editor.add_theme_constant_override("line_spacing", roundi(4.0 * scale))
+	var field_height := 38.0 * scale
+	var pad_y := 10.0 * scale
+	_prompt_editor.add_theme_stylebox_override("normal",
+		PetStyle.input_style(scale, field_height, false, 0.0, pad_y))
+	_prompt_editor.add_theme_stylebox_override("read_only",
+		PetStyle.input_style(scale, field_height, false, 0.0, pad_y))
+	_prompt_editor.add_theme_stylebox_override("focus",
+		PetStyle.input_focus_style(scale, field_height, false, 0.0, pad_y))
+	_prompt_editor.add_theme_color_override("font_color", PetStyle.INK)
+	_prompt_editor.add_theme_color_override("font_readonly_color", PetStyle.INK_SOFT)
+	_prompt_editor.add_theme_color_override("caret_color", PetStyle.input_caret_color(false))
+	_prompt_editor.add_theme_color_override("selection_color",
+		Color(PetStyle.input_caret_color(false), 0.20))
+	_prompt_editor.add_theme_color_override("background_color", Color(0, 0, 0, 0))
+	_prompt_editor.add_theme_color_override("current_line_color", Color(0, 0, 0, 0))
+	_prompt_override.add_theme_color_override("font_color", PetStyle.NIGHT_TEXT)
+	_prompt_override.add_theme_color_override("font_hover_color", PetStyle.NIGHT_TEXT)
+	($PromptSettings/Box as VBoxContainer).add_theme_constant_override(
+		"separation", roundi(12.0 * scale))
+
+	var ok := _prompt_settings.get_ok_button()
+	var primary := PetStyle.primary_button_styles(scale)
+	for state in primary:
+		ok.add_theme_stylebox_override(state, primary[state])
+	ok.add_theme_color_override("font_color", PetStyle.INK)
+	ok.add_theme_color_override("font_hover_color", PetStyle.INK)
+	ok.add_theme_color_override("font_pressed_color", PetStyle.INK)
+	PetStyle.make_ghost_button(_prompt_settings.get_cancel_button(), scale)
+
+	_prompt_override.toggled.connect(_on_prompt_override_toggled)
+	_prompt_editor.text_changed.connect(_on_prompt_text_changed)
+	_prompt_settings.confirmed.connect(_apply_prompt_settings)
+
+
+func _open_prompt_settings(for_current_pet: bool) -> void:
+	if for_current_pet:
+		_prompt_target_id = str(Config.get_value(
+			"pet", "id", DEFAULT_PET_SELECTION))
+		if _prompt_target_id.is_empty():
+			_prompt_target_id = DEFAULT_PET_SELECTION
+		var pack: PetPack = _visual.get_pack()
+		var name := pack.display_name if pack != null else "緊急造型"
+		_prompt_settings_current.text = "正在編輯：%s" % name
+		_prompt_override.text = "這個造型使用專屬 prompt"
+		_prompt_inherited_text = LLMService.get_default_persona()
+		_prompt_draft = LLMService.get_persona_for_pet(_prompt_target_id)
+		_prompt_override.set_pressed_no_signal(
+			LLMService.has_pet_persona_override(_prompt_target_id))
+	else:
+		_prompt_target_id = ""
+		_prompt_settings_current.text = "正在編輯：所有沒有專屬設定的造型"
+		_prompt_override.text = "覆寫內建預設 prompt"
+		_prompt_inherited_text = LLMService.get_bundled_persona()
+		_prompt_draft = LLMService.get_default_persona()
+		_prompt_override.set_pressed_no_signal(
+			LLMService.has_default_persona_override())
+
+	_prompt_editor.editable = _prompt_override.button_pressed
+	_prompt_editor.text = _prompt_draft if _prompt_editor.editable \
+		else _prompt_inherited_text
+	_refresh_prompt_settings()
+	_prompt_settings.reset_size()
+	_prompt_settings.popup_centered()
+	if _prompt_editor.editable:
+		_prompt_editor.call_deferred("grab_focus")
+
+
+func _on_prompt_override_toggled(enabled: bool) -> void:
+	if not enabled and _prompt_editor.editable:
+		_prompt_draft = _prompt_editor.text
+	_prompt_editor.editable = enabled
+	_prompt_editor.text = _prompt_draft if enabled else _prompt_inherited_text
+	_refresh_prompt_settings()
+	if enabled:
+		_prompt_editor.call_deferred("grab_focus")
+
+
+func _on_prompt_text_changed() -> void:
+	if _prompt_editor.editable:
+		_prompt_draft = _prompt_editor.text
+	_refresh_prompt_settings()
+
+
+func _refresh_prompt_settings() -> void:
+	var custom := _prompt_override.button_pressed
+	_prompt_settings.get_ok_button().disabled = custom \
+		and _prompt_editor.text.strip_edges().is_empty()
+	var source := "內建預設" if _prompt_target_id.is_empty() else "目前的預設 prompt"
+	_prompt_settings_hint.text = "%s。按「套用」後，下一次對話就會生效。\n情緒標記、看螢幕與做事規則也在這份 prompt 裡，刪掉會讓對應功能失效。" \
+		% ["正在編輯自訂內容" if custom else "目前繼承%s；勾選後可修改" % source]
+
+
+func _apply_prompt_settings() -> void:
+	var custom := _prompt_override.button_pressed
+	if _prompt_target_id.is_empty():
+		if custom:
+			LLMService.set_default_persona(_prompt_editor.text)
+		else:
+			LLMService.reset_default_persona()
+	elif custom:
+		LLMService.set_persona_for_pet(_prompt_target_id, _prompt_editor.text)
+	else:
+		LLMService.reset_persona_for_pet(_prompt_target_id)
 
 
 ## The entry window. `register_text_enter` is what makes Enter save, which is

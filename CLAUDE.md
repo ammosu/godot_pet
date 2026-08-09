@@ -1254,11 +1254,14 @@ the menu item after turning it off doesn't re-ask something already agreed to.
 
 ## Tuning without code changes
 
-`prompts/persona.md` (character and reply format), `prompts/nudges.json`
+`prompts/persona.md` (the bundled fallback for character and reply format), `prompts/nudges.json`
 (unprompted lines, including the `{fact}` templates in the `memory` pool),
 `prompts/pronunciation.json` (破音字 the voice reads wrongly — see below), and
-the `DECAY` / `STARTING` constants in `autoload/pet_state.gd`. Prompt files take
-effect on restart.
+the `DECAY` / `STARTING` constants in `autoload/pet_state.gd`. The 造型 submenu
+can override the default persona and the current pet's persona in `config.cfg`;
+pet-specific values inherit the editable default rather than copying it, and
+take effect on the next request. Direct edits to prompt files take effect on
+restart.
 
 `config.cfg`'s `[tts]` section carries the voice: `backend`
 (`os` / `voxcpm` / `eleven`), `voice` to pin an OS voice id, `voxcpm_url` and

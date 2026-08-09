@@ -142,6 +142,28 @@ text = "角色"
 [node name="Voice" type="OptionButton" parent="VoiceSettings/Box/Grid"]
 size_flags_horizontal = 3
 
+[node name="PromptSettings" type="ConfirmationDialog" parent="."]
+title = "角色 prompt"
+ok_button_text = "套用"
+cancel_button_text = "取消"
+
+[node name="Box" type="VBoxContainer" parent="PromptSettings"]
+
+[node name="Current" type="Label" parent="PromptSettings/Box"]
+text = "正在編輯"
+
+[node name="Rule" type="HSeparator" parent="PromptSettings/Box"]
+
+[node name="Override" type="CheckBox" parent="PromptSettings/Box"]
+text = "使用自訂 prompt"
+
+[node name="Editor" type="TextEdit" parent="PromptSettings/Box"]
+size_flags_vertical = 3
+wrap_mode = 1
+
+[node name="Hint" type="Label" parent="PromptSettings/Box"]
+autowrap_mode = 3
+
 [node name="SecretEntry" type="ConfirmationDialog" parent="."]
 title = "設定金鑰"
 ok_button_text = "儲存"
