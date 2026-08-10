@@ -51,6 +51,10 @@ const MIN_CONTENT_PX := 4
 var id := ""
 var display_name := ""
 var description := ""
+## Directory the manifest came from. CompanionProfile uses the optional
+## `companion.json` beside it without adding project-specific fields to the
+## Codex Pets manifest format.
+var base_dir := ""
 var sprite_version_number := 1
 var smooth_filter := false
 var frames: SpriteFrames
@@ -137,6 +141,7 @@ static func load_from_dir(dir: String) -> PetPack:
 		return null
 
 	var pack := PetPack.new()
+	pack.base_dir = dir
 	pack.id = data.get("id", dir.get_file())
 	pack.display_name = data.get("displayName", pack.id)
 	pack.description = data.get("description", "")

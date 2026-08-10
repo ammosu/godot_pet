@@ -116,12 +116,14 @@ func _handle_image(path: String, name: String, ext: String) -> void:
 		_say(_unreadable_message(name, ext))
 		return
 	var data_url := VisionService.image_to_data_url(image)
+	var question := _image_question(name)
+	EventBus.image_content_said.emit(question)
 	# record_question: true — this is a fresh turn; nothing has appended it yet.
 	# ephemeral: false — unlike a screen look, the user handed this over on
 	# purpose. It's the kind of thing worth remembering, not an incidental
 	# glimpse of whatever else happened to be open — see the reasoning on
 	# LLMService.ask_about_image().
-	LLMService.ask_about_image(_image_question(name), data_url, true, false)
+	LLMService.ask_about_image(question, data_url, true, false)
 
 
 ## Phrased as if the user said it, so it reads naturally wherever a `user`

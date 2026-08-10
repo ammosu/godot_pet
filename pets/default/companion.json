@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "selfName": "芽尾",
+  "states": {
+    "bond": {
+      "label": "羈絆",
+      "grades": ["初識", "熟悉", "信任", "默契"]
+    }
+  },
+  "care": {
+    "enabled": true,
+    "label": "飽足",
+    "grades": ["很餓，可以抱怨一下", "有點餓", "還好", "很飽"],
+    "actionLabel": "餵食",
+    "starting": 70.0,
+    "decayPerMinute": 0.12,
+    "amount": 35.0,
+    "moodAmount": 4.0,
+    "gameTreatAmount": 0.6,
+    "gameTreatCap": 10.0,
+    "replies": [
+      {"emotion": "happy", "text": "謝謝！這個好吃。"},
+      {"emotion": "happy", "text": "嘿嘿，剛好餓了。"}
+    ]
+  },
+  "bondStages": [
+    {"minimum": 0.0, "label": "初識"},
+    {"minimum": 25.0, "label": "熟悉", "emotion": "happy", "line": "我好像越來越習慣你了欸。"},
+    {"minimum": 50.0, "label": "信任", "emotion": "happy", "line": "跟你待在一起，好像不用一直戒備了。"},
+    {"minimum": 75.0, "label": "默契", "emotion": "excited", "line": "嘿嘿，我們現在超有默契的吧！"}
+  ],
+  "returnGreeting": {
+    "minimumMinutes": 60.0,
+    "emotion": "greeting",
+    "lines": ["你回來啦！我有看到喔。", "嗨，好一陣子沒看到你了欸。"]
+  },
+  "ambientBehaviours": [
+    {"state": "wave", "minimumBond": 25.0, "weight": 1.0, "duration": 2.2},
+    {"state": "happy", "minimumBond": 50.0, "weight": 0.7, "duration": 2.0}
+  ]
+}

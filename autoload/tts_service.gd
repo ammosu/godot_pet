@@ -109,7 +109,7 @@ func _ready() -> void:
 	EventBus.reply_failed.connect(_on_interrupted)
 	EventBus.user_said.connect(_on_user_said)
 	EventBus.file_content_said.connect(_on_user_said)
-	EventBus.pet_nudged.connect(_on_nudged)
+	EventBus.image_content_said.connect(_on_user_said)
 
 
 func _exit_tree() -> void:
@@ -420,7 +420,10 @@ func _on_interrupted(_message: String) -> void:
 	stop()
 
 
-func _on_nudged(_emotion: String, text: String) -> void:
+## Speak a complete companion-authored line. Presentation owns when a line is
+## accepted rather than TTS listening to one particular source signal, so menu
+## actions, games, work results and automatic nudges all follow the same rule.
+func speak_line(text: String) -> void:
 	if _enabled:
 		_speak(text)
 
@@ -453,10 +456,9 @@ func _speak(text: String) -> void:
 ## than the problem.
 ## Every line the pet says aloud whose wording never changes.
 ##
-## Only three things reach a backend at all — a streamed reply, a nudge, and the
-## vision refusal — and the first of those is written fresh every time. So this
-## is the nudges plus that one line, and it is short by nature: eighteen at the
-## time of writing.
+## Streamed replies are written fresh every time. The reusable set is the current
+## companion profile's nudge lines plus the fixed vision refusal, so changing a
+## skin pack also changes what can be pre-rendered.
 func fixed_lines() -> PackedStringArray:
 	var lines := Nudger.fixed_lines()
 	lines.append(VisionService.WALLPAPER_ONLY_LINE)

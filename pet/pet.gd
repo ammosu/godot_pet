@@ -63,6 +63,8 @@ enum MenuId {
 	CHAT_LOG, MEMORY, OUTBOX, LOOK, WORK, ADD_SPACE, LOAD,
 	RECORD, PRERENDER, REFRESH_VOICES, MODEL_SETTINGS, QUIT,
 	VOICE_SETTINGS, PROMPT_DEFAULT, PROMPT_CURRENT,
+	COMPANION_STATUS,
+	SPEECH_INPUT,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -101,12 +103,14 @@ enum MenuId {
 ## is the only arrangement that lays out, so both live in a VBox.
 @onready var _secret_blurb: Label = $SecretEntry/Box/Blurb
 @onready var _codex_login: ConfirmationDialog = $CodexLogin
+@onready var _speech_consent: ConfirmationDialog = $SpeechConsent
 @onready var _memory: MemoryPanel = $Memory
 @onready var _chat_log: ChatLogPanel = $ChatLog
 @onready var _game: GamePanel = $Game
 @onready var _outbox: OutboxPanel = $Outbox
 @onready var _work: WorkPanel = $Work
 @onready var _monitor: MonitorPanel = $Monitor
+@onready var _companion_status: CompanionStatusPanel = $CompanionStatus
 
 var _installed_pets := PackedStringArray()
 ## Submenus, kept between rebuilds — PopupMenu.clear() empties the items but
@@ -216,6 +220,7 @@ func _ready() -> void:
 	EventBus.reply_failed.connect(_on_reply_failed)
 	EventBus.emotion_changed.connect(_on_emotion_changed)
 	EventBus.pet_nudged.connect(_on_pet_nudged)
+	EventBus.bond_stage_reached.connect(_on_bond_stage_reached)
 	EventBus.screen_look_requested.connect(_on_screen_look_requested)
 	EventBus.work_requested.connect(_on_work_requested)
 	EventBus.resource_alert.connect(_on_resource_alert)
@@ -234,12 +239,17 @@ func _ready() -> void:
 	RecorderService.tick.connect(_on_recording_tick)
 	RecorderService.saved.connect(_on_recording_saved)
 	RecorderService.failed.connect(_on_recording_failed)
-	_chat.holding_action_pressed.connect(_on_recording_stop_pressed)
+	_chat.holding_action_pressed.connect(_on_holding_action_pressed)
 	_chat.hit_region_changed.connect(_refresh_mask)
 	TTSService.remarked.connect(_on_voice_remarked)
 	# The row names the voice in use, and every one of these changes it.
 	TTSService.voice_changed.connect(_build_menu)
 	TTSService.prerender_progress.connect(_on_prerender_progress)
+	SpeechInputService.tick.connect(_on_speech_input_tick)
+	SpeechInputService.transcribing.connect(_on_speech_transcribing)
+	SpeechInputService.transcribed.connect(_on_speech_transcribed)
+	SpeechInputService.failed.connect(_on_speech_input_failed)
+	_speech_consent.confirmed.connect(_start_speech_input)
 
 	# Only worth ticking where the mask clips rendering; elsewhere the bubble is
 	# outside it by design and moving is free.
@@ -254,6 +264,7 @@ func _ready() -> void:
 	_window_ctl.park_at_default_spot()
 	_brain.setup(_window_ctl)
 	_warn_if_keyless()
+	_welcome_back()
 
 
 ## The bubble grows as the reply types itself out and shifts as the pet walks, so
@@ -272,6 +283,19 @@ func _warn_if_keyless() -> void:
 		return
 	await get_tree().create_timer(2.0).timeout
 	_on_pet_nudged("neutral", "我還沒有 API key，現在只會講罐頭台詞。右鍵選單可以設定。")
+
+
+func _welcome_back() -> void:
+	var greeting := CompanionProfile.return_greeting(PetState.offline_minutes())
+	if greeting.is_empty():
+		return
+	# Let startup warnings and window placement settle first. If another visible
+	# interaction has already started, silence beats talking over it.
+	await get_tree().create_timer(4.0).timeout
+	if _chat.is_showing() or _chat.is_input_open() or LLMService.is_busy():
+		return
+	_on_pet_nudged(str(greeting.get("emotion", "greeting")),
+		str(greeting.get("text", "")), true, true)
 
 
 ## Centre the pet in the window and match the display's DPI scale, so it looks
@@ -379,6 +403,7 @@ func _apply_pack(pet_id: String) -> void:
 			selection = DEFAULT_PET_SELECTION
 			pack = PetPack.load_builtin()
 	_visual.load_pack(pack)
+	CompanionProfile.apply_pack(pack)
 	# The pack carries its own size correction, so the scale has to be reapplied
 	# before anything is measured off the visual.
 	_layout_visual()
@@ -615,7 +640,7 @@ func _on_reply_failed(message: String) -> void:
 ## flow *opens the input itself*, so the guard was still true when both the "give
 ## me a moment" line and the result ten seconds later tried to speak.
 func _on_pet_nudged(emotion: String, text: String, record := true,
-		unprompted := true) -> void:
+		unprompted := true, speak := true) -> void:
 	if unprompted and (_chat.is_showing() or _chat.is_input_open()):
 		return
 	_brain.on_talk_started()
@@ -623,8 +648,17 @@ func _on_pet_nudged(emotion: String, text: String, record := true,
 	_on_emotion_changed(emotion)
 	_chat.append_reply(text)
 	_chat.end_reply()
+	if speak:
+		TTSService.speak_line(text)
 	if record:
 		LLMService.note_pet_said(text)
+
+
+func _on_bond_stage_reached(stage: Dictionary) -> void:
+	var text := str(stage.get("line", "")).strip_edges()
+	if text.is_empty():
+		return
+	_on_pet_nudged(str(stage.get("emotion", "happy")), text, true, false)
 
 
 ## Wait for the bubble to clear rather than for the stream to end — the text is
@@ -669,8 +703,7 @@ func _submenu(key: String, parent: PopupMenu = null) -> PopupMenu:
 
 ## Four setting groups behind submenus, then the verbs worth reaching in one
 ## click, then one door to the windows. Flat, the menu ran to twenty rows — every
-## setting the app has, at the same weight as "餵食", which is the one people
-## actually came for.
+## setting the app has, at the same weight as the role's primary care action.
 ##
 ## The panels were folded away second, for a different reason than the settings
 ## were. Measured at seventeen rows: 476px on a 1080p desktop, which Godot had to
@@ -696,8 +729,9 @@ func _build_menu() -> void:
 	_menu.add_submenu_node_item("行為", _build_behaviour_menu(current))
 
 	_menu.add_separator()
-	_menu.add_item("餵食", MenuId.FEED)
-	# Down here with 餵食 rather than up with the four setting groups: these are
+	if CompanionProfile.care_enabled():
+		_menu.add_item(CompanionProfile.care_action_label(), MenuId.FEED)
+	# Down here with the role's care action rather than up with the setting groups:
 	# things you do *with* the pet, not things you do to the app.
 	_menu.add_submenu_node_item("遊戲", _build_games_menu())
 	_menu.add_item("看一下我的螢幕…", MenuId.LOOK)
@@ -722,6 +756,9 @@ func _build_menu() -> void:
 	_menu.add_item(_record_label(), MenuId.RECORD)
 	_menu.set_item_disabled(_menu.get_item_index(MenuId.RECORD),
 		not RecorderService.is_supported())
+	_menu.add_item(_speech_input_label(), MenuId.SPEECH_INPUT)
+	_menu.set_item_disabled(_menu.get_item_index(MenuId.SPEECH_INPUT),
+		not SpeechInputService.is_supported())
 	_menu.add_item("回到角落", MenuId.RECENTRE)
 
 	# Its own block, because it is a different kind of thing from everything above
@@ -969,6 +1006,7 @@ func _build_work_menu() -> PopupMenu:
 func _build_panels_menu() -> PopupMenu:
 	var menu := _submenu("Panels")
 	menu.add_item("對話記錄…", MenuId.CHAT_LOG)
+	menu.add_item("小夥伴狀態…", MenuId.COMPANION_STATUS)
 	menu.add_item("記憶與資料…", MenuId.MEMORY)
 	menu.add_item("我做的東西…", MenuId.OUTBOX)
 	menu.add_item("工作…", MenuId.WORK)
@@ -1055,6 +1093,7 @@ func _open_menu() -> void:
 	# the one failure a stop control cannot have. The clock in it is a snapshot
 	# taken as the menu opens; the live one is the bubble, which the menu covers.
 	_set_item_text(MenuId.RECORD, _record_label())
+	_set_item_text(MenuId.SPEECH_INPUT, _speech_input_label())
 	_menu.reset_size()
 	_menu.popup(Rect2i(DisplayServer.mouse_get_position(), _menu.size))
 
@@ -1113,6 +1152,8 @@ func _on_menu_pressed(id: int) -> void:
 			_toggle_calibration()
 		MenuId.RECORD:
 			_toggle_recording()
+		MenuId.SPEECH_INPUT:
+			_toggle_speech_input()
 		MenuId.RECENTRE:
 			_window_ctl.park_at_default_spot()
 			_brain.set_home_here()
@@ -1150,6 +1191,8 @@ func _on_menu_pressed(id: int) -> void:
 			_work.pick_folder()
 		MenuId.CHAT_LOG:
 			_chat_log.open(_window_ctl.get_ui_scale())
+		MenuId.COMPANION_STATUS:
+			_companion_status.open(_window_ctl.get_ui_scale())
 		MenuId.MEMORY:
 			_memory.open(_window_ctl.get_ui_scale())
 		MenuId.OUTBOX:
@@ -2275,8 +2318,9 @@ func _on_exported(file_name: String) -> void:
 
 
 func _feed() -> void:
-	PetState.feed()
-	_on_pet_nudged("happy", "謝謝！這個好吃。")
+	PetState.care()
+	var reply := CompanionProfile.care_reply()
+	_on_pet_nudged(str(reply.get("emotion", "happy")), str(reply.get("text", "")))
 
 
 ## The pet's side of a finished run. The game window knows the score and the
@@ -2325,7 +2369,9 @@ func _toggle_speech() -> void:
 ## precisely because speech just stopped working, and routing them through the
 ## thing that broke is how a failure notice becomes silence.
 func _on_voice_remarked(text: String) -> void:
-	_on_pet_nudged("neutral", text, false, false)
+	# This line exists because speech failed; do not feed it back through the
+	# subsystem that just reported the failure.
+	_on_pet_nudged("neutral", text, false, false, false)
 
 
 ## A home-relative path, for somewhere a full one would not fit.
@@ -2392,6 +2438,14 @@ func _record_label() -> String:
 	return "錄一段話"
 
 
+func _speech_input_label() -> String:
+	if SpeechInputService.is_listening():
+		return "停止聆聽並送出（%s）" % SpeechInputService.elapsed_text()
+	if SpeechInputService.is_transcribing():
+		return "正在把聲音變成文字…"
+	return "用聲音跟我說話…"
+
+
 ## No dialog, and the reasoning is worth keeping because a microphone looks like
 ## it should have one. The consent dialogs in this app all guard something that
 ## happens *without* a fresh human action right now: a background poll
@@ -2405,6 +2459,9 @@ func _record_label() -> String:
 ## What was genuinely missing is *where it went*, and the honest place to answer
 ## that is when the file exists — see _on_recording_saved().
 func _toggle_recording() -> void:
+	if SpeechInputService.is_busy():
+		_on_pet_nudged("neutral", "我正在聽你說話，等這次結束再錄音喔。", false, false)
+		return
 	if RecorderService.is_recording():
 		RecorderService.stop()
 		return
@@ -2426,9 +2483,52 @@ func _on_recording_tick(elapsed_text: String) -> void:
 ## Dedicated rather than routed through _toggle_recording(): if the one-hour
 ## cap ends between the pointer going down and the signal arriving, a late click
 ## must do nothing instead of immediately starting a new recording.
-func _on_recording_stop_pressed() -> void:
-	if RecorderService.is_recording():
+func _on_holding_action_pressed() -> void:
+	if SpeechInputService.is_listening():
+		SpeechInputService.stop_and_transcribe()
+	elif RecorderService.is_recording():
 		RecorderService.stop()
+
+
+func _toggle_speech_input() -> void:
+	if SpeechInputService.is_listening():
+		SpeechInputService.stop_and_transcribe()
+		return
+	if SpeechInputService.is_transcribing():
+		return
+	if RecorderService.is_recording():
+		_on_pet_nudged("neutral", "我還在錄音，先停下來才能聽你說話。", false, false)
+		return
+	if not bool(Config.get_value("speech_input", "consented", false)):
+		_speech_consent.popup_centered()
+		return
+	_start_speech_input()
+
+
+func _start_speech_input() -> void:
+	Config.set_value("speech_input", "consented", true)
+	if not SpeechInputService.start():
+		return
+	_brain.on_talk_started()
+	_on_speech_input_tick(SpeechInputService.elapsed_text())
+
+
+func _on_speech_input_tick(elapsed_text: String) -> void:
+	_chat.show_holding("● 正在聽 %s\n說完按下面送出" % elapsed_text, "停止並送出")
+
+
+func _on_speech_transcribing() -> void:
+	_chat.show_holding("正在把聲音變成文字…")
+
+
+func _on_speech_transcribed(text: String) -> void:
+	_chat.hide_bubble()
+	_on_chat_submitted(text)
+
+
+func _on_speech_input_failed(reason: String) -> void:
+	_chat.hide_bubble()
+	_on_pet_nudged("sad", reason, false, false)
 
 
 func _on_recording_saved(file_name: String, seconds: float) -> void:

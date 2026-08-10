@@ -1,32 +1,31 @@
 extends Node
 
-## The pet's needs, and the only thing that makes it feel like it exists between
-## conversations. Everything is 0-100 and "higher is better", so one decay rule
-## covers all of them.
+## The companion's persistent condition. `care` and `bond` are deliberately
+## role-neutral: a pet can render them as fullness/affection, a robot as
+## charge/trust, and another form can hide the care dimension entirely.
 ##
 ## Feeds two things: the system prompt (so the pet's mood colours what it says)
 ## and the brain (so an exhausted pet goes to sleep on its own).
 
 const SAVE_PATH := "user://state.json"
 const SAVE_INTERVAL := 30.0
+const SAVE_VERSION := 2
 
-## A new pet is fed and rested but doesn't know you yet.
+## A new companion is rested but doesn't know you yet. The current role profile
+## supplies care's starting value.
 const STARTING := {
-	&"fullness": 70.0,
+	&"care": 70.0,
 	&"energy": 70.0,
 	&"mood": 60.0,
-	&"affection": 10.0,
+	&"bond": 10.0,
 }
-const NEEDS: Array[StringName] = [&"fullness", &"energy", &"mood", &"affection"]
+const NEEDS: Array[StringName] = [&"care", &"energy", &"mood", &"bond"]
 
 ## Points lost per minute of wall-clock time.
 const DECAY := {
-	## Roughly fourteen hours to empty. Faster than this and every morning
-	## starts with a starving pet, since overnight is eight hours on its own.
-	&"fullness": 0.12,
 	&"energy": 0.28,     # worn out after roughly six hours awake
 	&"mood": 0.35,       # pulled toward `_mood_target()`, not toward zero
-	&"affection": 0.02,  # forgets you very slowly
+	&"bond": 0.02,       # familiarity fades very slowly
 }
 ## Sleeping restores energy far faster than being awake drains it.
 const SLEEP_RECOVERY := 2.0
@@ -37,11 +36,6 @@ const MOOD_BASELINE := 60.0
 const EXHAUSTED_BELOW := 20.0
 const RESTED_ABOVE := 55.0
 
-## What a mini-game run is worth in fullness — see play_session(). Deliberately
-## less than a third of a feed even after a very good run.
-const PLAY_FULLNESS_PER_CATCH := 0.6
-const PLAY_FULLNESS_CAP := 10.0
-
 ## Come back after a fortnight and the pet should be hungry, not a corpse.
 const MAX_OFFLINE_MINUTES := 24.0 * 60.0
 
@@ -49,11 +43,14 @@ var _needs := {}
 var _asleep := false
 var _last_talk_at := 0.0
 var _since_save := 0.0
+var _highest_bond_stage := 0
+var _offline_minutes := 0.0
 
 
 func _ready() -> void:
 	for need in NEEDS:
 		_needs[need] = float(STARTING[need])
+	_needs[&"care"] = CompanionProfile.care_starting()
 	_last_talk_at = Time.get_unix_time_from_system()
 	_load()
 
@@ -61,6 +58,7 @@ func _ready() -> void:
 	EventBus.pet_released.connect(_on_released)
 	EventBus.user_said.connect(_on_user_said)
 	EventBus.file_content_said.connect(_on_user_said)
+	EventBus.image_content_said.connect(_on_user_said)
 	EventBus.pet_activity_changed.connect(_on_activity_changed)
 
 	var timer := Timer.new()
@@ -96,28 +94,22 @@ func minutes_since_talk() -> float:
 	return (Time.get_unix_time_from_system() - _last_talk_at) / 60.0
 
 
+func offline_minutes() -> float:
+	return _offline_minutes
+
+
 ## The block appended to the system prompt. Qualitative rather than raw numbers,
 ## which models act on far more reliably.
 func describe() -> String:
-	var lines := PackedStringArray([
-		"- 飽食度：%s" % _grade(&"fullness", ["很餓，可以抱怨一下", "有點餓", "還好", "很飽"]),
-		"- 精力：%s" % _grade(&"energy", ["快睡著了", "有點累", "還行", "精神很好"]),
-		"- 心情：%s" % _grade(&"mood", ["很低落", "有點悶", "普通", "很好"]),
-		"- 對使用者的熟悉度：%s" % _grade(&"affection", ["還不太熟", "還在觀察他", "算熟了", "很黏他"]),
-		"- 距離上次講話：%s" % _describe_gap(),
-	])
+	var lines := PackedStringArray()
+	if CompanionProfile.care_enabled():
+		lines.append("- %s：%s" % [CompanionProfile.care_label(),
+			CompanionProfile.grade(&"care", get_need(&"care"))])
+	for need: StringName in [&"energy", &"mood", &"bond"]:
+		lines.append("- %s：%s" % [CompanionProfile.state_label(need),
+			CompanionProfile.grade(need, get_need(need))])
+	lines.append("- 距離上次講話：%s" % _describe_gap())
 	return "\n".join(lines)
-
-
-func _grade(need: StringName, labels: Array) -> String:
-	var value := get_need(need)
-	if value < 20.0:
-		return labels[0]
-	if value < 40.0:
-		return labels[1]
-	if value < 70.0:
-		return labels[2]
-	return labels[3]
 
 
 func _describe_gap() -> String:
@@ -133,41 +125,48 @@ func _describe_gap() -> String:
 
 # --- Changing -----------------------------------------------------------------
 
+func care() -> void:
+	if not CompanionProfile.care_enabled():
+		return
+	_add(&"care", CompanionProfile.care_amount())
+	_add(&"mood", CompanionProfile.care_mood_amount())
+
+
+## Compatibility for older callers while the UI migrates to role-neutral copy.
 func feed() -> void:
-	_add(&"fullness", 35.0)
-	_add(&"mood", 4.0)
+	care()
 
 
 ## A run of the mini-game, played out to the end.
 ##
-## Mood and affection are the point: this is time spent together, which is what
+## Mood and bond are the point: this is time spent together, which is what
 ## those two measure, and they move whether or not the run went well — losing
 ## badly at something with someone is still doing it with them.
 ##
-## Fullness moves too, since the pet did swallow what it caught, but it is
-## capped hard. A catch game that also refills the pet would quietly make 餵食
-## pointless, and "play until it isn't hungry" is a worse loop than either half
-## on its own.
+## Care moves too when this role treats caught objects as useful, but it is
+## capped hard. A catch game that fully restores care would quietly replace the
+## role's deliberate care action with a worse loop.
 func play_session(caught: int, score: int) -> void:
 	_add(&"mood", clampf(3.0 + float(score) * 0.25, 3.0, 12.0))
-	_add(&"affection", 2.0)
-	_add(&"fullness", minf(float(caught) * PLAY_FULLNESS_PER_CATCH, PLAY_FULLNESS_CAP))
+	_add(&"bond", 2.0)
+	_add(&"care", minf(float(caught) * CompanionProfile.game_treat_amount(),
+		CompanionProfile.game_treat_cap()))
 
 
 func _on_tapped() -> void:
 	_add(&"mood", 3.0)
-	_add(&"affection", 0.4)
+	_add(&"bond", 0.4)
 
 
 func _on_released() -> void:
 	_add(&"mood", 2.0)
-	_add(&"affection", 0.2)
+	_add(&"bond", 0.2)
 
 
 func _on_user_said(_text: String) -> void:
 	_last_talk_at = Time.get_unix_time_from_system()
 	_add(&"mood", 2.0)
-	_add(&"affection", 1.0)
+	_add(&"bond", 1.0)
 
 
 func _on_activity_changed(activity: StringName) -> void:
@@ -175,7 +174,14 @@ func _on_activity_changed(activity: StringName) -> void:
 
 
 func _add(need: StringName, amount: float) -> void:
+	if need == &"care" and not CompanionProfile.care_enabled():
+		return
 	_needs[need] = clampf(get_need(need) + amount, 0.0, 100.0)
+	if need == &"bond":
+		var stage := CompanionProfile.bond_stage_index(get_need(&"bond"))
+		if stage > _highest_bond_stage:
+			_highest_bond_stage = stage
+			EventBus.bond_stage_reached.emit(CompanionProfile.bond_stage(get_need(&"bond")))
 
 
 # --- Time ---------------------------------------------------------------------
@@ -192,8 +198,8 @@ func _tick() -> void:
 ## Advance the needs by `minutes`. While asleep — including while the app is
 ## closed — energy comes back instead of draining.
 func _advance(minutes: float, resting: bool) -> void:
-	_add(&"fullness", -DECAY[&"fullness"] * minutes)
-	_add(&"affection", -DECAY[&"affection"] * minutes)
+	_add(&"care", -CompanionProfile.care_decay_per_minute() * minutes)
+	_add(&"bond", -DECAY[&"bond"] * minutes)
 	if resting:
 		_add(&"energy", SLEEP_RECOVERY * minutes)
 	else:
@@ -204,7 +210,9 @@ func _advance(minutes: float, resting: bool) -> void:
 
 ## Mood isn't independent: a hungry, tired pet is a grumpy one.
 func _mood_target() -> float:
-	return MOOD_BASELINE * 0.4 + get_need(&"fullness") * 0.3 + get_need(&"energy") * 0.3
+	if CompanionProfile.care_enabled():
+		return MOOD_BASELINE * 0.4 + get_need(&"care") * 0.3 + get_need(&"energy") * 0.3
+	return MOOD_BASELINE * 0.5 + get_need(&"energy") * 0.5
 
 
 # --- Persistence --------------------------------------------------------------
@@ -216,8 +224,10 @@ func _save() -> void:
 		push_warning("PetState: cannot write %s" % SAVE_PATH)
 		return
 	var payload := _needs.duplicate()
+	payload["version"] = SAVE_VERSION
 	payload["saved_at"] = Time.get_unix_time_from_system()
 	payload["last_talk_at"] = _last_talk_at
+	payload["highest_bond_stage"] = _highest_bond_stage
 	file.store_string(JSON.stringify(payload))
 
 
@@ -230,9 +240,13 @@ func _load() -> void:
 		push_warning("PetState: ignoring malformed %s" % SAVE_PATH)
 		return
 
+	# Version 1 called these fullness/affection. Read both spellings, then save
+	# only the role-neutral keys on the next normal save.
+	var migrated := migrate_saved_needs(data, _needs)
 	for need in NEEDS:
-		if data.has(need):
-			_needs[need] = clampf(float(data[need]), 0.0, 100.0)
+		_needs[need] = migrated[need]
+	_highest_bond_stage = int(data.get("highest_bond_stage",
+		CompanionProfile.bond_stage_index(get_need(&"bond"))))
 	_last_talk_at = float(data.get("last_talk_at", _last_talk_at))
 
 	# Catch up on the time the app wasn't running, capped so a long absence
@@ -240,4 +254,18 @@ func _load() -> void:
 	# rested but hungry pet reads better than a comatose one.
 	var elapsed := Time.get_unix_time_from_system() - float(data.get("saved_at", 0.0))
 	if elapsed > 0.0:
-		_advance(minf(elapsed / 60.0, MAX_OFFLINE_MINUTES), true)
+		_offline_minutes = minf(elapsed / 60.0, MAX_OFFLINE_MINUTES)
+		_advance(_offline_minutes, true)
+
+
+## Pure migration seam for regression tests. Version 1 values are accepted,
+## while version 2 wins if a hand-edited file happens to contain both.
+static func migrate_saved_needs(data: Dictionary, defaults: Dictionary) -> Dictionary:
+	return {
+		&"care": clampf(float(data.get("care",
+			data.get("fullness", defaults.get(&"care", 70.0)))), 0.0, 100.0),
+		&"energy": clampf(float(data.get("energy", defaults.get(&"energy", 70.0))), 0.0, 100.0),
+		&"mood": clampf(float(data.get("mood", defaults.get(&"mood", 60.0))), 0.0, 100.0),
+		&"bond": clampf(float(data.get("bond",
+			data.get("affection", defaults.get(&"bond", 10.0)))), 0.0, 100.0),
+	}

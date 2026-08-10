@@ -16,6 +16,7 @@ run/max_fps=60
 
 Config="*res://autoload/config.gd"
 EventBus="*res://autoload/event_bus.gd"
+CompanionProfile="*res://autoload/companion_profile.gd"
 PetState="*res://autoload/pet_state.gd"
 MemoryStore="*res://autoload/memory_store.gd"
 LLMService="*res://autoload/llm_service.gd"
@@ -30,6 +31,7 @@ CodexCli="*res://autoload/codex_cli.gd"
 WorkspaceService="*res://autoload/workspace_service.gd"
 WorkService="*res://autoload/work_service.gd"
 RecorderService="*res://autoload/recorder_service.gd"
+SpeechInputService="*res://autoload/speech_input_service.gd"
 
 [audio]
 

@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3]
+[gd_scene load_steps=14 format=3]
 
 [ext_resource type="Script" path="res://pet/pet.gd" id="1_pet"]
 [ext_resource type="Script" path="res://pet/window_controller.gd" id="2_window"]
@@ -12,6 +12,7 @@
 [ext_resource type="Script" path="res://ui/outbox_panel.gd" id="10_outbox"]
 [ext_resource type="Script" path="res://ui/work_panel.gd" id="11_work"]
 [ext_resource type="Script" path="res://ui/monitor_panel.gd" id="12_monitor"]
+[ext_resource type="Script" path="res://ui/companion_status_panel.gd" id="13_status"]
 
 [node name="Pet" type="Node2D"]
 script = ExtResource("1_pet")
@@ -181,6 +182,12 @@ title = "先讓 Codex 登入"
 ok_button_text = "用 ChatGPT 帳號登入"
 cancel_button_text = "先不要"
 
+[node name="SpeechConsent" type="ConfirmationDialog" parent="."]
+title = "用聲音跟我說話"
+dialog_text = "開始後麥克風會錄到你按下停止為止，接著把這一小段聲音送到 OpenAI 轉成文字。音檔不會保存到「我做的東西」。"
+ok_button_text = "好，開始聽"
+cancel_button_text = "先不要"
+
 [node name="Memory" type="Window" parent="."]
 title = "記憶與資料"
 initial_position = 2
@@ -216,3 +223,9 @@ title = "電腦狀況"
 initial_position = 2
 visible = false
 script = ExtResource("12_monitor")
+
+[node name="CompanionStatus" type="Window" parent="."]
+title = "小夥伴狀態"
+initial_position = 2
+visible = false
+script = ExtResource("13_status")

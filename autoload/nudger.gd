@@ -13,7 +13,6 @@ extends Node
 ## _usable_facts() filters out anything that doesn't look like a short,
 ## unpunctuated predicate before it's allowed near a template.
 
-const LINES_PATH := "res://prompts/nudges.json"
 const CHECK_INTERVAL := 20.0
 
 ## Nothing unprompted more often than this, whatever the reason.
@@ -24,7 +23,7 @@ const REASON_COOLDOWN_MINUTES := 35.0
 ## doesn't feel like a cron job.
 const QUIET_MINUTES := Vector2(12.0, 25.0)
 
-const HUNGRY_BELOW := 25.0
+const CARE_BELOW := 25.0
 const TIRED_BELOW := 22.0
 const CHEERFUL_ABOVE := 60.0
 
@@ -67,7 +66,8 @@ var _recent_facts: Array[String] = []
 
 
 func _ready() -> void:
-	_lines = _load_lines()
+	_lines = CompanionProfile.nudge_lines()
+	CompanionProfile.changed.connect(_on_profile_changed)
 	_enabled = bool(Config.get_value("pet", "nudges", true))
 	_last_nudge_at = Time.get_unix_time_from_system()
 	_reroll_quiet_target()
@@ -112,8 +112,10 @@ func _check() -> void:
 
 ## Needs first — being hungry is more urgent than being bored.
 func _pick_reason() -> String:
-	if _available("hungry") and PetState.get_need(&"fullness") < HUNGRY_BELOW:
-		return "hungry"
+	var care_reason := "care" if _lines.has("care") else "hungry"
+	if CompanionProfile.care_enabled() and _available(care_reason) \
+			and PetState.get_need(&"care") < CARE_BELOW:
+		return care_reason
 	if _available("tired") and PetState.get_need(&"energy") < TIRED_BELOW:
 		return "tired"
 	# Like the needs above, and unlike lonely/cheerful below, a break
@@ -244,10 +246,8 @@ func fixed_lines() -> PackedStringArray:
 	return lines
 
 
-func _load_lines() -> Dictionary:
-	var raw := FileAccess.get_file_as_string(LINES_PATH)
-	var data: Variant = JSON.parse_string(raw) if not raw.is_empty() else null
-	if typeof(data) != TYPE_DICTIONARY:
-		push_warning("Nudger: cannot read %s, the pet will never speak up on its own" % LINES_PATH)
-		return {}
-	return data
+func _on_profile_changed() -> void:
+	_lines = CompanionProfile.nudge_lines()
+	_last_reason_at.clear()
+	_recent_facts.clear()
+	_reroll_quiet_target()

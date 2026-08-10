@@ -14,7 +14,7 @@ signal facing_changed(facing: int)
 ## — PetVisual.set_drag_lean's counterpart. Zero outside DRAG/SETTLE.
 signal drag_lean_changed(amount: float)
 
-enum Mode { IDLE, WALK, SLEEP, DRAG, TALK, SETTLE }
+enum Mode { IDLE, WALK, SLEEP, DRAG, TALK, SETTLE, AMBIENT }
 
 ## Design-unit pixels per second; scaled by the display's DPI at runtime.
 const WALK_SPEED := 45.0
@@ -30,6 +30,9 @@ const WALK_TIMEOUT := 25.0
 const SLEEP_TIMEOUT := 30.0 * 60.0
 ## How long a tired pet stays up after being poked awake.
 const WAKE_GRACE_SECONDS := 90.0
+## Ambient emotes stay occasional. They should make an idle glance feel alive,
+## not keep the character permanently performing at the edge of the screen.
+const AMBIENT_CHANCE := 0.22
 
 ## Per-second exponential catch-up for the dragged body chasing the cursor;
 ## higher = lighter/snappier. Deliberately not 1:1 — the whole point is lag.
@@ -57,6 +60,7 @@ var _target_x := 0.0
 ## Where the body is chasing during DRAG/SETTLE — the raw, unclamped cursor-
 ## derived point, not a live read of the window (which is still mid-catch-up).
 var _drag_target := Vector2i.ZERO
+var _ambient_state: StringName = &"idle"
 
 
 func setup(window: WindowController) -> void:
@@ -116,6 +120,9 @@ func _process(delta: float) -> void:
 				_finish_settle()
 		Mode.TALK:
 			pass
+		Mode.AMBIENT:
+			if _timer <= 0.0:
+				_enter(Mode.IDLE)
 
 
 # --- External nudges ----------------------------------------------------------
@@ -186,15 +193,43 @@ func _enter(mode: Mode) -> void:
 			# was mid-fall, since nothing else would ever tick it back down.
 			drag_lean_changed.emit(0.0)
 			state_changed.emit(&"talk")
+		Mode.AMBIENT:
+			state_changed.emit(_ambient_state)
 
 
 func _finish_idle() -> void:
 	if PetState.is_exhausted() and _wake_grace <= 0.0:
 		_enter(Mode.SLEEP)
+	elif randf() < AMBIENT_CHANCE and _pick_ambient():
+		_enter(Mode.AMBIENT)
 	elif _roaming:
 		_enter(Mode.WALK)
 	else:
 		_enter(Mode.IDLE)
+
+
+func _pick_ambient() -> bool:
+	var candidates: Array[Dictionary] = []
+	var total := 0.0
+	for behaviour in CompanionProfile.ambient_behaviours():
+		if PetState.get_need(&"bond") < float(behaviour.get("minimumBond", 0.0)):
+			continue
+		var state := StringName(str(behaviour.get("state", "")))
+		var weight := maxf(0.0, float(behaviour.get("weight", 1.0)))
+		if state.is_empty() or weight <= 0.0:
+			continue
+		candidates.append(behaviour)
+		total += weight
+	if candidates.is_empty() or total <= 0.0:
+		return false
+	var roll := randf() * total
+	for behaviour in candidates:
+		roll -= maxf(0.0, float(behaviour.get("weight", 1.0)))
+		if roll <= 0.0:
+			_ambient_state = StringName(str(behaviour.get("state", "idle")))
+			_timer = clampf(float(behaviour.get("duration", 2.0)), 0.4, 10.0)
+			return true
+	return false
 
 
 func _pick_walk_target() -> void:

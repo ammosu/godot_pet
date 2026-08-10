@@ -227,7 +227,9 @@ tool use 比較可靠，但要嘛多一輪往返、要嘛得在串流裡處理 t
 **驗收**：說「哈囉好久不見」→ 模型回 `[greeting]` → 寵物播揮手動畫再講話。
 
 ### Phase 6 — 狀態系統與主動行為（1–2 天）
-- `autoload/pet_state.gd`：`fullness` / `energy` / `mood` / `affection`，0–100
+- `autoload/pet_state.gd`：`care` / `energy` / `mood` / `bond`，0–100
+  - 舊版 `fullness` / `affection` 會在讀檔時遷移，不重置既有進度
+  - 造型包用 `companion.json` 決定 `care` 顯示成飽食、電量或其他角色語意；也能停用此項
   - **全部設計成「越高越好」**，這樣一條衰減規則就通吃，不用為飢餓值反過來寫
   - `mood` 不是獨立衰減，而是往 `_mood_target()` 靠攏，而 target 由飽食度與精力算出來 → 又餓又累的寵物自然會心情差
 - 每秒 tick 衰減；存 `user://state.json`，啟動時用時間差補算離線期間
@@ -258,15 +260,14 @@ DisplayServer.tts_set_utterance_callback(DisplayServer.TTS_UTTERANCE_ENDED, _on_
 
 **驗收**：回應同時有聲音，選單可關掉，送新訊息會打斷上一句。
 
-### Phase 8 — 語音輸入（2 天，工程量最大）
-- 專案設定 `audio/driver/enable_input = true`
-- Audio bus 加 `Record` bus，掛 `AudioEffectCapture`；`AudioStreamPlayer` 播 `AudioStreamMicrophone` 導到該 bus
-- `get_buffer()` 拿 stereo 32-bit float PCM → 轉 16-bit mono 16kHz → 自己組 WAV header
-- VAD：算 RMS 音量，超過門檻開始錄、連續靜音 1.5 秒結束（別用 push-to-talk，桌寵按鍵很怪）
-- 送 Whisper API（multipart/form-data）→ 拿到文字後走既有的 `user_said` 流程
-- 熱詞喚醒（叫名字才聽）算加分項，先做「點一下寵物開始聽」
+### Phase 8 — 語音輸入（已完成：手動停止後辨識）
+- `SpeechInputService` 使用獨立靜音 bus 與 `AudioEffectRecord`，不與本機「錄一段話」共用狀態或檔案
+- 右鍵開始收音，泡泡持續顯示狀態；最長 60 秒，按「停止並送出」才上傳
+- 暫存 WAV 以 multipart/form-data 送到 OpenAI `gpt-4o-mini-transcribe`，指定中文後把辨識文字送進既有 `user_said` 流程
+- 第一次使用先說明音訊目的地；送出後刪除暫存檔，不進 outbox
+- 刻意使用明確的開始／停止，不用未跨裝置校準的 RMS 門檻冒充可靠 VAD
 
-**驗收**：點寵物 → 說話 → 停頓 → 寵物聽懂並回應。
+**驗收**：右鍵開始 → 說話 → 停止並送出 → 辨識文字以普通聊天送出並得到回應。
 
 > ⚠️ macOS export 時必須在 preset 填 microphone usage description，不然打包後拿不到麥克風權限且不會報錯。
 
@@ -630,9 +631,8 @@ mask 那一整類麻煩。
   手忙腳亂就會讓悠哉的紀錄永遠沒有意義，反之亦然
 - 玩到一半改難度會**中止**當局，而且是 abandon 不是 finish —— 規則中途換掉的分數沒有意
   義，更不該進紀錄表
-- 遊戲會加飽食度（牠確實吃下去了），但**上限鎖死**在一次餵食的三分之一以下
-  （`PetState.PLAY_FULLNESS_CAP`）。不鎖的話「玩到牠不餓」會悄悄取代餵食，而那是比兩者
-  都差的循環
+- 接東西會加角色定義的照料值（預設寵物確實吃下去了），但**上限鎖死**在一次主要照料以下，
+  由 `companion.json` 的 `gameTreatCap` 決定。不鎖的話遊戲會悄悄取代照料動作，形成更差的循環
 - 結束後說的那句話由 `pet.gd` 出，不是 `GamePanel` —— 視窗知道分數和紀錄，但「寵物怎麼
   反應」從來只有組裝根知道。破紀錄是唯一值得換一句話的結果，所以 `played` 訊號把
   `record` 一起帶出來
@@ -1268,9 +1268,9 @@ library 這邊問不到這件事，所以 helper 自己量參考音的峰值，�
 
 ### 2026-07-31 —— 錄音（已完成）
 
-**不是 Phase 8。** Phase 8 是語音輸入：錄下來、送去轉文字、當成你打的字。這個只錄音存檔，
-不轉文字、不碰任何 API、音訊不出這台機器 —— 所以它跟「存成檔案」的對話記錄一樣，是**關掉
-LLM 也能用**的功能。Phase 8 仍然沒做。
+**這條路不是語音輸入。** 「錄一段話」只錄音存檔，不轉文字、不碰任何 API、音訊不出這台
+機器 —— 所以它跟「存成檔案」的對話記錄一樣，是**關掉 LLM 也能用**的功能。Phase 8 後來由
+獨立的 `SpeechInputService` 完成；兩者不共用 bus、檔案或停止控制，避免一邊送出時意外動到另一邊。
 
 音訊圖有兩件事錯了不會報錯，都是量出來的：
 
@@ -1325,6 +1325,23 @@ macOS 兩半都要有，否則就是 Phase 8 早就寫過的那種無聲失敗�
 `[look]`、情緒標記和檔案邊界。現在 `prompts/functions.md` 單獨保存所有造型共用的功能規則，
 `build_system_prompt()` 永遠把它接在人設後面；個性編輯器只顯示 `persona.md` 那一層。既有設定若是
 第一版完整 prompt 的副本，讀取時會辨認並移除三個舊功能章節，保留使用者改過的個性內容。
+
+### 2026-08-10 —— 從桌寵核心擴成桌面小夥伴（已完成）
+
+造型不再只換圖片，而是能用旁邊的選擇性 `companion.json` 表達角色玩法。所有造型仍是同一位
+小夥伴，共用狀態、羈絆、記憶與對話；切換的只是目前造型包定義的照料語意、狀態用詞、羈絆台詞、
+回來招呼、待機微行為與主動台詞。沒有 sidecar 的舊造型包走完整 fallback，仍然是原本的桌寵體驗。
+
+狀態存檔升到 v2，以 `care` / `bond` 取代只適用動物的 `fullness` / `affection`，並提供質性狀態面板，
+不顯示數字或進度條。羈絆跨過里程碑只說一次；離線一段時間回來會依目前角色招呼；待機行為則按
+造型包的權重、最低羈絆與持續時間挑選。
+
+外部造型包不能自動改 system prompt。`companion.json` 只接受已知欄位與造型包內的安全相對路徑；
+真正的 persona 仍要使用者在既有編輯器親手套用，避免安裝圖片素材時同時把模型控制權交出去。
+
+所有被畫面接受的小夥伴台詞統一走同一個記錄與 TTS 出口；拖入圖片另有專用互動訊號，所以能更新
+狀態、停止舊語音，又不會誤走純文字問答。語音輸入則由獨立服務在使用者明確開始、停止後辨識，
+與只存本機的錄音功能分離。
 
 ## 3. 時程估計
 

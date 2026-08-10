@@ -28,6 +28,9 @@ signal action_requested(action: String)
 
 # --- Needs (Phase 6+) ---
 signal state_tick(state: Dictionary)
+## A relationship stage was reached for the first time. The numeric bond is
+## shared across forms; the profile supplies the stage's role-appropriate copy.
+signal bond_stage_reached(stage: Dictionary)
 ## What the brain is currently doing: idle / walk / sleep / drag / talk.
 signal pet_activity_changed(activity: StringName)
 ## The pet started a conversation on its own. Not an LLM reply — see nudger.gd.
@@ -58,6 +61,10 @@ signal files_dropped_on_window(files: PackedStringArray, at: Vector2)
 ## PetState still want the ordinary user_said reaction (stop speaking, count
 ## as an interaction), so they connect their existing handlers to this too.
 signal file_content_said(text: String)
+## A dropped image is still a user interaction, but it must not take the text
+## signal above: LLMService would start a text-only request before the image can
+## be attached. State and speech cancellation listen to this dedicated route.
+signal image_content_said(text: String)
 
 # --- Presence (rhythm-based nudging) ---
 ## The foreground app was resampled. `app_name` is an opaque per-platform

@@ -115,7 +115,9 @@ holds no behaviour itself.
 - `pets/pet_pack.gd` — spritesheet loader (see below).
 - `autoload/llm_service.gd` — conversation orchestration and the emotion-tag
   parser; `llm/llm_provider.gd` is the backend interface.
-- `autoload/pet_state.gd` — needs; `autoload/nudger.gd` — unprompted lines;
+- `autoload/companion_profile.gd` — the optional, bounded `companion.json`
+  sidecar for the selected form; `autoload/pet_state.gd` — shared condition and
+  bond; `autoload/nudger.gd` — profile-aware unprompted lines;
   `autoload/presence_service.gd` — which app you're in, which is what decides
   when one of those lines is worth saying;
   `autoload/monitor_service.gd` — what the *machine* is doing, on the same
@@ -124,6 +126,9 @@ holds no behaviour itself.
   a dropped *folder* is a workspace offer instead, handled in `pet.gd`.
 - `autoload/outbox_service.gd` — the one folder the pet may write to, which now
   only the transcript export fills.
+- `autoload/recorder_service.gd` — local recordings saved to the outbox;
+  `autoload/speech_input_service.gd` — a separate, explicitly consented
+  microphone turn sent to OpenAI transcription and then into ordinary chat.
 - `autoload/workspace_service.gd` — the folders the pet may work in, and the git
   questions about them; `autoload/work_service.gd` — the coding-agent CLI run;
   `autoload/codex_cli.gd` — where that CLI is and whether it has an account.
@@ -139,8 +144,10 @@ holds no behaviour itself.
 
 ### The right-click menu is grouped by kind, and one group is allowed to grow
 
-Five setting submenus, then the verbs (餵食 / 遊戲 / 看螢幕 / 幫我做事 / 錄音 /
-回到角落), then one 查看 submenu holding every window, then 結束.
+Five setting submenus, then the role-defined care verb (when enabled), games,
+screen look, work, local recording, voice input and recentering; then one 查看
+submenu holding every window, then 結束. The voice-input row was added after the
+measurements below and still needs the popup height re-measured on each target DPI.
 
 **說話 is the fifth.** It sits next to 語言模型 because they are the same question
 asked twice — which model thinks, and which one speaks — and it took the 說話出聲
@@ -778,10 +785,9 @@ Four things that look like taste and are not:
   one-accent rule, so this surface swaps in a different rule rather than
   abandoning the idea. Mistaking the good thing for the bad thing is the one
   failure a catch game cannot have.
-- Catching food raises `fullness`, capped hard (`PetState.PLAY_FULLNESS_CAP`) at
-  well under one feed. Uncapped, "play until it isn't hungry" quietly replaces
-  餵食 with a worse loop than either. The other two games pass `treats = 0`, so
-  only 接東西 feeds at all.
+- Catching food raises role-neutral `care`, capped by the active companion profile
+  at well under one deliberate care action. Uncapped, the game would quietly
+  replace the role's care loop. Other games pass no treats, so only 接東西 affects it.
 - The line the pet says afterwards comes from `pet.gd`, not the panel. The
   window knows the score and the record; only the composition root knows how the
   pet reacts to anything.
@@ -920,8 +926,8 @@ Found by a test that restored a setting it had read back as empty.
 
 #### The fixed lines are rendered ahead of time, in every voice
 
-Only three things reach a backend, and one of them never changes wording: the
-nudges, plus the vision refusal — 18 lines. 先錄好固定台詞 renders them into
+The bounded reusable set is the current companion profile's nudge lines plus the
+vision refusal. 先錄好固定台詞 renders them into
 `user://voxcpm/cache/<voice>/<sha256 of the text>.wav`, and `speak()` looks there
 before it looks at the network.
 
@@ -1006,11 +1012,11 @@ Note what "verified" had meant here: that speech-dispatcher was installed. That
 is the mechanism, not the observable — the same shape of mistake as the GNOME
 icon note above.
 
-Only three things actually reach TTS: `reply_chunk`/`reply_finished`, and
-`pet_nudged` — which just `Nudger` and the vision refusal emit. Every other line
-the pet says (餵食, game scores, 還在弄, work results, monitor alerts) goes
-through `pet.gd::_on_pet_nudged()` as a **direct call**, never onto EventBus, so
-it is shown and never spoken. Deliberate or not, that is the current contract.
+Streamed model replies reach TTS through `reply_chunk`/`reply_finished`. Every
+accepted companion-authored line — an automatic nudge, care response, score,
+work result or alert — reaches `TTSService.speak_line()` from the single
+presentation gate `pet.gd::_on_pet_nudged()`, so a direct call can no longer be
+shown silently by accident.
 
 `TTSService.remarked` follows that rule for a sharper reason than the rest: half
 of what it carries exists *because* speech just stopped working, and routing a
@@ -1079,11 +1085,13 @@ is another chance to be wrong.
 
 ### Needs and unprompted speech
 
-All four needs are modelled as "higher is better" (`fullness`, not hunger) so a
-single decay rule covers them. `mood` is not independent — it drifts toward a
-target derived from fullness and energy, so a hungry, tired pet is grumpy
-without special-casing. Time with the app closed counts as sleep, capped at a
-day. State reaches the model as qualitative phrases, not numbers.
+The shared values are `care`, `energy`, `mood` and `bond`, all "higher is
+better". Version-1 `fullness`/`affection` values migrate without resetting.
+The active companion profile decides whether care exists and whether it reads
+as fullness, charge or something else. `mood` drifts toward a target derived
+from care (when enabled) and energy. Time with the app closed counts as sleep,
+capped at a day. State reaches both the model and the status panel as qualitative
+phrases, never numbers.
 
 Unprompted lines come from `prompts/nudges.json`, **not the LLM**: an idle pet
 calling the API every few minutes costs real money for no visible benefit, since
@@ -1393,10 +1401,10 @@ and belongs in history like any other turn.
   user*, so the pet answers instead of going quiet. That is why the service
   always ends in exactly one emission or one `ask_about_image()`, and the caller
   never branches on the outcome.
-- Known gap: the image branch calls `LLMService.ask_about_image()` directly, so
-  it never emits `file_content_said`. A dropped image therefore doesn't stop the
-  pet mid-sentence and doesn't count as an interaction for `PetState`, where
-  dropped text does both.
+- The image branch calls `LLMService.ask_about_image()` directly, so it emits
+  the dedicated `image_content_said` first. Reusing `file_content_said` would
+  start a text-only request before the image is attached; the dedicated signal
+  still stops speech and counts the turn for `PetState`.
 
 `functions.md` needs the same kind of explicit exception the screen look does — it
 states flatly that the pet cannot see files, and the model will refuse to discuss
@@ -1454,13 +1462,16 @@ there is nothing for `write()` to receive. `reserve()` still runs the same
 sanitiser and the same never-overwrite rule, so the folder's guarantees hold for
 every path into it rather than for most.
 
-### The pet records, and that is all it does with a microphone
+### Local recording and voice input are separate microphone paths
 
 `autoload/recorder_service.gd` captures the microphone to a `.wav` in the outbox
-folder. Deliberately **not** the voice input PLAN.md's Phase 8 designed: nothing
-is transcribed, no provider is involved, and nothing reaches the network — which
-is why it is the second thing here that works with the LLM switched off, and why
-it needs none of `VisionService`'s consent machinery.
+folder. Nothing in that path is transcribed or sent away. Voice input is a
+different autoload, bus and menu action: `SpeechInputService` captures at most
+60 seconds, writes one temporary WAV, posts it to OpenAI's
+`gpt-4o-mini-transcribe`, deletes the temporary file, then emits the recognised
+text through the ordinary `user_said` path. Its first use has a persistent,
+plain-language consent gate because audio leaves the machine; local recording
+does not.
 
 Two things about the audio graph, both of which fail silently if wrong:
 
