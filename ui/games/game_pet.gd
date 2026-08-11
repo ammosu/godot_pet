@@ -20,9 +20,15 @@ class_name GamePet
 
 ## How tall the character is drawn, in design px, before the display scale.
 const DEFAULT_HEIGHT := 96.0
+## A tiny amount of design-space forgiveness around the visible pixels. Texture
+## filtering and fractional display scales can put an apparently touching edge
+## just below the exact mathematical boundary; three design pixels keeps those
+## contacts dependable without turning near misses into hits.
+const HIT_SLOP := 3.0
 
 var _sprite: AnimatedSprite2D = null
 var _blob: FallbackBlob = null
+var _pack: PetPack = null
 var _rows := {}
 var _row := -1
 ## Per-pack fit factor and cell-padding correction — PetVisual's two corrections,
@@ -31,6 +37,8 @@ var _fit := 1.0
 var _base_offset := Vector2.ZERO
 var _half := 20.0
 var _height := 60.0
+var _ui_scale := 1.0
+var _rest_rect := Rect2i()
 var _facing := 1
 var _squash := 0.0
 var _state := &"idle"
@@ -48,9 +56,13 @@ func build(ui_scale: float, pack: PetPack, rows: Dictionary,
 		_blob.queue_free()
 		_blob = null
 	_rows = rows
+	_pack = pack
 	_row = -1
 	_squash = 0.0
 	_facing = 1
+	_state = &"idle"
+	_ui_scale = ui_scale
+	_rest_rect = Rect2i()
 
 	var target := design_height * ui_scale
 	if pack == null:
@@ -65,6 +77,7 @@ func build(ui_scale: float, pack: PetPack, rows: Dictionary,
 
 	var idle_row := int(_rows.get(&"idle", 0))
 	var rest := pack.rect_for_row(idle_row)
+	_rest_rect = rest
 	_sprite = AnimatedSprite2D.new()
 	_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR \
 		if pack.smooth_filter else CanvasItem.TEXTURE_FILTER_NEAREST
@@ -89,6 +102,52 @@ func half_width() -> float:
 
 func height() -> float:
 	return _height
+
+
+## Exact rectangle occupied by the animation frame currently on screen, in the
+## game's coordinate space. The sprite is fitted and centred from its idle
+## silhouette, so rows from differently shaped pets can extend asymmetrically
+## beyond that old fixed box; reproduce that same transform here.
+func visual_rect(x: float, feet_y: float) -> Rect2:
+	if _blob != null:
+		var rx := _blob.radius * (1.0 + _squash)
+		var top := feet_y - _blob.radius - _blob.radius * 1.18 * (1.0 - _squash)
+		var bottom := feet_y - _blob.radius + _blob.radius * (1.0 - _squash)
+		return Rect2(Vector2(x - rx, top), Vector2(rx * 2.0, bottom - top))
+	if _pack == null or _rest_rect.size == Vector2i.ZERO:
+		return Rect2(Vector2(x - _half, feet_y - _height),
+			Vector2(_half * 2.0, _height))
+
+	var frame_rect := _pack.rect_for_frame(_row, _sprite.frame if _sprite != null else 0)
+	var rest_centre := Vector2(_rest_rect.get_center())
+	var left := float(frame_rect.position.x) - rest_centre.x
+	var right := float(frame_rect.end.x) - rest_centre.x
+	if _facing < 0:
+		var mirrored_left := -right
+		right = -left
+		left = mirrored_left
+	var scale_x := _fit * (1.0 + _squash)
+	var scale_y := _fit * (1.0 - _squash)
+	var sprite_centre_y := feet_y - _height * 0.5
+	var top := sprite_centre_y \
+		+ (float(frame_rect.position.y) - rest_centre.y) * scale_y
+	var bottom := sprite_centre_y \
+		+ (float(frame_rect.end.y) - rest_centre.y) * scale_y
+	return Rect2(Vector2(x + left * scale_x, top),
+		Vector2((right - left) * scale_x, bottom - top))
+
+
+## The shared gameplay hit box. Keeping its small tolerance here means every
+## game treats every installed character consistently.
+func collision_rect(x: float, feet_y: float) -> Rect2:
+	return visual_rect(x, feet_y).grow(HIT_SLOP * _ui_scale)
+
+
+static func circle_hits_rect(point: Vector2, radius: float, rect: Rect2) -> bool:
+	var nearest := Vector2(
+		clampf(point.x, rect.position.x, rect.end.x),
+		clampf(point.y, rect.position.y, rect.end.y))
+	return point.distance_squared_to(nearest) <= radius * radius
 
 
 ## Where the feet are, given where the character's centre has been put.

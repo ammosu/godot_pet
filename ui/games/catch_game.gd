@@ -37,9 +37,6 @@ const LEVELS: Array[Dictionary] = [
 
 const PET_SPEED := 430.0
 const ITEM_RADIUS := 15.0
-## Reach past the pet's own silhouette that still counts as a catch. Small, but
-## the difference between "just missed" reading as unfair and reading as fair.
-const CATCH_MARGIN := 9.0
 ## How fast the pointer is chased. Not a snap: a pet that teleports onto the
 ## cursor isn't being played with, it's a cursor wearing a face.
 const MOUSE_RATE := 16.0
@@ -82,9 +79,11 @@ func _prepare() -> void:
 # --- Frame --------------------------------------------------------------------
 
 func _tick(delta: float) -> void:
+	# Move first so the collision uses the pet players see this frame rather than
+	# yesterday's pointer/key position.
+	_step_pet(delta)
 	if is_playing():
 		_fall(delta)
-	_step_pet(delta)
 	_pet.stand_on(_ground_y(), _pet_x)
 
 
@@ -96,15 +95,15 @@ func _fall(delta: float) -> void:
 		_spawn_in = randf_range(gap.x, gap.y) * _gap_factor()
 
 	var ground := _ground_y()
-	var head := ground - _pet.height()
-	var reach := _pet.half_width() + CATCH_MARGIN * _scale
+	var pet_rect := _pet.collision_rect(_pet_x, ground)
 	var gone := ground + ITEM_RADIUS * _scale
 	# Backwards, so removing an item doesn't skip the one behind it.
 	for i in range(_items.size() - 1, -1, -1):
 		var item: Dictionary = _items[i]
 		var y := float(item["y"]) + float(item["speed"]) * delta
 		item["y"] = y
-		if y >= head and y <= ground and absf(float(item["x"]) - _pet_x) <= reach:
+		if GamePet.circle_hits_rect(Vector2(float(item["x"]), y),
+				ITEM_RADIUS * _scale, pet_rect):
 			_items.remove_at(i)
 			_collect(int(item["kind"]))
 		elif y > gone:

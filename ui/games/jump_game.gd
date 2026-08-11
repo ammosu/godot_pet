@@ -147,9 +147,8 @@ func _advance(delta: float) -> void:
 	var travel := _speed() * delta
 	var ground := _ground_y()
 	var pet_x := _pet_x()
-	var half := _pet.half_width()
-	var head := ground - _air - _pet.height()
 	var feet := ground - _air
+	var pet_rect := _pet.collision_rect(pet_x, feet)
 
 	for i in range(_obstacles.size() - 1, -1, -1):
 		var ob: Dictionary = _obstacles[i]
@@ -158,8 +157,8 @@ func _advance(delta: float) -> void:
 
 		if bool(ob["star"]) and not bool(ob["taken"]):
 			var star_y := ground - STAR_HEIGHT * _scale
-			if absf(x - pet_x) <= half + STAR_RADIUS * _scale \
-					and star_y >= head and star_y <= feet:
+			if GamePet.circle_hits_rect(Vector2(x, star_y),
+					STAR_RADIUS * _scale, pet_rect):
 				ob["taken"] = true
 				_add_score(STAR_POINTS)
 				_react(true)
@@ -169,18 +168,17 @@ func _advance(delta: float) -> void:
 		# paid out a point on the way — so a run that hit everything still
 		# scored, which is the opposite of what the number is supposed to mean.
 		if not bool(ob["cleared"]) and not bool(ob["hit"]) \
-				and x + OBSTACLE_HALF * _scale < pet_x - half:
+				and x + OBSTACLE_HALF * _scale < pet_rect.position.x:
 			ob["cleared"] = true
 			_add_score(1)
 
-		# Overlapping horizontally *and* not high enough to be over it. Testing
-		# the height as "how far off the ground the pet is" rather than as two
-		# rects is the whole point of the game being one axis: `feet` and
-		# `ground` differ by exactly _air, so a rect comparison here reduces to
-		# `-_air - height < 0`, which is true always and every jump a lie.
+		var obstacle_rect := Rect2(
+			Vector2(x - OBSTACLE_HALF * _scale,
+				ground - OBSTACLE_HEIGHT * _scale),
+			Vector2(OBSTACLE_HALF * 2.0 * _scale,
+				OBSTACLE_HEIGHT * _scale))
 		if _stun_left <= 0.0 and not bool(ob["hit"]) \
-				and absf(x - pet_x) <= half + OBSTACLE_HALF * _scale \
-				and _air < OBSTACLE_HEIGHT * _scale:
+				and pet_rect.intersects(obstacle_rect, true):
 			ob["hit"] = true
 			_react(false)
 			_stun_left = STUN_TIME

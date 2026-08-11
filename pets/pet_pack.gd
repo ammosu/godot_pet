@@ -72,6 +72,11 @@ var content_rect := Rect2i()
 var row_rects: Array[Rect2i] = []
 ## How many frames each row actually uses.
 var row_frame_counts := PackedInt32Array()
+## Tight drawn-content boxes for the individual frames in every row. Gameplay
+## collisions need the frame that is on screen, not the row-wide union: the
+## latter includes the furthest reach of every pose and can be noticeably wider
+## than any one frame.
+var row_frame_rects: Array[Array] = []
 
 
 static func row_anim(row: int) -> StringName:
@@ -254,6 +259,18 @@ func rect_for_row(row: int) -> Rect2i:
 	return content_rect
 
 
+## Bounding box of one animation frame, falling back through the row union to
+## the whole-sheet union for malformed or incomplete external packs.
+func rect_for_frame(row: int, frame: int) -> Rect2i:
+	if row >= 0 and row < row_frame_rects.size():
+		var rects: Array = row_frame_rects[row]
+		if frame >= 0 and frame < rects.size():
+			var rect: Rect2i = rects[frame]
+			if rect.size != Vector2i.ZERO:
+				return rect
+	return rect_for_row(row)
+
+
 func _slice(image: Image) -> void:
 	var sheet := ImageTexture.create_from_image(image)
 	frames = SpriteFrames.new()
@@ -261,6 +278,7 @@ func _slice(image: Image) -> void:
 	var rows := image.get_height() / cell_size.y
 	row_frame_counts.resize(rows)
 	row_rects.resize(rows)
+	row_frame_rects.resize(rows)
 
 	var content := Rect2i()
 	for row in rows:
@@ -273,6 +291,7 @@ func _slice(image: Image) -> void:
 
 		var used_frames := 0
 		var row_box := Rect2i()
+		var frame_boxes: Array[Rect2i] = []
 		for col in COLS:
 			var region := Rect2i(Vector2i(col, row) * cell_size, cell_size)
 			var drawn := image.get_region(region).get_used_rect()
@@ -286,9 +305,11 @@ func _slice(image: Image) -> void:
 				if used_frames < durations.size() else 1.0
 			frames.add_frame(anim, atlas, duration)
 			used_frames += 1
+			frame_boxes.append(drawn)
 			row_box = drawn if row_box.size == Vector2i.ZERO else row_box.merge(drawn)
 		row_frame_counts[row] = used_frames
 		row_rects[row] = row_box
+		row_frame_rects[row] = frame_boxes
 		if row_box.size != Vector2i.ZERO:
 			content = row_box if content.size == Vector2i.ZERO else content.merge(row_box)
 
