@@ -40,8 +40,8 @@ func _done(name: String) -> void:
 func _test_platform_window_policy() -> void:
 	_expect(WindowController.platform_confines_window("Windows"),
 		"Windows was allowed to leave the native window outside its work area")
-	_expect(not WindowController.platform_confines_window("macOS"),
-		"macOS lost the transparent-window overhang used for edge placement")
+	_expect(WindowController.platform_confines_window("macOS"),
+		"macOS drag confinement no longer falls back to moving the pet anchor")
 	_expect(not WindowController.platform_confines_window("Linux"),
 		"Linux skipped its measured window-manager confinement probe")
 	_done("platform window policy")

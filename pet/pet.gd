@@ -271,6 +271,17 @@ func _ready() -> void:
 ## a mask that clips rendering has to follow it. set_hit_region() drops a region
 ## that hasn't actually changed, so a still bubble costs nothing.
 func _process(_delta: float) -> void:
+	# Mouse motion events belong to the native pet window. While the body trails
+	# the cursor, a quick drag can carry the cursor outside that window between
+	# frames, and no further motion event is guaranteed to arrive. Polling the
+	# desktop cursor while held keeps the window underneath it, so dragging is
+	# limited by the desktop bounds rather than by the window's invisible rect.
+	if _pressed:
+		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+			_update_drag()
+		else:
+			# A release outside the old window may not reach _unhandled_input.
+			_end_press()
 	if _chat.is_showing():
 		_refresh_mask()
 
@@ -445,18 +456,26 @@ func _begin_press() -> void:
 	_press_pos = DisplayServer.mouse_get_position()
 	_grab_offset = _press_pos - _window_ctl.get_pet_screen_position()
 	_window_ctl.suspend_passthrough()
+	# On macOS and Linux this node normally does not process every frame; keep it
+	# awake for the global-cursor polling above until the button is released.
+	set_process(true)
 
 
-## Feeds the brain a target rather than moving the window directly, so the body
-## can lag behind the cursor instead of teleporting onto it — PetBrain._step_drag()
-## is what actually moves the window now, every frame while Mode.DRAG.
+## Keep the native window directly under the held cursor. Letting the window
+## itself trail the pointer creates an input dead zone: once the pointer outruns
+## the only OS window that can receive it, vertical dragging appears confined to
+## the window's old rectangle. The brain still receives the target so release
+## and home-position state stay unchanged.
 func _update_drag() -> void:
 	var mouse := DisplayServer.mouse_get_position()
 	if not _dragging and Vector2(mouse - _press_pos).length() > DRAG_THRESHOLD:
 		_dragging = true
 		EventBus.pet_grabbed.emit()
 	if _dragging:
-		_brain.set_drag_target(mouse - _grab_offset)
+		var target := mouse - _grab_offset
+		_brain.set_drag_target(target)
+		if target != _window_ctl.get_pet_screen_position():
+			_window_ctl.set_pet_screen_position(target)
 
 
 func _end_press() -> void:
@@ -469,6 +488,9 @@ func _end_press() -> void:
 		EventBus.pet_released.emit()
 	else:
 		EventBus.pet_tapped.emit()
+	# Windows needs continuous processing for its render-clipping passthrough
+	# mask. Other platforms can go idle again once drag polling is no longer used.
+	set_process(WindowController.passthrough_clips_rendering())
 
 
 ## Whoever is about to write the squash channel gets it to themselves. The

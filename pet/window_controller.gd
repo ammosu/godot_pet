@@ -83,8 +83,11 @@ func _ready() -> void:
 	# Windows' mouse-passthrough implementation shapes the native window itself
 	# with SetWindowRgn(). Keeping our deliberately oversized transparent window
 	# partly outside the desktop then makes DPI conversion and the render region
-	# disagree about which pixels are visible. Keep the native window inside the
-	# work area there; `_clamp_anchor()` still lets the pet reach the corner.
+	# disagree about which pixels are visible. macOS likewise keeps this
+	# always-on-top window at the work-area edge while the mouse button is held,
+	# even though ordinary programmatic moves may overhang it. Keep the native
+	# window inside the work area on both; `_clamp_anchor()` lets the pet travel
+	# through the rest of the visible desktop from inside that window.
 	_wm_confines_window = platform_confines_window(OS.get_name())
 	_wm_probed = _wm_confines_window
 	# Only ticks while a probe is in flight, which is once per run at most.
@@ -92,7 +95,7 @@ func _ready() -> void:
 
 
 static func platform_confines_window(os_name: String) -> bool:
-	return os_name == "Windows"
+	return os_name == "Windows" or os_name == "macOS"
 
 
 ## Godot reports window size and screen rects in physical pixels, so on a 2x
