@@ -301,10 +301,8 @@ func _hit_pet(player: bool) -> void:
 	var x := _player_x if player else _rival_x
 	var air := _player_air if player else _rival_air
 	var feet := _ground_y() - air
-	var rect := Rect2(
-		Vector2(x - actor.half_width(), feet - actor.height()),
-		Vector2(actor.half_width() * 2.0, actor.height()))
-	if not _circle_hits_rect(_ball_pos, BALL_RADIUS * _scale, rect):
+	var rect := actor.collision_rect(x, feet)
+	if not GamePet.circle_hits_rect(_ball_pos, BALL_RADIUS * _scale, rect):
 		return
 
 	var direction := 1.0 if player else -1.0
@@ -347,13 +345,6 @@ func _hit_pet(player: bool) -> void:
 	else:
 		_rival_hit_left = HIT_COOLDOWN
 		_rival_squash = 0.14 if smash else 0.08
-
-
-func _circle_hits_rect(point: Vector2, radius: float, rect: Rect2) -> bool:
-	var nearest := Vector2(
-		clampf(point.x, rect.position.x, rect.end.x),
-		clampf(point.y, rect.position.y, rect.end.y))
-	return point.distance_squared_to(nearest) <= radius * radius
 
 
 # --- Rival --------------------------------------------------------------------

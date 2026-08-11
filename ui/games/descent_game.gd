@@ -47,6 +47,13 @@ const REACTION_TIME := 0.48
 const MAX_SPEEDUP := 1.65
 const SAFE_START_Y := 205.0
 const HORIZONTAL_REACH := 132.0
+## A visible toe on the platform should be enough. This is deliberately stable
+## across animation frames: using each frame's tight alpha box made the landing
+## reach breathe by a few pixels while the pet walked.
+const PLATFORM_EDGE_GRACE := 5.0
+## Covers fractional-scale rounding and one-frame scroll/player integration
+## drift without allowing a pet that is visibly below a ledge to land on it.
+const LAND_VERTICAL_GRACE := 3.0
 
 var _platforms: Array[Dictionary] = []
 var _next_id := 0
@@ -162,6 +169,7 @@ func _step_platforms(delta: float) -> void:
 	var travel := _scroll_speed() * delta
 	_scroll_distance += travel
 	for platform in _platforms:
+		platform["previous_y"] = float(platform["y"])
 		platform["y"] = float(platform["y"]) - travel
 		if int(platform["kind"]) == PlatformKind.MOVING:
 			var phase := float(platform["phase"]) + delta * MOVING_RATE
@@ -268,7 +276,9 @@ func _try_land(before_feet: float) -> void:
 				and int(platform["kind"]) == PlatformKind.CRUMBLE:
 			continue
 		var y := float(platform["y"])
-		if before_feet <= y and _player_feet >= y and _over_platform(platform) \
+		var previous_y := float(platform.get("previous_y", y))
+		if platform_crossed(before_feet, _player_feet, previous_y, y,
+				LAND_VERTICAL_GRACE * _scale) and _over_platform(platform) \
 				and y < candidate_y:
 			candidate = platform
 			candidate_y = y
@@ -340,6 +350,7 @@ func _make_platform(x: float, y: float, width: float, kind: int) -> Dictionary:
 		"x": x,
 		"base_x": x,
 		"y": y,
+		"previous_y": y,
 		"width": width,
 		"kind": kind,
 		"phase": randf_range(0.0, TAU),
@@ -391,14 +402,25 @@ func _platform_by_id(id: int) -> Dictionary:
 
 
 func _over_platform(platform: Dictionary) -> bool:
-	var pet_reach := _pet.half_width() * 0.72
+	var pet_reach := _pet.half_width() * 0.72 \
+		+ PLATFORM_EDGE_GRACE * _scale
 	if int(platform["kind"]) == PlatformKind.SPRING:
 		# A spring fires from its top plate, not from the pet's full body width.
 		# The smaller foot allowance keeps the visible plate and actual trigger
 		# in agreement at both edges.
-		pet_reach = minf(8.0 * _scale, _pet.half_width() * 0.34)
+		pet_reach = minf(8.0 * _scale, _pet.half_width() * 0.34) \
+			+ PLATFORM_EDGE_GRACE * _scale
 	var reach := float(platform["width"]) * 0.5 + pet_reach
 	return absf(_player_x - float(platform["x"])) <= reach
+
+
+## Both bodies move each frame: the pet falls while the shaft scrolls upward.
+## Compare their before/after positions instead of comparing the pet's old feet
+## against the platform's new surface, which can skip a real crossing.
+static func platform_crossed(before_feet: float, after_feet: float,
+		before_platform: float, after_platform: float, grace: float) -> bool:
+	return before_feet <= before_platform + grace \
+		and after_feet >= after_platform - grace
 
 
 func _safe_respawn_platform() -> Dictionary:

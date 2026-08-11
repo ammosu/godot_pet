@@ -74,6 +74,15 @@ static func game_title(index: int) -> String:
 func _ready() -> void:
 	visible = false
 	unresizable = false
+	# This is a separate game window, not a sheet attached to the desktop pet.
+	# Native transient windows follow their parent on macOS, which made the whole
+	# game slide around whenever the roaming pet took a step.
+	transient = false
+	transient_to_focused = false
+	# The scene's historical value asks the OS to centre relative to the main
+	# window and makes explicit `position` writes advisory. This window now owns
+	# its absolute screen position instead.
+	initial_position = Window.WINDOW_INITIAL_POSITION_ABSOLUTE
 	close_requested.connect(_close)
 
 
@@ -103,7 +112,27 @@ func open(ui_scale: float, pack: PetPack, rows: Dictionary, index: int) -> void:
 
 	var wanted := Vector2i(Vector2(_field.design_size()) * _scale)
 	min_size = Vector2i(Vector2(wanted) * 0.75)
-	popup_centered(wanted)
+	_show_independent(wanted)
+
+
+## Window.popup*() always makes a native window transient. Use an ordinary
+## show at an explicitly calculated screen position so the game remains where
+## the player put it while the desktop pet roams underneath.
+func _show_independent(wanted: Vector2i) -> void:
+	transient = false
+	transient_to_focused = false
+	size = wanted
+	var parent_window := get_parent().get_window() if get_parent() != null else null
+	var screen_index := parent_window.current_screen \
+		if parent_window != null else DisplayServer.get_primary_screen()
+	var usable := DisplayServer.screen_get_usable_rect(screen_index)
+	position = centred_position(usable, wanted)
+	show()
+	grab_focus()
+
+
+static func centred_position(screen_rect: Rect2i, window_size: Vector2i) -> Vector2i:
+	return screen_rect.position + (screen_rect.size - window_size) / 2
 
 
 func _close() -> void:
