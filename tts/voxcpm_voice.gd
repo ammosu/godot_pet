@@ -61,6 +61,11 @@ var _request_epoch := 0
 var _voices: Array = []
 var _healthy := true
 var _reason := ""
+## Test seams keep the headless suite away from the user's real endpoint and
+## persistent cache. Empty in the app, so ordinary configuration remains the
+## only production source of either value.
+var _base_url_override := ""
+var _cache_root_override := ""
 ## An explicit library refresh requested while the metadata client is busy waits
 ## for that request to finish, then asks /v1/voices. Opening the menu starts a
 ## health check just before the user can press the refresh row, so rejecting a
@@ -101,6 +106,8 @@ func _ready() -> void:
 ## reason that names no address at all. Found by a test that restored a setting
 ## it had read back as empty.
 func base_url() -> String:
+	if not _base_url_override.is_empty():
+		return _base_url_override.rstrip("/")
 	var url := str(Config.get_value("tts", "voxcpm_url", DEFAULT_URL)).strip_edges()
 	return (url if not url.is_empty() else DEFAULT_URL).rstrip("/")
 
@@ -449,7 +456,9 @@ func _settle(healthy: bool, reason: String) -> void:
 ## down, but `TTSService` swaps to the OS voice the moment this backend reports
 ## `broke`, so nothing asks it again that session.
 func _cache_dir(voice: String) -> String:
-	return ProjectSettings.globalize_path(CACHE_DIR).path_join(
+	var root := _cache_root_override if not _cache_root_override.is_empty() \
+		else ProjectSettings.globalize_path(CACHE_DIR)
+	return root.path_join(
 		voice if not voice.is_empty() else ".default")
 
 

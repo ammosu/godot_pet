@@ -17,9 +17,12 @@ var _checks := 0
 ## gives no way to catch that from inside, so the test says it finished and this
 ## notices when one did not.
 var _finished: Array[String] = []
+var _cache_root := ""
 
 
 func _ready() -> void:
+	_cache_root = OS.get_temp_dir().path_join(
+		"godot-pet-voxcpm-tests-%d" % OS.get_process_id())
 	var tests := {
 		"default endpoint": _test_default_endpoint,
 		"cache": _test_cache_round_trip,
@@ -50,6 +53,7 @@ func _ready() -> void:
 	else:
 		print("VoxCPMVoice: %d checks passed, all %d tests ran to the end"
 			% [_checks, tests.size()])
+	DirAccess.remove_absolute(_cache_root)
 	get_tree().quit(1 if _failures > 0 else 0)
 
 
@@ -78,6 +82,7 @@ func _voice() -> VoxCPMVoice:
 	add_child(voice)
 	voice._meta_http.cancel_request()
 	voice._http.cancel_request()
+	voice._cache_root_override = _cache_root
 	return voice
 
 
@@ -96,7 +101,7 @@ func _reply(voice: VoxCPMVoice, code: int, body: String) -> void:
 ## lets one still play when the service is not running at all.
 func _test_cache_round_trip() -> void:
 	var voice := _voice()
-	var directory := ProjectSettings.globalize_path("user://voxcpm/test-cache")
+	var directory := _cache_root.path_join("round-trip")
 	var wav := _tone_wav()
 
 	voice._write_cache("我肚子餓了", directory, wav)
@@ -293,9 +298,7 @@ func _test_each_voice_lands_in_its_own_folder() -> void:
 	# Pointed at the discard port for the duration: `prerender()` dispatches the
 	# first job immediately, and a test must not make the user's real service
 	# generate audio nobody asked for.
-	var was: Variant = Config.get_value("tts", "voxcpm_url", VoxCPMVoice.DEFAULT_URL)
-	Config.set_value("tts", "voxcpm_url", "http://127.0.0.1:9")
-
+	voice._base_url_override = "http://127.0.0.1:9"
 	voice.prerender(PackedStringArray(["一", "二"]), "alice")
 	voice.prerender(PackedStringArray(["一", "二"]), "bob")
 	var jobs: Array = [voice._current]
@@ -314,7 +317,6 @@ func _test_each_voice_lands_in_its_own_folder() -> void:
 		"a whole voice went missing from the batch")
 
 	voice.stop()
-	Config.set_value("tts", "voxcpm_url", was)
 	voice.free()
 	_done("routing")
 
@@ -326,8 +328,7 @@ func _test_each_voice_lands_in_its_own_folder() -> void:
 ## that pre-rendered twenty throwaway lines took a voice's entire cache with it.
 func _test_forgetting_is_never_a_side_effect() -> void:
 	var voice := _voice()
-	var was: Variant = Config.get_value("tts", "voxcpm_url", VoxCPMVoice.DEFAULT_URL)
-	Config.set_value("tts", "voxcpm_url", "http://127.0.0.1:9")
+	voice._base_url_override = "http://127.0.0.1:9"
 	var directory := voice._cache_dir("ghost")
 	DirAccess.make_dir_recursive_absolute(directory)
 	for line in ["留下來的", "也留下來的"]:
@@ -352,7 +353,6 @@ func _test_forgetting_is_never_a_side_effect() -> void:
 	for leaf in DirAccess.get_files_at(directory):
 		DirAccess.remove_absolute(directory.path_join(leaf))
 	DirAccess.remove_absolute(directory)
-	Config.set_value("tts", "voxcpm_url", was)
 	voice.free()
 	_done("forget")
 

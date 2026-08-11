@@ -10,6 +10,7 @@ func _ready() -> void:
 		"builtin profile": _test_builtin_profile,
 		"fallback profile": _test_fallback_profile,
 		"untrusted profile fallback": _test_untrusted_profile_fallback,
+		"pet pack manifest safety": _test_pet_pack_manifest_safety,
 		"legacy state migration": _test_legacy_state_migration,
 		"transcription multipart": _test_transcription_multipart,
 	}
@@ -60,8 +61,8 @@ func _test_fallback_profile() -> void:
 
 
 func _test_untrusted_profile_fallback() -> void:
-	var dir := "user://companion-profile-test"
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
+	var dir := OS.get_temp_dir().path_join("godot-pet-companion-profile-test")
+	DirAccess.make_dir_recursive_absolute(dir)
 	var path := dir.path_join(CompanionProfile.FILE_NAME)
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	file.store_string(JSON.stringify({
@@ -83,10 +84,76 @@ func _test_untrusted_profile_fallback() -> void:
 		"wrong-typed care block replaced the fallback action")
 	_expect(not CompanionProfile.nudge_lines().is_empty(),
 		"path traversal did not fall back to built-in nudge lines")
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))
+	DirAccess.remove_absolute(path)
+	DirAccess.remove_absolute(dir)
 	CompanionProfile.apply_pack(PetPack.load_builtin())
 	_done("untrusted profile fallback")
+
+
+func _test_pet_pack_manifest_safety() -> void:
+	var root := OS.get_temp_dir().path_join("godot-pet-pack-manifest-test")
+	var pack_dir := root.path_join("pack")
+	DirAccess.make_dir_recursive_absolute(pack_dir)
+
+	var sheet_bytes := FileAccess.get_file_as_bytes("res://pets/default/spritesheet.webp")
+	_expect(not sheet_bytes.is_empty(), "could not read the bundled spritesheet fixture")
+	var local_sheet := FileAccess.open(pack_dir.path_join("spritesheet.webp"), FileAccess.WRITE)
+	if local_sheet == null:
+		_expect(false, "could not write the pet-pack spritesheet fixture")
+		_cleanup_pet_pack_fixture(root, pack_dir)
+		_done("pet pack manifest safety")
+		return
+	local_sheet.store_buffer(sheet_bytes)
+	local_sheet.close()
+
+	_write_pet_pack_manifest(pack_dir, {
+		"id": ["wrong type"],
+		"displayName": {"wrong": "type"},
+		"description": 42,
+		"spriteVersionNumber": [2],
+	})
+	var pack := PetPack.load_from_dir(pack_dir)
+	_expect(pack != null, "wrong-typed optional metadata rejected otherwise valid art")
+	if pack != null:
+		_expect(pack.id == "pack", "wrong-typed id did not fall back to the directory name")
+		_expect(pack.display_name == "pack", "wrong-typed display name did not fall back to id")
+		_expect(pack.description.is_empty(), "wrong-typed description did not fall back to empty")
+		_expect(pack.sprite_version_number == 1,
+			"wrong-typed sprite version did not fall back to version 1")
+
+	var outside_sheet := FileAccess.open(root.path_join("outside.webp"), FileAccess.WRITE)
+	if outside_sheet == null:
+		_expect(false, "could not write the traversal fixture")
+	else:
+		outside_sheet.store_buffer(sheet_bytes)
+		outside_sheet.close()
+		_write_pet_pack_manifest(pack_dir, {"spritesheetPath": "../outside.webp"})
+		_expect(PetPack.load_from_dir(pack_dir) == null,
+			"pet manifest escaped its pack through spritesheetPath")
+
+	_cleanup_pet_pack_fixture(root, pack_dir)
+	_done("pet pack manifest safety")
+
+
+func _write_pet_pack_manifest(pack_dir: String, payload: Dictionary) -> void:
+	var file := FileAccess.open(pack_dir.path_join("pet.json"), FileAccess.WRITE)
+	if file == null:
+		_expect(false, "could not write the pet-pack manifest fixture")
+		return
+	file.store_string(JSON.stringify(payload))
+	file.close()
+
+
+func _cleanup_pet_pack_fixture(root: String, pack_dir: String) -> void:
+	for path in [
+		pack_dir.path_join("pet.json"),
+		pack_dir.path_join("spritesheet.webp"),
+		root.path_join("outside.webp"),
+	]:
+		if FileAccess.file_exists(path):
+			DirAccess.remove_absolute(path)
+	DirAccess.remove_absolute(pack_dir)
+	DirAccess.remove_absolute(root)
 
 
 func _test_legacy_state_migration() -> void:

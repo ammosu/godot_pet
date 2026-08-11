@@ -55,12 +55,13 @@ CC BY-NC-SA，第三方角色的同人只允許個人非商業使用。程式只
 
 ```sh
 godot --path .                       # 直接跑
-godot --headless --import --path .   # 匯入素材 + 檢查所有腳本能不能 parse
+tools/check_project.sh               # 匯入素材 + 跑完所有 headless 測試
 ```
 
-第二行是這個專案唯一的靜態檢查（**沒有測試**），改完腳本一定要跑，並且在輸出裡 grep
-`SCRIPT ERROR|Parse Error|Failed to load`。它抓不到全部 —— 有些錯誤要到腳本第一次被載入才
-會浮出來，所以執行時的 log 也要看。
+驗證腳本先跑 Godot 匯入，再自動尋找 `tests/test_*.tscn` 並逐一執行；除了 exit code，也會檢查
+`SCRIPT ERROR`、`Parse Error`、`Failed to load` 與每個測試的完成標記。這很重要，因為 GDScript
+測試遇到執行期錯誤後仍可能繼續跑到結尾，單看 exit code 或「通過幾項」會誤判。若 Godot
+執行檔不叫 `godot`，可用 `GODOT_BIN=/path/to/godot tools/check_project.sh`。
 
 打包：
 

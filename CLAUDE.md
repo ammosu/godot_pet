@@ -25,6 +25,7 @@ and the prompt files are Traditional Chinese.
 ```sh
 godot --path .                       # run the app
 godot --headless --import --path .   # import assets + parse all scripts
+tools/check_project.sh               # import + run every headless test scene
 pkill -f "godot --path"              # stop a running instance
 
 godot --headless --path . --export-release "macOS"   "build/Godot Pet.app"
@@ -62,15 +63,19 @@ resolves to is then not something the import step will ever tell you, so a stray
 copy in the tree can quietly become the one that runs. `git status` is the check
 that catches this, not `--import`.
 
-There is **almost** no test suite. Two scenes in `tests/` cover the parts of the
-HTTP voice backends that can be checked with no service running — the cache,
-telling a refusal from an absence, not playing audio the user cancelled, and
-which voice a pre-rendered clip is filed under:
+The lightweight headless suite covers voice backends, companion/profile safety,
+OpenAI request settings, pet visuals, window policy, recording limits and the
+model, prompt and voice settings dialogs. Run the whole dynamically discovered
+suite through the project check script:
 
 ```sh
-godot --headless --path . res://tests/test_voxcpm_voice.tscn
-godot --headless --path . res://tests/test_eleven_voice.tscn
+tools/check_project.sh
 ```
+
+Set `GODOT_BIN=/path/to/godot` when the executable is not named `godot`. The
+script imports resources first, runs every `tests/test_*.tscn`, rejects known
+parse/runtime error markers even when Godot exits zero, and requires each scene
+to print a completion marker.
 
 **A passing count is not a passing run, and this bit twice.** A runtime error
 inside a test aborts that function, `_ready()` carries straight on to the next,
@@ -370,6 +375,11 @@ The manifest declares neither the grid, nor frame counts, nor row semantics:
   check reject every v2 pack outright — with the pet silently falling back to the
   procedural blob, which reads as "the download didn't work".
 - Frame counts are detected by scanning each row for its first blank cell.
+- Community manifests are untrusted input. `spritesheetPath` may name a nested
+  file inside its pack, but absolute paths, resource schemes and `..` components
+  are refused. Optional text/version fields are type-checked and bounded before
+  reaching typed properties or UI; malformed metadata falls back without making
+  otherwise valid artwork crash the loader.
 - V2 rows use the current Codex contract in `PetVisual.V2_STATE_ROWS`, including
   distinct right/left locomotion and the task/review rows. Legacy row meanings
   remain a built-in guess in `DEFAULT_STATE_ROWS`, overridable per pet via a

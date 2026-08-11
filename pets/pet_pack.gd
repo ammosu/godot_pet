@@ -47,6 +47,10 @@ const V2_FRAME_DURATIONS := {
 ## A cell whose drawn content is smaller than this in either axis counts as blank.
 ## Guards against stray semi-transparent pixels reading as a real frame.
 const MIN_CONTENT_PX := 4
+const DEFAULT_SPRITESHEET := "spritesheet.webp"
+const MAX_ID_CHARS := 120
+const MAX_DISPLAY_NAME_CHARS := 120
+const MAX_DESCRIPTION_CHARS := 500
 
 var id := ""
 var display_name := ""
@@ -126,7 +130,10 @@ static func load_from_dir(dir: String) -> PetPack:
 		push_warning("PetPack: malformed manifest %s" % manifest_path)
 		return null
 
-	var sheet_path := dir.path_join(data.get("spritesheetPath", "spritesheet.webp"))
+	var sheet_path := _safe_sheet_path(dir, data.get("spritesheetPath", DEFAULT_SPRITESHEET))
+	if sheet_path.is_empty():
+		push_warning("PetPack: refusing unsafe spritesheetPath in %s" % manifest_path)
+		return null
 	var image := _load_sheet_image(sheet_path)
 	if image == null:
 		push_warning("PetPack: cannot load spritesheet %s" % sheet_path)
@@ -142,10 +149,11 @@ static func load_from_dir(dir: String) -> PetPack:
 
 	var pack := PetPack.new()
 	pack.base_dir = dir
-	pack.id = data.get("id", dir.get_file())
-	pack.display_name = data.get("displayName", pack.id)
-	pack.description = data.get("description", "")
-	pack.sprite_version_number = int(data.get("spriteVersionNumber", 1))
+	pack.id = _manifest_text(data.get("id"), dir.get_file(), MAX_ID_CHARS)
+	pack.display_name = _manifest_text(
+		data.get("displayName"), pack.id, MAX_DISPLAY_NAME_CHARS)
+	pack.description = _manifest_text(data.get("description"), "", MAX_DESCRIPTION_CHARS)
+	pack.sprite_version_number = _manifest_version(data.get("spriteVersionNumber", 1))
 	pack.cell_size = cell
 	pack._slice(image)
 
@@ -153,6 +161,41 @@ static func load_from_dir(dir: String) -> PetPack:
 		push_warning("PetPack: %s has no usable frames" % sheet_path)
 		return null
 	return pack
+
+
+## A community manifest may select a file inside its own pack, never turn the
+## sprite loader into an arbitrary local-file reader. Nested relative folders
+## are allowed; absolute paths, resource schemes and parent traversal are not.
+static func _safe_sheet_path(dir: String, raw: Variant) -> String:
+	if typeof(raw) != TYPE_STRING:
+		return ""
+	var relative := str(raw).replace("\\", "/").strip_edges()
+	if relative.is_empty():
+		relative = DEFAULT_SPRITESHEET
+	if relative.is_absolute_path() or relative.contains("://"):
+		return ""
+	for component in relative.split("/", false):
+		if component == "..":
+			return ""
+	var simplified := relative.simplify_path()
+	if simplified.is_empty() or simplified == "." or simplified.begins_with("../"):
+		return ""
+	return dir.path_join(simplified)
+
+
+## Optional display metadata is untrusted too. Wrong JSON types fall back
+## instead of reaching typed properties and aborting the load at runtime.
+static func _manifest_text(raw: Variant, fallback: String, limit: int) -> String:
+	if typeof(raw) != TYPE_STRING:
+		return fallback
+	var value := str(raw).strip_edges()
+	return fallback if value.is_empty() else value.left(limit)
+
+
+static func _manifest_version(raw: Variant) -> int:
+	if typeof(raw) != TYPE_INT and typeof(raw) != TYPE_FLOAT:
+		return 1
+	return maxi(1, int(raw))
 
 
 static func _load_sheet_image(sheet_path: String) -> Image:
