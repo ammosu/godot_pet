@@ -65,6 +65,7 @@ enum MenuId {
 	VOICE_SETTINGS, PROMPT_DEFAULT, PROMPT_CURRENT,
 	COMPANION_STATUS,
 	SPEECH_INPUT,
+	RECORD_MICROPHONE, RECORD_SYSTEM_AUDIO,
 }
 
 @onready var _window_ctl: WindowController = $WindowController
@@ -958,10 +959,34 @@ func _build_behaviour_menu(current: PetPack) -> PopupMenu:
 			% MonitorService.hours_label())
 	menu.add_check_item("自由走動", MenuId.ROAM)
 	menu.set_item_checked(menu.get_item_index(MenuId.ROAM), _brain.is_roaming())
+	menu.add_submenu_node_item("錄音來源", _build_recording_sources_menu(menu))
 	menu.add_separator()
 	menu.add_check_item("校準動畫列", MenuId.CALIBRATE)
 	menu.set_item_disabled(menu.get_item_index(MenuId.CALIBRATE), current == null)
 	menu.set_item_checked(menu.get_item_index(MenuId.CALIBRATE), _visual.is_calibrating())
+	_index_items(menu)
+	return menu
+
+
+func _build_recording_sources_menu(parent: PopupMenu) -> PopupMenu:
+	var menu := _submenu("RecordingSources", parent)
+	menu.hide_on_checkable_item_selection = false
+	menu.add_check_item("錄麥克風", MenuId.RECORD_MICROPHONE)
+	var microphone := menu.get_item_index(MenuId.RECORD_MICROPHONE)
+	menu.set_item_checked(microphone, RecorderService.records_microphone())
+	menu.set_item_disabled(microphone, RecorderService.is_recording())
+	if not RecorderService.microphone_is_supported():
+		menu.set_item_tooltip(microphone, "這台機器目前沒有可用的麥克風錄音輸入。")
+
+	var system_label := "錄系統聲音"
+	if not RecorderService.system_audio_is_supported():
+		system_label += "（需要 macOS 13+）"
+	menu.add_check_item(system_label, MenuId.RECORD_SYSTEM_AUDIO)
+	var system_audio := menu.get_item_index(MenuId.RECORD_SYSTEM_AUDIO)
+	menu.set_item_checked(system_audio, RecorderService.records_system_audio())
+	menu.set_item_disabled(system_audio, RecorderService.is_recording())
+	menu.set_item_tooltip(system_audio,
+		"會錄到會議、瀏覽器和其他 App 播放的聲音；macOS 會要求螢幕與系統音訊錄製權限。")
 	_index_items(menu)
 	return menu
 
@@ -1152,6 +1177,10 @@ func _on_menu_pressed(id: int) -> void:
 			_toggle_calibration()
 		MenuId.RECORD:
 			_toggle_recording()
+		MenuId.RECORD_MICROPHONE:
+			_toggle_recording_microphone()
+		MenuId.RECORD_SYSTEM_AUDIO:
+			_toggle_recording_system_audio()
 		MenuId.SPEECH_INPUT:
 			_toggle_speech_input()
 		MenuId.RECENTRE:
@@ -2435,7 +2464,7 @@ func _record_label() -> String:
 		return "錄一段話（這台機器不能錄音）"
 	if RecorderService.is_recording():
 		return "停止錄音（%s）" % RecorderService.elapsed_text()
-	return "錄一段話"
+	return "錄一段話（%s）" % RecorderService.selected_sources_text()
 
 
 func _speech_input_label() -> String:
@@ -2477,7 +2506,26 @@ func _toggle_recording() -> void:
 ## the microphone is live, and how to make it stop — because between those two it
 ## is the only thing on screen saying so.
 func _on_recording_tick(elapsed_text: String) -> void:
-	_chat.show_holding("● 錄音中 %s" % elapsed_text, "停止錄音")
+	_chat.show_holding("● 錄音中 %s\n%s" % [
+		elapsed_text, RecorderService.active_sources_text()], "停止錄音")
+
+
+func _toggle_recording_microphone() -> void:
+	var enabled := not RecorderService.records_microphone()
+	if not RecorderService.set_records_microphone(enabled):
+		_on_pet_nudged("neutral", "麥克風和系統聲音至少要留一個喔。", false, false)
+		return
+	_set_checked(MenuId.RECORD_MICROPHONE, enabled)
+	_set_item_text(MenuId.RECORD, _record_label())
+
+
+func _toggle_recording_system_audio() -> void:
+	var enabled := not RecorderService.records_system_audio()
+	if not RecorderService.set_records_system_audio(enabled):
+		_on_pet_nudged("neutral", "麥克風和系統聲音至少要留一個喔。", false, false)
+		return
+	_set_checked(MenuId.RECORD_SYSTEM_AUDIO, enabled)
+	_set_item_text(MenuId.RECORD, _record_label())
 
 
 ## Dedicated rather than routed through _toggle_recording(): if the one-hour
@@ -2531,7 +2579,7 @@ func _on_speech_input_failed(reason: String) -> void:
 	_on_pet_nudged("sad", reason, false, false)
 
 
-func _on_recording_saved(file_name: String, seconds: float) -> void:
+func _on_recording_saved(file_name: String, seconds: float, note: String) -> void:
 	var line := "錄好了！叫「%s」，在「我做的東西」裡面。" % file_name
 	if seconds >= RecorderService.MAX_SECONDS - 1.0:
 		# Otherwise a recording that hit the cap reads as the app having crashed
@@ -2544,6 +2592,8 @@ func _on_recording_saved(file_name: String, seconds: float) -> void:
 		# asking a question that has one answer.
 		line += "只會存在你自己的電腦，不會送去任何地方喔。"
 		Config.set_value("recorder", "told_where", true)
+	if not note.is_empty():
+		line += note
 	_on_pet_nudged("happy", line, false, false)
 	_outbox.refresh_if_open()
 

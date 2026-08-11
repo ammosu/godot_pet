@@ -131,7 +131,10 @@ holds no behaviour itself.
   a dropped *folder* is a workspace offer instead, handled in `pet.gd`.
 - `autoload/outbox_service.gd` — the one folder the pet may write to, which now
   only the transcript export fills.
-- `autoload/recorder_service.gd` — local recordings saved to the outbox;
+- `autoload/recorder_service.gd` — local microphone/system-audio recordings
+  saved to the outbox; `native/macos/system_audio_capture.swift` is the
+  ScreenCaptureKit helper, rebuilt as a universal binary by
+  `tools/build_macos_audio_helper.sh`;
   `autoload/speech_input_service.gd` — a separate, explicitly consented
   microphone turn sent to OpenAI transcription and then into ordinary chat.
 - `autoload/workspace_service.gd` — the folders the pet may work in, and the git
