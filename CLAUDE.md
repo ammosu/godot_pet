@@ -648,12 +648,26 @@ latency/token trade-off visible before the user applies it.
 
 ### Secrets
 
-`Config.get_secret()` looks in the process environment, then the OS credential
-store (`secrets/secret_store.gd`), then `.env` beside the project or executable,
-then `config.cfg`. Anything the user types in goes to the credential store —
-`security` on macOS, `secret-tool` on Linux, DPAPI through `powershell` on
-Windows, and plaintext config elsewhere, with `set_secret()` returning false so
-the UI can say so.
+`Config.get_secret()` looks in the OS credential store
+(`secrets/secret_store.gd`), then the process environment, then `.env` beside the
+project or executable, then `config.cfg`. Anything the user types in goes to the
+credential store — `security` on macOS, `secret-tool` on Linux, DPAPI through
+`powershell` on Windows, and plaintext config elsewhere, with `set_secret()`
+returning false so the UI can say so.
+
+**The credential store is first, and it took a silent failure to get there.** The
+environment used to win, on the reasoning that an exported key is the more
+immediate act. On Windows it is the opposite: a *user-scope* `OPENAI_API_KEY` is
+inherited by every process the user launches and outlives whatever set it.
+Measured on this machine — the stored key answered `/v1/models` with 200, the
+environment held a different one that answered 401, and the app sent the 401 one
+on every request. Nothing on screen connected the two: the pet said
+「收到！鑰匙我幫你收在 Windows DPAPI 了」, the key round-tripped through DPAPI
+byte-for-byte (verified at the full 164 characters), and the only trace was four
+`WARNING: LLMService: 401` lines in the log. What the user typed into this app,
+having been told where it was going, has to beat something ambient they may have
+set years ago in another tool. A shell export for one run still beats `.env` and
+`config.cfg`, which is the case that reasoning was actually about.
 
 Secrets are passed over stdin via `OS.execute_with_pipe()` where possible, since
 `ps` exposes argv to anything running as the same user — and

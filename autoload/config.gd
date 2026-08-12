@@ -20,15 +20,24 @@ func _ready() -> void:
 
 ## API keys and the like. Never log the result.
 ##
-## Order: the real environment first, so a key exported in the shell always wins
-## for a one-off run; then the OS credential store, which is where the app puts
-## anything the user types in; then .env and the saved config, which are both
-## plaintext and exist mainly for development.
+## Order: the OS credential store first, because that is the one layer here the
+## user deliberately put something into — through the menu, in this app, being
+## told where it was going. Then the process environment, then .env and the saved
+## config, which are both plaintext and exist mainly for development.
+##
+## The environment used to come first, on the reasoning that an exported key is
+## the more immediate act. Measured on Windows, it is the opposite: a *user-scope*
+## `OPENAI_API_KEY` is inherited by every process the user launches and outlives
+## whatever set it, so a stale one shadowed a freshly pasted key permanently. The
+## app said 「收到！鑰匙我幫你收在 Windows DPAPI 了」, stored it intact, and then
+## sent the old one on every request — four 401s in the log and nothing on screen
+## connecting them to a setting the user never knew they had. A shell export for
+## one run still wins over .env and config, which is the case that mattered.
 func get_secret(key: String) -> String:
-	var value := OS.get_environment(key)
+	var value := SecretStore.read(key)
 	if not value.is_empty():
 		return value
-	value = SecretStore.read(key)
+	value = OS.get_environment(key)
 	if not value.is_empty():
 		return value
 	if _dotenv.has(key):

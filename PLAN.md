@@ -171,7 +171,8 @@ func cancel() -> void: pass
 ```
 - 先做 `mock_provider.gd`（固定延遲 + 假逐字回應）→ 整條 UI 流程用 Mock 跑通再接真 API
 - `claude_provider.gd`：`POST https://api.anthropic.com/v1/messages`，headers 需 `x-api-key`、`anthropic-version`
-- API key **絕不寫進程式碼**：`Config.get_secret()` 依序讀取 環境變數 → **OS 憑證庫** → 專案／執行檔旁的 `.env` → `user://config.cfg`
+- API key **絕不寫進程式碼**：`Config.get_secret()` 依序讀取 **OS 憑證庫** → 環境變數 → 專案／執行檔旁的 `.env` → `user://config.cfg`
+  - 憑證庫優先是後來改的：原本環境變數排第一，Windows 上一個使用者層級的 `OPENAI_API_KEY` 被每個行程繼承，把選單裡新貼的 key 永遠蓋掉。實測存進去那把打 `/v1/models` 回 200、環境變數那把回 401，而 app 送出去的是 401 那把 —— 而且畫面上只說「收到！鑰匙我幫你收在 Windows DPAPI 了」，線索只有 log 裡的四行 401
   - 憑證庫：macOS 用 `security`（Keychain）、Linux 用 `secret-tool`（libsecret，需 `apt install libsecret-tools`）、其他平台退回明文設定檔並讓 UI 說清楚
   - 右鍵選單「設定 OpenAI API key」→ 遮蔽輸入框貼上 → 存進 Keychain，`.env` 就不需要了
   - **不做 OAuth**：OpenAI 的第三方 "Sign in with ChatGPT" 2025 年announce 過但至今只在 Codex 自家工具出貨；外面流通的做法是冒用 Codex CLI 的 client_id 去花訂閱額度，這個專案不做

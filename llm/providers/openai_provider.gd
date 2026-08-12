@@ -124,7 +124,10 @@ func send(messages: Array, system: String) -> void:
 
 	var key := Config.get_secret(KEY_NAME)
 	if key.is_empty():
-		failed.emit("找不到 %s，請設環境變數或寫進 .env" % KEY_NAME)
+		# Names the menu first: that is the one route that works in an exported
+		# build, and it is now also the one that wins over a stale environment.
+		failed.emit("找不到 %s。右鍵選單「語言模型」裡有一列可以貼上，或設成環境變數。"
+			% KEY_NAME)
 		return
 
 	_reply = ""
