@@ -523,98 +523,59 @@ macOS 上是否同樣成立，目前沒有任何紀錄說量過。** 那是這�
 
 ## 驗證方法
 
-`ab.py` —— 量測寵物對「開新視窗」的影響。放在專案外執行即可，不需要改任何程式碼，
-`SIGSTOP` / `SIGCONT` 完全可逆：
-
-```python
-#!/usr/bin/env python3
-"""A/B：桌寵執行中 vs 暫停，對 GTK 視窗建立速度的影響。用法：python3 ab.py <godot_pid>"""
-import subprocess, time, os, signal, sys
-
-GODOT = int(sys.argv[1])
-
-def windows():
-    r = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "."],
-                       capture_output=True, text=True)
-    return set(r.stdout.split())
-
-def measure(label):
-    before = windows()
-    t0 = time.time()
-    p = subprocess.Popen(["gnome-calculator"], stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
-    result = None
-    while time.time() - t0 < 15:
-        if windows() - before:
-            result = time.time() - t0
-            break
-        time.sleep(0.03)
-    print(f"[{label}] {result:.2f} 秒" if result else f"[{label}] 逾時", flush=True)
-    time.sleep(0.5)
-    try:
-        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-    except Exception:
-        pass
-    p.wait(timeout=5)
-    time.sleep(1.2)
-    return result
-
-def godot(sig):
-    try:
-        os.kill(GODOT, sig)
-    except ProcessLookupError:
-        print("godot 不存在")
-
-try:
-    print("### A：寵物執行中 ###")
-    godot(signal.SIGCONT); time.sleep(2)
-    a = [measure(f"A{i}") for i in (1, 2, 3)]
-    print("### B：寵物暫停 ###")
-    godot(signal.SIGSTOP); time.sleep(2)
-    b = [measure(f"B{i}") for i in (1, 2, 3)]
-    print("### C：恢復後回測 ###")
-    godot(signal.SIGCONT); time.sleep(2)
-    c = [measure(f"C{i}") for i in (1, 2)]
-    for name, xs in (("A 執行中", a), ("B 暫停", b), ("C 恢復後", c)):
-        v = [x for x in xs if x]
-        if v:
-            print(f"{name} 平均：{sum(v)/len(v):.2f} 秒")
-finally:
-    godot(signal.SIGCONT)   # 無論如何都要恢復
-    print(subprocess.run(["ps", "-o", "stat=", "-p", str(GODOT)],
-                         capture_output=True, text=True).stdout.strip(),
-          "（T = 仍暫停，要處理）")
-```
-
-改完程式後，改量「寵物執行中」這一組即可 —— 目標是讓它逼近上面 B 組的數字。
-
-寵物自身的佔用則直接看：
+工具在 `tools/` 裡，X11 專用（需要 `xdotool`、`xwd`、`nautilus`、`python3-gi`）。
 
 ```sh
-pgrep -x godot | xargs -I{} ps -o pid,pcpu,time,etime -p {}
+tools/compositor_ab.sh              # 沒有寵物 vs 寵物依現有設定，各三次
+tools/compositor_ab.sh 6 12 30 60   # 再加上每個 --max-fps 值各跑一輪
+FOLDER=~/somewhere RUNS=5 tools/compositor_ab.sh
 ```
 
-### 量資料夾要多兩件事，各踩過一次
+`compositor_ab.sh` 負責把寵物停掉、換參數重開、量、還原；`compositor_bench.py`
+是被它呼叫的量測本體，也可以單獨跑（`tools/compositor_bench.py <標籤> <次數> [資料夾]`），
+每一輪都會追加到工作目錄的 `compositor-bench.jsonl`。
 
-第二輪的資料夾量測是 `ab.py` 的變體：每次量之前先 `nautilus -q`，讓每一次都是同樣的
-冷行程；「視窗出現」用 `xdotool` 等一個標題含資料夾名的新視窗；「完全載入」對視窗連續
-`xwd -id` 取樣，比較相鄰兩張的差異。`xwd -id` 在合成器底下讀的是該視窗自己的 backing
-pixmap，所以永遠置頂的寵物不會漏進畫面裡，不需要裁切。
+回答「是這種視窗貴，還是我們的引擎貴」用另一支：
 
-- **不要用「第一段穩定期」判定完全載入，要用「最後一次變動的時刻」。** 清單填到一半會停
+```sh
+tools/window_cost_probe.py --seconds 200            # 模仿寵物的 GTK 視窗
+tools/window_cost_probe.py --opaque                 # 只差在不透明
+tools/window_cost_probe.py --no-top                 # 只差在不置頂
+tools/window_cost_probe.py --seconds 20 --count     # 確認它真的有在畫
+```
+
+**跟舊數字比之前，先跑一次自己的「沒有寵物」基準線。** 這份文件裡的絕對值綁在一台
+機器、一個資料夾、一份熱的縮圖快取上；可以跨機器比的是**倍率**。
+
+上面第一輪那張 gnome-calculator 的表，是更早一支同樣形狀的一次性腳本量的，
+留著當 Forward+ 時代的錨點，不打算再重跑。
+
+### 五個踩過的陷阱，工具裡都有註解
+
+- **「完全載入」要用「最後一次變動的時刻」，不是「第一段穩定期」。** 清單填到一半會停
   一下再繼續：實測那個空檔有 1.7 秒，而「連續 5 張相同就算穩定」在 1.14s 就宣告完成，
-  真正的大片重繪其實發生在 3.3s。改成固定觀察 20 秒、回報期間最後一次變動，就沒有這個
-  失效模式，代價是每次量固定多花 20 秒。
-- **量測時的寵物跑在 `nice 5`，不是 `nice 0`。** 那些 build 都是從一個被 nice 過的
-  shell 啟動的，而桌面 autostart 起來的寵物是 `nice 0`。所有比較彼此之間仍然公平
-  （每一組都同樣是 nice 5，GTK 對照組也是），所以曲線形狀與 6/12 的懸崖不受影響；
-  但**絕對的代價可能被低估**，因為載入資料夾正是有 CPU 競爭的時刻，一個被 nice 過的
-  寵物在那當下會少送幾幀。要拿絕對數字對外講之前，用 `systemd-run --user` 起一個
-  `nice 0` 的寵物重量一次。
-- **這個指標要求桌面完全無人操作。** 它分不出「清單還在填」和「使用者移動了滑鼠」。
-  第一次量的時候使用者仍在正常用電腦，三次裡有兩次整整 20 秒都在變動、完全量不出東西；
-  請他停手之後重量，每一次都只剩 2 次變動事件，三次之間的變異幾乎消失。
-  「視窗出現」那一欄則相對耐雜訊，因為它只涵蓋約 1 秒。
+  真正的大片重繪其實發生在 3.3s。改成固定觀察 20 秒、回報期間最後一次變動就沒有這個
+  失效模式，代價是每輪固定多 20 秒。
+- **桌面必須完全靜止。** 這個指標分不出「清單還在填」和「使用者移動了滑鼠」。實測在
+  正常使用中量，三次裡有兩次整整 20 秒都在變動、完全量不出東西；停手之後每一輪都只剩
+  2 次變動事件，三次之間的變異幾乎消失。`compositor_bench.py` 現在會在變動次數過多時
+  自己叫出來。「視窗出現」那一欄相對耐雜訊，因為它只涵蓋約一秒。
+- **寵物必須跑在 `nice 0`。** agent 的 shell 常常是被 nice 過的，子行程會繼承，而
+  無權限的 `renice` 降不回去 —— 被 nice 過的寵物會**低報自己的成本**，因為載入資料夾
+  正是有 CPU 競爭的時候。`compositor_ab.sh` 一律用 `systemd-run --user` 從 user
+  manager 起，就是為了這個。
+- **每一輪之前 `nautilus -q`**，讓每次都是同樣的冷行程；溫的 D-Bus 開啟是另一種量測。
+- **對照組要先證明它真的在畫。** 一個安靜地沒在重畫的探針也「成本是零」，而且看起來
+  跟大勝一模一樣。`--count` 就是為此存在的：參考值是 20 秒 243 次（要求 12 fps）。
+
+`xwd -id` 在合成器底下讀的是該視窗自己的 backing pixmap，所以永遠置頂的寵物不會漏進
+畫面裡，不需要裁切 —— 但也因此**永遠不要抓根視窗**。
+
+寵物自身的佔用直接看：
+
+```sh
+pgrep -x godot | xargs -I{} ps -o pid,pcpu,time,etime,ni -p {}
+```
 
 ## 成功標準
 

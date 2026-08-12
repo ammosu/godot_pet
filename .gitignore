@@ -37,5 +37,9 @@ __pycache__/
 # which is derived and belongs to nobody.
 docs/images/*.import
 
+# tools/compositor_bench.py appends its runs here, and they are one machine's
+# numbers on one afternoon. What is worth keeping goes in the doc.
+compositor-bench.jsonl
+
 # macOS
 .DS_Store

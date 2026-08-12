@@ -302,6 +302,15 @@ So `FrameBudget` takes requirements by key and applies the highest.
   emits whatever StringName the skin's `companion.json` chose. That fallback is
   AMBIENT's ordinary route, not a guard against typos.
 
+Re-measuring is `tools/compositor_ab.sh` (X11 only), which drives the pet's state
+around `tools/compositor_bench.py` and restores it afterwards;
+`tools/window_cost_probe.py` is the non-Godot control window. **Run your own
+no-pet baseline before comparing to any number written down here** — the absolute
+values belong to one machine, one folder and a warm thumbnail cache, and only the
+ratios travel. The five traps that cost a measurement round each are in those
+files' headers, the loudest being that the "fully loaded" figure cannot tell a
+filling list from a moving mouse, so the desktop has to be genuinely idle.
+
 ### The window deliberately hangs off the screen
 
 The window is far larger than the pet and is allowed to overhang the desktop
