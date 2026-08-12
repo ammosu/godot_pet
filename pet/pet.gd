@@ -250,6 +250,7 @@ func _ready() -> void:
 	SpeechInputService.transcribed.connect(_on_speech_transcribed)
 	SpeechInputService.failed.connect(_on_speech_input_failed)
 	_speech_consent.confirmed.connect(_start_speech_input)
+	_register_window_frame_rates()
 
 	# Only worth ticking where the mask clips rendering; elsewhere the bubble is
 	# outside it by design and moving is free.
@@ -566,9 +567,43 @@ func _on_pet_moved(_screen_position: Vector2i) -> void:
 	_refresh_mask()
 
 
+## Every panel, game and dialog in this scene is a real OS window, and all of them
+## share one main loop with the pet — so an open one inherits whatever the pet is
+## doing, which at idle is six frames a second. Each says what it needs instead.
+##
+## Walked rather than named, for the reason CLAUDE.md already gives about the
+## right-click menu: the panels are the group that grows, and a registration step
+## someone has to remember is a seventh panel that scrolls at 6 fps. The right-click
+## PopupMenu is a Window too and is deliberately included — a menu is something
+## you are looking at.
+func _register_window_frame_rates() -> void:
+	for child in get_children():
+		var win := child as Window
+		if win == null:
+			continue
+		var fps: int = FrameBudget.GAME_FPS if win is GamePanel else FrameBudget.PANEL_FPS
+		var key := StringName("window:%s" % win.name)
+		win.visibility_changed.connect(
+			func() -> void:
+				if win.visible:
+					FrameBudget.request(key, fps)
+				else:
+					FrameBudget.release(key))
+		if win.visible:
+			FrameBudget.request(key, fps)
+
+
 func _on_input_toggled(open: bool) -> void:
 	# The input needs clicks, so the passthrough mask has to grow to include it.
 	_refresh_hit_region()
+	# The chat input is the one typing surface that is *not* its own OS window, so
+	# _register_window_frame_rates() cannot see it. It also outlives TALK: a drag
+	# knocks the brain back to IDLE with the field still up, and at IDLE's 6 fps
+	# that is someone typing into a field redrawing six times a second.
+	if open:
+		FrameBudget.request(&"chat-input", FrameBudget.PANEL_FPS)
+	else:
+		FrameBudget.release(&"chat-input")
 	if open:
 		_brain.on_talk_started()
 	elif not _chat.is_showing():

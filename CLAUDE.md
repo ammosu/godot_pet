@@ -64,8 +64,8 @@ copy in the tree can quietly become the one that runs. `git status` is the check
 that catches this, not `--import`.
 
 The lightweight headless suite covers voice backends, companion/profile safety,
-OpenAI request settings, pet visuals, window policy, recording limits and the
-model, prompt and voice settings dialogs. Run the whole dynamically discovered
+OpenAI request settings, pet visuals, window policy, recording limits, the frame
+budget and the model, prompt and voice settings dialogs. Run the whole dynamically discovered
 suite through the project check script:
 
 ```sh
@@ -127,6 +127,8 @@ holds no behaviour itself.
   when one of those lines is worth saying;
   `autoload/monitor_service.gd` — what the *machine* is doing, on the same
   twenty-minute rhythm.
+- `autoload/frame_budget.gd` — the one `Engine.max_fps` for a process with many
+  windows in it. See below.
 - `autoload/file_drop_service.gd` — turns a file dropped on the pet into a turn;
   a dropped *folder* is a workspace offer instead, handled in `pet.gd`.
 - `autoload/outbox_service.gd` — the one folder the pet may write to, which now
@@ -257,6 +259,48 @@ Two traps this keeps springing:
   vertical padding is deliberately a third of its horizontal one.
 - Anything built in a node's `_ready()` is built before the scale is known.
   `MemoryPanel` therefore constructs itself on first open, not on load.
+
+### The frame rate is a shared resource, and the pet is not its only claimant
+
+Every frame this transparent, always-on-top window presents makes the compositor
+recomposite the screen under it, and that is a cost paid by **whatever else is
+running**. Measured on Ubuntu 24.04 / X11 / GNOME, opening a 238-item folder
+against 3.50 s with no pet at all: 60 fps costs **+4.77 s**, 12 fps **+3.38 s**,
+6 fps **+0.39 s**. The penalty falls off a cliff between 12 and 6 — going 60 to
+12 buys back 29%, and the last step buys the other 88%. `docs/desktop-compositor-cost.md`
+has the full measurements, including the three plausible causes that turned out
+not to matter (window area, walking, `low_processor_mode`) and the GTK control
+window that proved it was Godot's presents rather than a transparent
+always-on-top window as such.
+
+`Engine.max_fps` is **process-wide**, and this process is many real OS windows —
+the pet, six panels, the mini-games and every settings dialog. One low number
+makes the pet cheap and the games unplayable; one high number is the cost above.
+So `FrameBudget` takes requirements by key and applies the highest.
+
+- `autoload/frame_budget.gd` maps the brain's state to a rate. `idle` is **6, and
+  it must stay at or below 6** — 12 reads as "still low, and smoother" and gives
+  back 88% of the saving. There is a test asserting exactly that, because the
+  number looks arbitrary and is not.
+- Six frames is not free. The idle row is six frames over 1.10 s and two last
+  0.110 s, which does not fit a 0.167 s interval, so those two are dropped. That
+  trade is why this is a table: nothing else pays it.
+- `walk` is the unresolved cell at 30. Unlike `drag`/`settle`/`talk` — entered
+  because the user is handling the pet, and so costing something nobody is
+  waiting on — walking is the pet's *own* decision, so it lands while you are
+  opening that folder. Lowering it wants the walk to advance in sprite-frame
+  steps rather than every frame.
+- `pet.gd::_register_window_frame_rates()` **walks the Window children** rather
+  than naming them, for the reason the right-click menu section gives: the panels
+  are the group that grows, and a registration step someone has to remember is a
+  seventh panel scrolling at 6 fps.
+- The chat input is the exception the walk cannot see, since it is drawn inside
+  the pet's own window. It also outlives `TALK` — a drag knocks the brain back to
+  `IDLE` with the field still up — so `_on_input_toggled` holds its own
+  requirement rather than relying on the state.
+- The state lookup is `.get(state, DEFAULT_STATE_FPS)` because `Mode.AMBIENT`
+  emits whatever StringName the skin's `companion.json` chose. That fallback is
+  AMBIENT's ordinary route, not a guard against typos.
 
 ### The window deliberately hangs off the screen
 

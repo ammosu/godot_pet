@@ -16,6 +16,8 @@ run/max_fps=60
 
 Config="*res://autoload/config.gd"
 EventBus="*res://autoload/event_bus.gd"
+; After EventBus: it connects to pet_activity_changed on _ready().
+FrameBudget="*res://autoload/frame_budget.gd"
 CompanionProfile="*res://autoload/companion_profile.gd"
 PetState="*res://autoload/pet_state.gd"
 MemoryStore="*res://autoload/memory_store.gd"
