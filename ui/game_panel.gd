@@ -39,6 +39,9 @@ const DESCENT_GAME := preload("res://ui/games/descent_game.gd")
 const BREAKOUT_GAME := preload("res://ui/games/breakout_game.gd")
 const SOKOBAN_GAME := preload("res://ui/games/sokoban_game.gd")
 const ONE_STROKE_GAME := preload("res://ui/games/one_stroke_game.gd")
+const SNAKE_GAME := preload("res://ui/games/snake_game.gd")
+const MINESWEEPER_GAME := preload("res://ui/games/minesweeper_game.gd")
+const BEE_GAME := preload("res://ui/games/bee_game.gd")
 
 const GAMES: Array[Dictionary] = [
 	{"id": "catch", "label": "接東西", "script": CATCH_GAME},
@@ -49,6 +52,9 @@ const GAMES: Array[Dictionary] = [
 	{"id": "breakout", "label": "敲磚塊", "script": BREAKOUT_GAME},
 	{"id": "sokoban", "label": "推箱子尋零食", "script": SOKOBAN_GAME},
 	{"id": "one_stroke", "label": "一筆畫", "script": ONE_STROKE_GAME},
+	{"id": "snake", "label": "貪吃小蛇", "script": SNAKE_GAME},
+	{"id": "minesweeper", "label": "踩地雷", "script": MINESWEEPER_GAME},
+	{"id": "bee", "label": "小蜜蜂", "script": BEE_GAME},
 ]
 
 var _scale := 1.0

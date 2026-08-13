@@ -12,8 +12,9 @@ class_name MiniGame
 ## Subclasses override the small contract below. The games deliberately ask for
 ## different things — position in 接東西, timing in 跳過去, memory in 翻翻看,
 ## movement plus an opponent in 排球對決, return angles in 敲磚塊, discrete
-## planning in 推箱子尋零食, and route finding in 一筆畫 — rather than being
-## one reflex game with several coats of paint.
+## planning in 推箱子尋零食, route finding in 一筆畫, risk management in
+## 貪吃小蛇, deduction in 踩地雷, and formation aiming in 小蜜蜂 — rather
+## than being one reflex game with several coats of paint.
 
 ## A run played to its end. `treats` is how much the pet actually ate, which only
 ## 接東西 can be nonzero for; it is separate from `score` because the bonus is
@@ -108,6 +109,13 @@ func _pointer_moved(_pos: Vector2) -> void:
 
 
 func _pointer_clicked(_pos: Vector2) -> void:
+	pass
+
+
+## Optional alternate action for games with a second pointer verb, such as
+## placing a flag in minesweeper. Kept out of the panel so games that do not use
+## it continue to ignore right clicks.
+func _pointer_secondary_clicked(_pos: Vector2) -> void:
 	pass
 
 
@@ -243,11 +251,16 @@ func _gui_input(event: InputEvent) -> void:
 		accept_event()
 		return
 	var click := event as InputEventMouseButton
-	if click != null and click.pressed and click.button_index == MOUSE_BUTTON_LEFT:
+	if click == null or not click.pressed:
+		return
+	if click.button_index == MOUSE_BUTTON_LEFT:
 		if _playing:
 			_pointer_clicked(click.position)
 		else:
 			start()
+		accept_event()
+	elif click.button_index == MOUSE_BUTTON_RIGHT and _playing:
+		_pointer_secondary_clicked(click.position)
 		accept_event()
 
 
