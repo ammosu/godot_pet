@@ -562,6 +562,27 @@ const GAME_ONE_STROKE_UNUSED := Color("f1e7da", 0.25)
 const GAME_ONE_STROKE_USED := Color("dc7b56")
 const GAME_ONE_STROKE_NODE := Color("d8cfc1")
 const GAME_ONE_STROKE_ENDPOINT := Color("f0c05a")
+## 貪吃小蛇 uses the pet itself as the head. The connected body recedes from
+## persimmon to gold so the direction remains readable even in a tight turn.
+const GAME_SNAKE_BODY := Color("dc7b56")
+const GAME_SNAKE_TAIL := Color("f0c05a")
+const GAME_SNAKE_GRID := Color("f1e7da", 0.055)
+## 踩地雷 stays quiet until information is revealed: unopened cells are dark,
+## safe cells use the paper family, and a mine is the one explicit danger red.
+const GAME_MINES_CLOSED := Color("53453e")
+const GAME_MINES_OPEN := Color("e9dfd1")
+const GAME_MINES_GRID := Color("241d1a")
+const GAME_MINES_FLAG := Color("f0c05a")
+const GAME_MINES_DANGER := Color("c8383f")
+## 小蜜蜂 keeps the enemies unmistakable without borrowing a sprite or exact
+## silhouette from any arcade cabinet. Gold bodies, paper wings and teal return
+## fire stay legible against the same dark field as the other action games.
+const GAME_BEE_GOLD := Color("f0c05a")
+const GAME_BEE_ELITE := Color("dc7b56")
+const GAME_BEE_WING := Color("f4ecdd", 0.82)
+const GAME_BEE_INK := Color("2b2018")
+const GAME_BEE_PLAYER_SHOT := Color("f4ecdd")
+const GAME_BEE_ENEMY_SHOT := Color("5fb0ad")
 
 
 ## A card in 翻翻看. Face down it is chrome; face up it is paper, which is the

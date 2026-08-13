@@ -162,13 +162,13 @@ npx codex-pets add <pet-id>
 
 ### 遊戲
 
-八個，共用一個視窗、三種難度、各自記最高分：接東西、跳過去、翻翻看、排球對決、下樓梯、
-敲磚塊、推箱子尋零食、一筆畫。
+十一個，共用一個視窗、三種難度、各自記最高分：接東西、跳過去、翻翻看、排球對決、下樓梯、
+敲磚塊、推箱子尋零食、一筆畫、貪吃小蛇、踩地雷、小蜜蜂。
 
 <p align="center">
   <img src="docs/images/catch-game.png" alt="接東西進行中：食物從上面掉下來，芽尾在底下接" width="380">
   &nbsp;&nbsp;
-  <img src="docs/images/games.png" alt="遊戲子選單列出八個遊戲" width="357">
+  <img src="docs/images/games.png" alt="遊戲子選單（截圖拍攝時列出八個遊戲）" width="357">
 </p>
 
 不是三個同類的反射遊戲換三套皮：接東西考「往哪」、跳過去考「什麼時候」、翻翻看考記性，
