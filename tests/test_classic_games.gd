@@ -152,12 +152,35 @@ func _test_survivor_geometry() -> void:
 	_expect(SurvivorGame.experience_needed_for(4)
 		> SurvivorGame.experience_needed_for(3),
 		"survivor experience curve did not grow between levels")
-	_expect(SurvivorGame.aura_damage_for(1) < SurvivorGame.BASE_DAMAGE,
-		"survivor area weapon was not weaker per target than the basic bolt")
+	_expect(SurvivorGame.aura_damage_for(1) > SurvivorGame.BASE_DAMAGE,
+		"survivor area pulse was not stronger per hit than the basic bolt")
+	_expect(SurvivorGame.aura_damage_for(1) / SurvivorGame.aura_interval_for(1)
+		< SurvivorGame.BASE_DAMAGE / SurvivorGame.BASE_FIRE_INTERVAL,
+		"survivor area weapon exceeded the ranged weapon's per-target damage rate")
+	_expect(SurvivorGame.aura_radius_for(1) >= 128.0,
+		"survivor base aura still required enemies to be nearly touching the player")
 	_expect(SurvivorGame.aura_radius_for(2) > SurvivorGame.aura_radius_for(1),
 		"survivor aura upgrade did not increase its range")
 	_expect(SurvivorGame.aura_interval_for(2) < SurvivorGame.aura_interval_for(1),
 		"survivor aura upgrade did not improve its pulse interval")
+	_expect(SurvivorGame.fan_shot_count_for(1) == 3,
+		"survivor dropped fan weapon did not begin with three projectiles")
+	_expect(SurvivorGame.fan_shot_count_for(SurvivorGame.MAX_FAN_LEVEL) == 7,
+		"survivor dropped fan weapon did not grow to seven projectiles")
+	_expect(SurvivorGame.fan_damage_for(1) < SurvivorGame.BASE_DAMAGE,
+		"survivor fan projectile was not weaker than a same-level basic bolt")
+	_expect(SurvivorGame.should_drop_weapon(
+		0, 0, SurvivorGame.WEAPON_DROP_PITY, 1.0),
+		"survivor first weapon drop did not have a defeat-count guarantee")
+	_expect(not SurvivorGame.should_drop_weapon(
+		2, SurvivorGame.MAX_FAN_LEVEL, 999, 0.0),
+		"survivor weapon continued dropping after its maximum level")
+	_expect(not SurvivorGame.should_drop_chest(
+		0, SurvivorGame.CHEST_DROP_PITY, 0.0),
+		"survivor ordinary enemy dropped an elite treasure chest")
+	_expect(SurvivorGame.should_drop_chest(
+		1, SurvivorGame.CHEST_DROP_PITY, 1.0),
+		"survivor treasure chest did not have an elite-defeat guarantee")
 	_expect(SurvivorGame.ENEMY_PIG.get_size() == Vector2(32.0, 16.0),
 		"survivor pig sprite is missing or no longer has two 16px frames")
 	_expect(SurvivorGame.ENEMY_SAMURAI.get_size() == Vector2(64.0, 112.0),
@@ -183,6 +206,27 @@ func _test_survivor_geometry() -> void:
 	game._step_attack(1.0)
 	_expect(not game._projectiles.is_empty(),
 		"survivor runtime did not auto-fire at a spawned enemy")
+	game._weapon_pickups.append({
+		"position": game._player_position,
+		"weapon": &"fan",
+		"phase": 0.0,
+	})
+	game._step_weapon_pickups(0.0)
+	_expect(game._fan_level == 1 and game._weapon_pickups.is_empty(),
+		"survivor player did not collect and unlock a dropped weapon")
+	var projectile_count := game._projectiles.size()
+	game._fan_left = 0.0
+	game._step_fan_attack(0.0, Vector2.RIGHT)
+	_expect(game._projectiles.size() == projectile_count + 3,
+		"survivor level-one fan did not fire its three-projectile spread")
+	game._chest_pickups.append({
+		"position": game._player_position,
+		"phase": 0.0,
+	})
+	game._step_chest_pickups(0.0)
+	_expect(game._chest_pickups.is_empty()
+		and game._loot_notice_text.begins_with("寶箱："),
+		"survivor player did not open a nearby treasure chest")
 	game._open_upgrade_choice()
 	_expect(game._choosing_upgrade and game._upgrade_choices.size() == 3,
 		"survivor level-up did not offer three upgrades")

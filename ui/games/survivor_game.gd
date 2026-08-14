@@ -31,11 +31,21 @@ const MAX_PICKUPS := 70
 const UPGRADE_CARD_HEIGHT := 126.0
 const REACTION_TIME := 0.34
 const ENEMY_CELL_SIZE := 16.0
-const AURA_BASE_DAMAGE := 0.42
-const AURA_BASE_RADIUS := 76.0
-const AURA_BASE_INTERVAL := 1.65
+const AURA_BASE_DAMAGE := 1.15
+const AURA_BASE_RADIUS := 128.0
+const AURA_BASE_INTERVAL := 1.85
 const AURA_PULSE_TIME := 0.42
 const MAX_AURA_LEVEL := 5
+const WEAPON_DROP_PITY := 12
+const WEAPON_PICKUP_RADIUS := 18.0
+const FAN_BASE_DAMAGE := 0.48
+const FAN_BASE_INTERVAL := 1.18
+const FAN_SHOT_SPEED := 410.0
+const FAN_RANGE := 430.0
+const FAN_SPREAD_DEGREES := 54.0
+const MAX_FAN_LEVEL := 5
+const CHEST_DROP_PITY := 3
+const CHEST_PICKUP_RADIUS := 20.0
 
 ## CC0 sprites from Pixel-Boy and AAA's Ninja Adventure asset pack. Keep the
 ## player as the installed desktop pet; these three sheets only replace the
@@ -55,13 +65,15 @@ const UPGRADES: Array[Dictionary] = [
 	{"id": &"magnet", "title": "拾光磁場", "description": "吸取範圍 +24"},
 	{"id": &"pierce", "title": "穿透星芒", "description": "光點多穿透 1 隻"},
 	{"id": &"aura_unlock", "title": "月輪靈氣", "description": "解鎖低傷害範圍波動"},
-	{"id": &"aura_power", "title": "靈氣共鳴", "description": "範圍 +10，傷害 +0.2"},
+	{"id": &"aura_power", "title": "靈氣共鳴", "description": "範圍 +12，傷害 +0.25"},
 	{"id": &"vitality", "title": "暖心飯糰", "description": "回復 1 顆愛心"},
 ]
 
 var _enemies: Array[Dictionary] = []
 var _projectiles: Array[Dictionary] = []
 var _pickups: Array[Dictionary] = []
+var _weapon_pickups: Array[Dictionary] = []
+var _chest_pickups: Array[Dictionary] = []
 var _player_position := Vector2.ZERO
 var _pointer_target := Vector2.ZERO
 var _pointer_position := Vector2.ZERO
@@ -75,6 +87,8 @@ var _invincible_left := 0.0
 var _reaction_left := 0.0
 var _enemy_serial := 0
 var _spawned_count := 0
+var _defeated_count := 0
+var _elite_defeats_since_chest := 0
 var _experience := 0
 var _experience_needed := 8
 var _survivor_level := 1
@@ -90,6 +104,11 @@ var _animation_time := 0.0
 var _aura_level := 0
 var _aura_left := 0.0
 var _aura_pulse_left := 0.0
+var _fan_level := 0
+var _fan_left := 0.0
+var _loot_notice_left := 0.0
+var _loot_notice_text := ""
+var _loot_notice_color := Color.WHITE
 
 
 func design_size() -> Vector2i:
@@ -97,7 +116,7 @@ func design_size() -> Vector2i:
 
 
 func ready_hint() -> String:
-	return "方向鍵 ／ W A S D 或點擊移動，角色保持置中\n攻擊會自動瞄準，收集青色光點升級\n每次升級按 1／2／3 選能力，撐過 75 秒"
+	return "方向鍵 ／ W A S D 或點擊移動，角色保持置中\n攻擊會自動瞄準，收集青色光點升級\n靠近武器或寶箱拾取，按 1／2／3 選升級，撐過 75 秒"
 
 
 func level_labels() -> PackedStringArray:
@@ -112,6 +131,8 @@ func _prepare() -> void:
 	_enemies.clear()
 	_projectiles.clear()
 	_pickups.clear()
+	_weapon_pickups.clear()
+	_chest_pickups.clear()
 	_upgrade_choices.clear()
 	_needs_layout = true
 	_time_left = RUN_DURATION
@@ -122,6 +143,8 @@ func _prepare() -> void:
 	_reaction_left = 0.0
 	_enemy_serial = 0
 	_spawned_count = 0
+	_defeated_count = 0
+	_elite_defeats_since_chest = 0
 	_experience = 0
 	_experience_needed = experience_needed_for(1)
 	_survivor_level = 1
@@ -136,6 +159,11 @@ func _prepare() -> void:
 	_aura_level = 0
 	_aura_left = 0.0
 	_aura_pulse_left = 0.0
+	_fan_level = 0
+	_fan_left = 0.0
+	_loot_notice_left = 0.0
+	_loot_notice_text = ""
+	_loot_notice_color = Color.WHITE
 	_using_pointer = false
 	if _pet != null:
 		_pet.visible = true
@@ -165,6 +193,7 @@ func _tick(delta: float) -> void:
 		return
 
 	_animation_time += delta
+	_loot_notice_left = maxf(0.0, _loot_notice_left - delta)
 	_time_left = maxf(0.0, _time_left - delta)
 	_survival_score_left -= delta
 	while _survival_score_left <= 0.0:
@@ -183,9 +212,12 @@ func _tick(delta: float) -> void:
 		_place_pet(movement)
 		return
 	_step_attack(delta)
+	_step_fan_attack(delta, movement)
 	_step_projectiles(delta)
 	_step_aura(delta)
 	_step_pickups(delta)
+	_step_weapon_pickups(delta)
+	_step_chest_pickups(delta)
 	_place_pet(movement)
 
 
@@ -297,7 +329,10 @@ func _step_enemies(delta: float) -> void:
 
 func _step_attack(delta: float) -> void:
 	_attack_left -= delta
-	if _attack_left > 0.0 or _enemies.is_empty():
+	if _enemies.is_empty():
+		_attack_left = maxf(0.0, _attack_left)
+		return
+	if _attack_left > 0.0:
 		return
 	_attack_left += _fire_interval
 	var target_index := nearest_point_index(_player_position, _enemy_positions())
@@ -310,13 +345,57 @@ func _step_attack(delta: float) -> void:
 	for i in _shot_count:
 		var centred := float(i) - float(_shot_count - 1) * 0.5
 		_projectiles.append({
+			"kind": &"bolt",
 			"position": _player_position,
+			"origin": _player_position,
 			"velocity": base.rotated(centred * spread) * SHOT_SPEED * _scale,
 			"damage": _damage,
+			"radius": 4.5,
+			"range": maxf(size.x, size.y) * 0.86,
 			"pierce_left": _pierce,
 			"hits": [] as Array[int],
 		})
 	_reaction_left = REACTION_TIME
+
+
+## The dropped fan is deliberately a separate weapon rather than another level
+## of the homing bolt. Moving aims the fan; standing still aims it at the nearest
+## monster. Its individual darts are weaker, but the wide spread can clear a lane.
+func _step_fan_attack(delta: float, movement: Vector2) -> void:
+	if _fan_level <= 0:
+		return
+	_fan_left -= delta
+	if _enemies.is_empty():
+		_fan_left = maxf(0.0, _fan_left)
+		return
+	if _fan_left > 0.0:
+		return
+	_fan_left += fan_interval_for(_fan_level)
+	var base := movement
+	if base == Vector2.ZERO:
+		var target_index := nearest_point_index(_player_position, _enemy_positions())
+		if target_index < 0:
+			return
+		var target: Vector2 = _enemies[target_index]["position"]
+		base = (_player_position.direction_to(target)
+			if target != _player_position else Vector2.UP)
+	var count := fan_shot_count_for(_fan_level)
+	var spread := deg_to_rad(FAN_SPREAD_DEGREES)
+	for i in count:
+		var t := 0.5 if count <= 1 else float(i) / float(count - 1)
+		var direction := base.rotated(lerpf(-spread * 0.5, spread * 0.5, t))
+		_projectiles.append({
+			"kind": &"fan",
+			"position": _player_position,
+			"origin": _player_position,
+			"velocity": direction * FAN_SHOT_SPEED * _scale,
+			"damage": fan_damage_for(_fan_level),
+			"radius": 5.0,
+			"range": FAN_RANGE * _scale,
+			"pierce_left": 0,
+			"hits": [] as Array[int],
+		})
+	_reaction_left = maxf(_reaction_left, REACTION_TIME)
 
 
 func _enemy_positions() -> Array[Vector2]:
@@ -327,9 +406,9 @@ func _enemy_positions() -> Array[Vector2]:
 
 
 func _step_projectiles(delta: float) -> void:
-	var radius := 4.5 * _scale
 	for i in range(_projectiles.size() - 1, -1, -1):
 		var shot: Dictionary = _projectiles[i]
+		var radius := float(shot.get("radius", 4.5)) * _scale
 		var start: Vector2 = shot["position"]
 		var finish := start + Vector2(shot["velocity"]) * delta
 		shot["position"] = finish
@@ -353,16 +432,18 @@ func _step_projectiles(delta: float) -> void:
 			if int(shot["pierce_left"]) < 0:
 				consumed = true
 				break
-		var projectile_limit := maxf(size.x, size.y) * 0.86
-		if consumed or finish.distance_to(_player_position) > projectile_limit:
+		var origin: Vector2 = shot.get("origin", _player_position)
+		var projectile_limit := float(shot.get(
+			"range", maxf(size.x, size.y) * 0.86))
+		if consumed or finish.distance_to(origin) > projectile_limit:
 			_projectiles.remove_at(i)
 		else:
 			_projectiles[i] = shot
 
 
-## The aura trades single-target strength for coverage. At level one it deals
-## less than half of one basic bolt, but applies that amount once to every body
-## inside the circle. Repeated upgrades grow both reach and damage slowly.
+## The aura rewards the risk of letting monsters approach: one pulse is slightly
+## stronger than one basic bolt and reaches every body in its medium circle, but
+## its long interval keeps its per-target damage rate below the ranged weapon.
 func _step_aura(delta: float) -> void:
 	if _aura_level <= 0:
 		return
@@ -394,7 +475,10 @@ func _trigger_aura() -> void:
 func _defeat_enemy(index: int) -> void:
 	var enemy: Dictionary = _enemies[index]
 	_enemies.remove_at(index)
+	_defeated_count += 1
 	_add_score(int(enemy["points"]))
+	_maybe_drop_weapon(enemy)
+	_maybe_drop_chest(enemy)
 	if _pickups.size() >= MAX_PICKUPS:
 		_gain_experience(int(enemy["experience"]))
 	else:
@@ -403,6 +487,33 @@ func _defeat_enemy(index: int) -> void:
 			"value": enemy["experience"],
 			"phase": randf() * TAU,
 		})
+
+
+func _maybe_drop_weapon(enemy: Dictionary) -> void:
+	if not _weapon_pickups.is_empty() or _fan_level >= MAX_FAN_LEVEL:
+		return
+	if not should_drop_weapon(
+			int(enemy["kind"]), _fan_level, _defeated_count, randf()):
+		return
+	_weapon_pickups.append({
+		"position": enemy["position"],
+		"weapon": &"fan",
+		"phase": randf() * TAU,
+	})
+
+
+func _maybe_drop_chest(enemy: Dictionary) -> void:
+	var kind := int(enemy["kind"])
+	if kind <= 0 or not _chest_pickups.is_empty():
+		return
+	_elite_defeats_since_chest += 1
+	if not should_drop_chest(kind, _elite_defeats_since_chest, randf()):
+		return
+	_chest_pickups.append({
+		"position": enemy["position"],
+		"phase": randf() * TAU,
+	})
+	_elite_defeats_since_chest = 0
 
 
 func _step_pickups(delta: float) -> void:
@@ -423,6 +534,63 @@ func _step_pickups(delta: float) -> void:
 			pickup["position"] = position
 		pickup["phase"] = float(pickup["phase"]) + delta * 4.0
 		_pickups[i] = pickup
+
+
+func _step_weapon_pickups(delta: float) -> void:
+	for i in range(_weapon_pickups.size() - 1, -1, -1):
+		var pickup: Dictionary = _weapon_pickups[i]
+		pickup["phase"] = float(pickup["phase"]) + delta * 2.8
+		if Vector2(pickup["position"]).distance_to(_player_position) \
+				<= WEAPON_PICKUP_RADIUS * _scale:
+			_weapon_pickups.remove_at(i)
+			if StringName(pickup["weapon"]) == &"fan":
+				_fan_level = mini(MAX_FAN_LEVEL, _fan_level + 1)
+				_fan_left = minf(_fan_left, 0.18)
+				_show_loot_notice(
+					"取得扇形飛鏢  Lv.%d" % _fan_level,
+					PetStyle.GAME_SURVIVOR_FAN)
+				_reaction_left = REACTION_TIME * 1.5
+			continue
+		_weapon_pickups[i] = pickup
+
+
+func _step_chest_pickups(delta: float) -> void:
+	for i in range(_chest_pickups.size() - 1, -1, -1):
+		var chest: Dictionary = _chest_pickups[i]
+		chest["phase"] = float(chest["phase"]) + delta * 2.2
+		if Vector2(chest["position"]).distance_to(_player_position) \
+				<= CHEST_PICKUP_RADIUS * _scale:
+			_chest_pickups.remove_at(i)
+			_open_chest()
+			continue
+		_chest_pickups[i] = chest
+
+
+func _open_chest() -> void:
+	var candidates: Array[StringName] = []
+	for upgrade: Dictionary in UPGRADES:
+		var id := StringName(upgrade["id"])
+		if id in [&"aura_unlock", &"vitality"]:
+			continue
+		if _upgrade_available(id):
+			candidates.append(id)
+	if _fan_level > 0 and _fan_level < MAX_FAN_LEVEL:
+		candidates.append(&"fan_power")
+	if candidates.is_empty():
+		_add_score(25)
+		_show_loot_notice("寶箱：額外獲得 25 分", PetStyle.GAME_SURVIVOR_CHEST)
+		return
+	var id: StringName = candidates.pick_random()
+	_apply_upgrade(id)
+	_show_loot_notice("寶箱：%s" % _upgrade_title_for(id),
+		PetStyle.GAME_SURVIVOR_CHEST)
+	_reaction_left = REACTION_TIME * 1.8
+
+
+func _show_loot_notice(text: String, color: Color) -> void:
+	_loot_notice_text = text
+	_loot_notice_color = color
+	_loot_notice_left = 2.2
 
 
 func _take_hit() -> void:
@@ -463,15 +631,56 @@ static func experience_needed_for(level: int) -> int:
 
 
 static func aura_damage_for(level: int) -> float:
-	return 0.0 if level <= 0 else AURA_BASE_DAMAGE + float(level - 1) * 0.20
+	return 0.0 if level <= 0 else AURA_BASE_DAMAGE + float(level - 1) * 0.25
 
 
 static func aura_radius_for(level: int) -> float:
-	return 0.0 if level <= 0 else AURA_BASE_RADIUS + float(level - 1) * 10.0
+	return 0.0 if level <= 0 else AURA_BASE_RADIUS + float(level - 1) * 12.0
 
 
 static func aura_interval_for(level: int) -> float:
-	return maxf(0.95, AURA_BASE_INTERVAL - float(maxi(0, level - 1)) * 0.12)
+	return maxf(1.15, AURA_BASE_INTERVAL - float(maxi(0, level - 1)) * 0.10)
+
+
+static func fan_shot_count_for(level: int) -> int:
+	return 0 if level <= 0 else mini(7, 2 + level)
+
+
+static func fan_damage_for(level: int) -> float:
+	return 0.0 if level <= 0 else FAN_BASE_DAMAGE + float(level - 1) * 0.08
+
+
+static func fan_interval_for(level: int) -> float:
+	return maxf(0.74, FAN_BASE_INTERVAL - float(maxi(0, level - 1)) * 0.11)
+
+
+static func weapon_drop_chance_for(kind: int, fan_level: int) -> float:
+	if fan_level >= MAX_FAN_LEVEL:
+		return 0.0
+	match kind:
+		2:
+			return 0.72
+		1:
+			return 0.38
+	return 0.025
+
+
+static func should_drop_weapon(kind: int, fan_level: int,
+		defeated_count: int, roll: float) -> bool:
+	if fan_level >= MAX_FAN_LEVEL:
+		return false
+	if fan_level == 0 and defeated_count >= WEAPON_DROP_PITY:
+		return true
+	return roll < weapon_drop_chance_for(kind, fan_level)
+
+
+static func should_drop_chest(kind: int,
+		elite_defeats_since_chest: int, roll: float) -> bool:
+	if kind <= 0:
+		return false
+	if elite_defeats_since_chest >= CHEST_DROP_PITY:
+		return true
+	return roll < (0.45 if kind == 2 else 0.12)
 
 
 func _gain_experience(amount: int) -> void:
@@ -530,6 +739,15 @@ func _choose_upgrade(index: int) -> void:
 	if not _choosing_upgrade or index < 0 or index >= _upgrade_choices.size():
 		return
 	var id := StringName(_upgrade_choices[index]["id"])
+	_apply_upgrade(id)
+	_choosing_upgrade = false
+	_upgrade_choices.clear()
+	_reaction_left = REACTION_TIME * 1.5
+	if _experience >= _experience_needed:
+		_gain_experience(0)
+
+
+func _apply_upgrade(id: StringName) -> void:
 	match id:
 		&"power":
 			_damage += 1.0
@@ -550,11 +768,18 @@ func _choose_upgrade(index: int) -> void:
 			_aura_level = mini(MAX_AURA_LEVEL, _aura_level + 1)
 		&"vitality":
 			_recover_one()
-	_choosing_upgrade = false
-	_upgrade_choices.clear()
-	_reaction_left = REACTION_TIME * 1.5
-	if _experience >= _experience_needed:
-		_gain_experience(0)
+		&"fan_power":
+			_fan_level = mini(MAX_FAN_LEVEL, _fan_level + 1)
+			_fan_left = minf(_fan_left, 0.18)
+
+
+func _upgrade_title_for(id: StringName) -> String:
+	if id == &"fan_power":
+		return "扇形飛鏢 Lv.%d" % _fan_level
+	for upgrade: Dictionary in UPGRADES:
+		if StringName(upgrade["id"]) == id:
+			return str(upgrade["title"])
+	return "隨機強化"
 
 
 # --- Geometry and input -------------------------------------------------------
@@ -652,10 +877,12 @@ func _paint() -> void:
 	_draw_aura()
 	for pickup: Dictionary in _pickups:
 		_draw_pickup(pickup)
+	for pickup: Dictionary in _weapon_pickups:
+		_draw_weapon_pickup(pickup)
+	for chest: Dictionary in _chest_pickups:
+		_draw_chest(chest)
 	for shot: Dictionary in _projectiles:
-		var position := _world_to_screen(Vector2(shot["position"]))
-		draw_circle(position, 8.0 * _scale, Color(PetStyle.GAME_SURVIVOR_SHOT, 0.14))
-		draw_circle(position, 4.0 * _scale, PetStyle.GAME_SURVIVOR_SHOT)
+		_draw_projectile(shot)
 	for enemy: Dictionary in _enemies:
 		_draw_enemy(enemy)
 	_draw_hud()
@@ -664,6 +891,8 @@ func _paint() -> void:
 			Color(PetStyle.GAME_SURVIVOR_XP, 0.48), maxf(1.0, _scale), true)
 	if _choosing_upgrade:
 		_draw_upgrade_choice()
+	elif _loot_notice_left > 0.0:
+		_draw_loot_notice()
 
 
 func _draw_aura() -> void:
@@ -759,6 +988,84 @@ func _draw_pickup(pickup: Dictionary) -> void:
 	draw_colored_polygon(diamond, PetStyle.GAME_SURVIVOR_XP)
 
 
+func _draw_weapon_pickup(pickup: Dictionary) -> void:
+	var position := _world_to_screen(Vector2(pickup["position"]))
+	var phase := float(pickup["phase"])
+	var pulse := 1.0 + sin(phase * 2.0) * 0.08
+	var radius := 15.0 * _scale * pulse
+	draw_circle(position, radius * 1.45,
+		Color(PetStyle.GAME_SURVIVOR_FAN, 0.10))
+	draw_arc(position, radius * 1.45, 0.0, TAU, 28,
+		Color(PetStyle.GAME_SURVIVOR_FAN, 0.64), maxf(1.0, _scale), true)
+	_draw_shuriken(position, radius, phase, PetStyle.GAME_SURVIVOR_FAN)
+	_draw_loot_direction(position, PetStyle.GAME_SURVIVOR_FAN)
+
+
+func _draw_chest(chest: Dictionary) -> void:
+	var screen_position := _world_to_screen(Vector2(chest["position"]))
+	var bob := sin(float(chest["phase"]) * 2.0) * 2.0 * _scale
+	var position := screen_position + Vector2(0.0, bob)
+	var chest_size := Vector2(28.0, 21.0) * _scale
+	draw_circle(position + Vector2(0.0, 4.0 * _scale), 22.0 * _scale,
+		Color(PetStyle.GAME_SURVIVOR_CHEST, 0.10))
+	var body := Rect2(position - chest_size * Vector2(0.5, 0.20), chest_size)
+	draw_rect(body, PetStyle.GAME_SURVIVOR_CHEST_DARK, true)
+	draw_rect(Rect2(body.position, Vector2(body.size.x, 7.0 * _scale)),
+		PetStyle.GAME_SURVIVOR_CHEST, true)
+	draw_rect(body, PetStyle.NIGHT_EDGE, false, maxf(1.0, 2.0 * _scale))
+	var lock := Rect2(
+		position + Vector2(-3.0, 2.0) * _scale,
+		Vector2(6.0, 7.0) * _scale)
+	draw_rect(lock, PetStyle.GAME_SURVIVOR_SHOT, true)
+	_draw_loot_direction(screen_position, PetStyle.GAME_SURVIVOR_CHEST)
+
+
+func _draw_loot_direction(screen_position: Vector2, color: Color) -> void:
+	var margin := 28.0 * _scale
+	var top := (HUD_HEIGHT + 22.0) * _scale
+	var safe := Rect2(
+		Vector2(margin, top),
+		Vector2(size.x - margin * 2.0, size.y - top - margin))
+	if safe.has_point(screen_position):
+		return
+	var marker := Vector2(
+		clampf(screen_position.x, safe.position.x, safe.end.x),
+		clampf(screen_position.y, safe.position.y, safe.end.y))
+	var direction := _screen_centre().direction_to(screen_position)
+	if direction == Vector2.ZERO:
+		direction = Vector2.UP
+	var side := direction.orthogonal()
+	var arrow := PackedVector2Array([
+		marker + direction * 9.0 * _scale,
+		marker - direction * 6.0 * _scale + side * 6.0 * _scale,
+		marker - direction * 6.0 * _scale - side * 6.0 * _scale,
+	])
+	draw_colored_polygon(arrow, color)
+
+
+func _draw_projectile(shot: Dictionary) -> void:
+	var position := _world_to_screen(Vector2(shot["position"]))
+	if StringName(shot.get("kind", &"bolt")) == &"fan":
+		_draw_shuriken(position, 6.0 * _scale,
+			_animation_time * 10.0, PetStyle.GAME_SURVIVOR_FAN)
+		return
+	draw_circle(position, 8.0 * _scale,
+		Color(PetStyle.GAME_SURVIVOR_SHOT, 0.14))
+	draw_circle(position, 4.0 * _scale, PetStyle.GAME_SURVIVOR_SHOT)
+
+
+func _draw_shuriken(position: Vector2, radius: float,
+		rotation: float, color: Color) -> void:
+	var points := PackedVector2Array()
+	for i in 8:
+		var point_radius := radius if i % 2 == 0 else radius * 0.34
+		points.append(Vector2.UP.rotated(float(i) * PI / 4.0) * point_radius)
+	draw_set_transform(position, rotation, Vector2.ONE)
+	draw_colored_polygon(points, color)
+	draw_circle(Vector2.ZERO, radius * 0.20, PetStyle.GAME_FIELD)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
 func _draw_hud() -> void:
 	var font := ThemeDB.fallback_font
 	var font_size := maxi(10, roundi(13.0 * _scale))
@@ -771,12 +1078,32 @@ func _draw_hud() -> void:
 	var level_text := "Lv.%d" % _survivor_level
 	draw_string(font, Vector2(72.0 * _scale, 22.0 * _scale), level_text,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, PetStyle.NIGHT_MUTED)
+	var weapon_text := ("飛鏢 Lv.%d" % _fan_level
+		if _fan_level > 0 else "等待武器掉落")
+	var weapon_size := maxi(9, roundi(11.0 * _scale))
+	var weapon_width := font.get_string_size(
+		weapon_text, HORIZONTAL_ALIGNMENT_LEFT, -1, weapon_size).x
+	draw_string(font, Vector2(size.x - weapon_width - 12.0 * _scale, 22.0 * _scale),
+		weapon_text, HORIZONTAL_ALIGNMENT_LEFT, -1, weapon_size,
+		PetStyle.GAME_SURVIVOR_FAN if _fan_level > 0 else PetStyle.NIGHT_MUTED)
 	var bar := Rect2(72.0 * _scale, 30.0 * _scale,
 		size.x - 92.0 * _scale, 5.0 * _scale)
 	draw_rect(bar, Color(PetStyle.NIGHT_EDGE, 0.72), true)
 	draw_rect(Rect2(bar.position, Vector2(
 		bar.size.x * float(_experience) / maxf(1.0, float(_experience_needed)),
 		bar.size.y)), PetStyle.GAME_SURVIVOR_XP, true)
+
+
+func _draw_loot_notice() -> void:
+	var font := ThemeDB.fallback_font
+	var font_size := maxi(12, roundi(16.0 * _scale))
+	var text_width := font.get_string_size(
+		_loot_notice_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+	var alpha := minf(1.0, _loot_notice_left * 2.0)
+	var position := Vector2((size.x - text_width) * 0.5,
+		_screen_centre().y - 58.0 * _scale)
+	draw_string(font, position, _loot_notice_text, HORIZONTAL_ALIGNMENT_LEFT, -1,
+		font_size, Color(_loot_notice_color, alpha))
 
 
 func _draw_upgrade_choice() -> void:
