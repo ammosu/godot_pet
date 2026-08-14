@@ -583,6 +583,12 @@ const GAME_BEE_WING := Color("f4ecdd", 0.82)
 const GAME_BEE_INK := Color("2b2018")
 const GAME_BEE_PLAYER_SHOT := Color("f4ecdd")
 const GAME_BEE_ENEMY_SHOT := Color("5fb0ad")
+## 怪潮倖存 uses external CC0 sprites for enemies. Experience and shots remain
+## the two luminous procedural marks the player has to read at a glance.
+const GAME_SURVIVOR_XP := Color("5fb0ad")
+const GAME_SURVIVOR_SHOT := Color("f0c05a")
+const GAME_SURVIVOR_AURA := Color("a98cc9")
+const GAME_SURVIVOR_CARD := Color("241d1a")
 
 
 ## A card in 翻翻看. Face down it is chrome; face up it is paper, which is the

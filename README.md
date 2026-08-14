@@ -165,8 +165,8 @@ npx codex-pets add <pet-id>
 
 ### 遊戲
 
-十一個，共用一個視窗、三種難度、各自記最高分：接東西、跳過去、翻翻看、排球對決、下樓梯、
-敲磚塊、推箱子尋零食、一筆畫、貪吃小蛇、踩地雷、小蜜蜂。
+十二個，共用一個視窗、三種難度、各自記最高分：接東西、跳過去、翻翻看、排球對決、下樓梯、
+敲磚塊、推箱子尋零食、一筆畫、貪吃小蛇、踩地雷、小蜜蜂、怪潮倖存。
 
 <p align="center">
   <img src="docs/images/catch-game.png" alt="接東西進行中：食物從上面掉下來，芽尾在底下接" width="380">
@@ -264,3 +264,7 @@ macOS 要開螢幕錄製權限，而且**失敗是無聲的** —— 沒給權�
 
 美術方面：內建的「芽尾」是專案自己的，截圖裡也只有牠。社群 pack 從來不在這個 repo 裡，
 程式只從你自己的安裝位置讀，授權關係留在 pack 作者與你之間 —— 見上面「造型素材」。
+
+「怪潮倖存」使用三張 [Ninja Adventure Asset Pack](https://pixel-boy.itch.io/ninja-adventure-asset-pack)
+的怪物角色圖集，作者為 Pixel-Boy 與 AAA，採 CC0 1.0。實際檔案、來源版本與授權連結見
+[`assets/third_party/ninja_adventure/LICENSE.md`](assets/third_party/ninja_adventure/LICENSE.md)。
