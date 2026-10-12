@@ -140,6 +140,9 @@ holds no behaviour itself.
   `Menu` node: what is in it, what each row says, and decoding which row was
   picked. Settings it changes itself; anything the pet *does* goes back to
   pet.gd as a signal.
+- `pet/senses_flow.gd` — the consent for each thing the pet can watch (the
+  screen, the app in front, the machine) and the line it says about load.
+  Speaks only through `said`, keeping the gate's defaults.
 - `pet/work_flow.gd` — the walk from picking a workspace to a job's result:
   the consent, offer, dirty-work and Codex login dialogs, and what the pet says
   about the job. Speaks only through its `said` signal.
@@ -1302,7 +1305,7 @@ non-obvious consequence is on the menu row's tooltip instead — the scan never
 leaves the machine, but **the line the pet says names a process and goes into the
 conversation like any other**, so the model sees it next turn. That is
 deliberate: unrecorded, a reply of 「哪個程式在吃？」 would find the pet with no
-idea what it just said. `_on_resource_alert` is gated on 主動說話 as well as its
+idea what it just said. `SensesFlow._on_resource_alert` is gated on 主動說話 as well as its
 own switch, since this is the pet speaking unbidden.
 
 At most one line per scan, most consequential first: no memory left beats one

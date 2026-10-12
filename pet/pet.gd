@@ -43,8 +43,6 @@ const MenuId := PetMenu.MenuId
 @onready var _visual: PetVisual = $Visual
 @onready var _chat: ChatPanel = $Chat
 @onready var _menu: PetMenu = $Menu
-@onready var _consent: ConfirmationDialog = $Consent
-@onready var _presence_consent: ConfirmationDialog = $PresenceConsent
 @onready var _model_settings: ModelSettingsDialog = $ModelSettings
 @onready var _voice_settings: VoiceSettingsDialog = $VoiceSettings
 @onready var _prompt_settings: PromptSettingsDialog = $PromptSettings
@@ -53,6 +51,7 @@ const MenuId := PetMenu.MenuId
 ## Everything between picking a workspace and a job's result. Not a Window, so
 ## it can sit anywhere; the dialogs it drives stay direct children of Pet.
 @onready var _work_flow: WorkFlow = $WorkFlow
+@onready var _senses: SensesFlow = $SensesFlow
 @onready var _speech_consent: ConfirmationDialog = $SpeechConsent
 @onready var _memory: MemoryPanel = $Memory
 @onready var _chat_log: ChatLogPanel = $ChatLog
@@ -154,11 +153,10 @@ func _ready() -> void:
 	EventBus.emotion_changed.connect(_on_emotion_changed)
 	EventBus.pet_nudged.connect(_on_pet_nudged)
 	EventBus.bond_stage_reached.connect(_on_bond_stage_reached)
-	EventBus.screen_look_requested.connect(_on_screen_look_requested)
-	EventBus.resource_alert.connect(_on_resource_alert)
-	_setup_consent_dialog()
-	_setup_presence_consent_dialog()
 	var ui_scale := _window_ctl.get_ui_scale()
+	_senses.setup(ui_scale, $Consent, $PresenceConsent)
+	_senses.said.connect(_on_pet_nudged)
+	_senses.check_changed.connect(_menu.set_checked)
 	_model_settings.setup(ui_scale)
 	_model_settings.applied.connect(_menu.rebuild)
 	_voice_settings.setup(ui_scale)
@@ -674,9 +672,9 @@ func _on_menu_action(id: int) -> void:
 		MenuId.NUDGES:
 			_toggle_nudges()
 		MenuId.PRESENCE:
-			_toggle_presence()
+			_senses.toggle_presence()
 		MenuId.MONITOR:
-			_toggle_monitor()
+			_senses.toggle_monitor()
 		MenuId.SPEAK:
 			_toggle_speech()
 		MenuId.PRERENDER:
@@ -841,183 +839,6 @@ func _on_secret_submitted(key: String, value: String) -> void:
 	_on_pet_nudged("happy", note)
 
 
-# --- Looking at the screen ----------------------------------------------------
-
-## Screenshots are the one thing here that can hand something private to a
-## third party, so nothing is captured until the user says so. "每次都可以"
-## exists because being asked every time is how people learn to click through
-## the prompt without reading it.
-const CONSENT_ALWAYS := "always"
-
-var _pending_look := {}
-
-
-func _setup_consent_dialog() -> void:
-	var scale := _window_ctl.get_ui_scale()
-	_consent.title = "看一下你的螢幕"
-	_consent.dialog_text = ""
-	_consent.exclusive = false
-	# Native window, laid out in physical pixels, so the stock theme comes out
-	# undersized. A Theme on the dialog reaches the label and the buttons alike;
-	# per-node font overrides only reach the node they're on.
-	_consent.theme = PetStyle.dialog_theme(scale)
-	_consent.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-
-	# "好" and "不要" said nothing about what was about to happen. Name the action
-	# in the button, so the dialog is still readable to someone who skipped the
-	# paragraph — which is most people, most of the time.
-	_consent.ok_button_text = "好，看這一次"
-	_consent.cancel_button_text = "不要"
-	var ok := _consent.get_ok_button()
-	var primary := PetStyle.primary_button_styles(scale)
-	for state in primary:
-		ok.add_theme_stylebox_override(state, primary[state])
-	ok.add_theme_color_override("font_color", PetStyle.INK)
-	ok.add_theme_color_override("font_hover_color", PetStyle.INK)
-	ok.add_theme_color_override("font_pressed_color", PetStyle.INK)
-
-	# Standing consent is the one answer here that can't be taken back by simply
-	# not clicking it again, so it's the quietest thing in the window.
-	var always := _consent.add_button("以後都不用問我", false, "always")
-	PetStyle.make_ghost_button(always, scale)
-
-	_consent.confirmed.connect(func() -> void: _resolve_look(true, false))
-	_consent.canceled.connect(func() -> void: _resolve_look(false, false))
-	_consent.custom_action.connect(func(action: StringName) -> void:
-		if action == &"always":
-			_consent.hide()
-			_resolve_look(true, true))
-
-
-## The old wording — "畫面會傳給語言模型" — left the three things people actually
-## want to know unanswered: how much of the screen, to whom, and for how long.
-func _on_screen_look_requested(question: String, record_question: bool) -> void:
-	_pending_look = {"question": question, "record": record_question}
-	if Config.get_value("vision", "consent", "") == CONSENT_ALWAYS:
-		_resolve_look(true, false)
-		return
-
-	var lines := PackedStringArray()
-	# A look the user asked for by typing: show them which question triggered it,
-	# because a dialog appearing out of a normal sentence is startling otherwise.
-	if not record_question:
-		lines.append("你剛剛問：「%s」\n" % question.strip_edges())
-	lines.append("要回答這個，我得把整個螢幕拍成一張圖，傳給 %s 讀。"
-		% LLMService.provider_label(LLMService.get_provider_name()))
-	lines.append("")
-	lines.append("・只有這一次，我不會在背景一直看")
-	lines.append("・看到的內容不會寫進我的長期記憶")
-	lines.append("・拍的那一瞬間，我會先把自己藏起來")
-	_consent.dialog_text = "\n".join(lines)
-	_consent.reset_size()
-	_consent.popup_centered()
-
-
-func _resolve_look(allowed: bool, remember: bool) -> void:
-	var pending := _pending_look
-	_pending_look = {}
-	if pending.is_empty():
-		return
-	if remember:
-		Config.set_value("vision", "consent", CONSENT_ALWAYS)
-	if allowed:
-		VisionService.look(str(pending["question"]), bool(pending["record"]))
-	elif bool(pending["record"]):
-		# Nobody is waiting on an answer — this came from the menu.
-		_on_pet_nudged("neutral", "好啦，那我不看。")
-	else:
-		# The question is already sitting in history unanswered. Leaving it there
-		# would look like the pet ignored it, so answer it blind instead.
-		LLMService.answer_without_looking()
-
-
-# --- Presence (rhythm-based nudging) ------------------------------------------
-
-## Modelled on the screen-look consent above: nothing is sampled until the
-## user agrees, and the one way to agree here already *is* the standing
-## consent — there's no "just this once" for a background poll — so the
-## accept button gets the quiet treatment the vision dialog reserves for
-## "以後都不用問我", not the loud one it gives its one-off "看這一次".
-func _setup_presence_consent_dialog() -> void:
-	var scale := _window_ctl.get_ui_scale()
-	_presence_consent.title = "留意你切換 App 的節奏"
-	_presence_consent.dialog_text = "\n".join(PackedStringArray([
-		"我想多留意一點你的作息，這樣主動找你聊天才不會挑錯時間。",
-		"",
-		"・只記錄目前最上層 App 的名稱，還有你留在同一個 App 多久",
-		"・不會看視窗標題、內容，或是你打的字",
-		"・這些資料只留在這台電腦，不會送出網路，也不會寫進任何檔案",
-		"・關掉開關，我就完全不會再讀",
-	]))
-	_presence_consent.exclusive = false
-	_presence_consent.theme = PetStyle.dialog_theme(scale)
-	_presence_consent.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_presence_consent.ok_button_text = "好，開始留意"
-	_presence_consent.cancel_button_text = "不用了"
-	PetStyle.make_ghost_button(_presence_consent.get_ok_button(), scale)
-	_presence_consent.confirmed.connect(_on_presence_consent_confirmed)
-
-
-func _on_presence_consent_confirmed() -> void:
-	PresenceService.grant_consent()
-	_menu.set_checked(MenuId.PRESENCE, true)
-
-
-## Consent, once given, is sticky — re-checking the box after turning it off
-## doesn't re-ask something already agreed to (same durability as vision's
-## "always"). Turning it off needs no dialog at all; it's pure withdrawal.
-func _toggle_presence() -> void:
-	if PresenceService.is_enabled():
-		PresenceService.set_enabled(false)
-		_menu.set_checked(MenuId.PRESENCE, false)
-	elif PresenceService.has_consented():
-		PresenceService.set_enabled(true)
-		_menu.set_checked(MenuId.PRESENCE, true)
-	else:
-		_presence_consent.reset_size()
-		_presence_consent.popup_centered()
-
-
-# --- Watching the machine -----------------------------------------------------
-
-## No consent dialog, unlike the two above, and the difference is what is being
-## looked at. A screenshot leaves the machine and a presence poll is a record of
-## what *you* were doing; a process list is what the computer is doing, read
-## locally, never written down and never sent. The switch being off by default is
-## the opt-in, and the row's tooltip carries the one consequence that isn't
-## obvious from its name — see _build_behaviour_menu().
-func _toggle_monitor() -> void:
-	MonitorService.set_enabled(not MonitorService.is_enabled())
-	_menu.set_checked(MenuId.MONITOR, MonitorService.is_enabled())
-
-
-## The service knows the numbers; only the composition root knows how the pet
-## reacts to anything — the same split the mini-game scores and the work results
-## already use, and the reason MonitorService emits a kind rather than a sentence.
-##
-## Gated on 主動說話 as well as on its own switch. This is the pet opening its
-## mouth without being asked, which is exactly what that switch is for; leaving
-## it out would give the one setting that means "don't do that" a hole in it.
-func _on_resource_alert(kind: String, detail: Dictionary) -> void:
-	if not Nudger.is_enabled():
-		return
-	var percent := roundi(float(detail.get("percent", 0.0)))
-	var name := str(detail.get("name", ""))
-	var emotion := "sad"
-	var line := ""
-	match kind:
-		MonitorService.ALERT_MEM_TIGHT:
-			line = "記憶體只剩 %d%% 可用了，要不要關掉幾個東西？" % percent
-		MonitorService.ALERT_PROC_MEM:
-			emotion = "neutral"
-			line = "%s 一個就吃掉 %d%% 的記憶體耶。" % [name, percent]
-		MonitorService.ALERT_CPU_BUSY:
-			emotion = "neutral"
-			line = "CPU 現在衝到 %d%%，跑最兇的是 %s。" % [percent, name] if not name.is_empty() \
-				else "CPU 現在衝到 %d%%，風扇應該很忙。" % percent
-	if line.is_empty():
-		return
-	_on_pet_nudged(emotion, line)
 
 
 ## Which persona the editor opens on is the pet's business — it knows the
