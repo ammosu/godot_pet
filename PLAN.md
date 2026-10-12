@@ -1447,6 +1447,12 @@ unprompted, speak)` 在檔案裡被叫了 47 次，是每句台詞走向 TTS 和
   `job_ended` 接工作面板的重新整理；`_chat.work_submitted` 直接接 `WorkFlow.submit`。
   原本這塊沒有任何測試，補了 `test_work_flow`，只驗訊號與旗標，不會真的叫代理或模型。
   在 Xvfb 上走過一次：開工 → 同意框 → 取消，泡泡裡出現「好，那我不動你的資料夾。」。
+- **階段 3 完成。** 右鍵選單搬進 `pet/pet_menu.gd`（`PetMenu`，掛在原本的 `Menu` 節點上），
+  `pet.gd` 1808 → 1310 行。建構、id 範圍解讀、`*_BASE` 常數和 `MenuId` 一起搬；換模型、換語音
+  後端這種純設定由選單自己做，其他一律發訊號（`action` / `pack_chosen` / `size_chosen` /
+  `game_chosen` / `workspace_chosen`）回 `pet.gd`。驗收：重構前後把整棵選單（每列的文字、id、
+  勾選、停用、tooltip）倒出來比對，87 行逐字相同；另補 `test_pet_menu` 驗 id 解讀順序。
+  順帶抓到一個原本就有的 bug，另一個 commit 修：見下一條。
 
 ## 3. 時程估計
 

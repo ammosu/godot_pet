@@ -18,7 +18,7 @@ func _ready() -> void:
 		voices.append("角色 %02d" % (i + 1))
 
 	var summary := PopupMenu.new()
-	pet.call("_append_voice_summary", summary, voices, voices[36])
+	(pet.get_node("Menu") as PetMenu).append_voice_summary(summary, voices, voices[36])
 	_expect(summary.item_count == 3,
 		"50 voices expanded the speech-menu summary to %d rows" % summary.item_count)
 	_expect(summary.get_item_text(1) == "目前角色：角色 37",
@@ -36,7 +36,7 @@ func _ready() -> void:
 
 	# Windows may open a third-level native popup back across its parent near a
 	# screen edge. Connection repair rows therefore live directly in 說話.
-	var speech: PopupMenu = pet.call("_build_speech_menu")
+	var speech: PopupMenu = (pet.get_node("Menu") as PetMenu).build_speech_menu()
 	var labels: Array[String] = []
 	for i in speech.item_count:
 		labels.append(speech.get_item_text(i))

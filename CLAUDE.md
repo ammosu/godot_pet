@@ -136,6 +136,10 @@ holds no behaviour itself.
 - `autoload/recorder_service.gd` — local recordings saved to the outbox;
   `autoload/speech_input_service.gd` — a separate, explicitly consented
   microphone turn sent to OpenAI transcription and then into ordinary chat.
+- `pet/pet_menu.gd` (`PetMenu`) — the right-click menu, as the script on the
+  `Menu` node: what is in it, what each row says, and decoding which row was
+  picked. Settings it changes itself; anything the pet *does* goes back to
+  pet.gd as a signal.
 - `pet/work_flow.gd` — the walk from picking a workspace to a job's result:
   the consent, offer, dirty-work and Codex login dialogs, and what the pet says
   about the job. Speaks only through its `said` signal.
@@ -836,10 +840,11 @@ paint, and a desk pet is something you look at while thinking.
 
 `GamePanel.GAMES` is the whole registry — id, label, script. Ids key the saved
 record and difficulty (`[game] best_<id>_<level>`), so they must not change once
-anyone has a score. `pet.gd` builds the 遊戲 submenu straight off it with ids at
+anyone has a score. `PetMenu` builds the 遊戲 submenu straight off it with ids at
 `GAME_BASE`, so a fourth game touches no code there. Note that every base test in
-`_on_menu_pressed` is "at or above", so `GAME_BASE` (400) must be checked before
-`PROVIDER_BASE` (300).
+`PetMenu._on_id_pressed` is "at or above", so `GAME_BASE` (400) must be checked
+before `PROVIDER_BASE` (300) — which is why the constants and the decoding live in
+the same file.
 
 Shared parts worth knowing before adding a fourth game:
 
@@ -1617,10 +1622,10 @@ the premise of the app. It is one row, not two, because the row carries its own
 stop. Measured at 14 rows: 392px on a 1080p desktop, still short of the 476px
 that forced Godot to shove the flat menu upward.
 
-That stateful label then found a real bug. **`_build_menu()` does not run on every
-open** — `_open_menu()` rebuilds only when the installed pack list changed — so
+That stateful label then found a real bug. **`PetMenu.rebuild()` does not run on every
+open** — `open_at_mouse()` rebuilds only when the installed pack list changed — so
 the row still read 錄一段話 while the pet was visibly recording, and following the
-indicator's own instruction did nothing. `_set_item_text()` refreshes just that
+indicator's own instruction did nothing. `set_row_text()` refreshes just that
 row on open, which is also why the clock in it is a snapshot rather than live: the
 menu covers the bubble that has the running one.
 
