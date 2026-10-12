@@ -33,6 +33,16 @@ godot --headless --path . --export-release "Windows" "build/windows/Godot Pet.ex
 godot --headless --path . --export-release "Linux"   "build/linux/GodotPet.x86_64"
 ```
 
+`tools/export_builds.sh` exports the macOS and Windows builds into
+`build/dist/` as the two zips a user downloads, and is what CI runs:
+`.github/workflows/build.yml` tests and exports on one Linux runner for every
+push to `main` and every PR, keeps both zips as artifacts, and attaches them
+to a release when a `v*` tag is pushed. The macOS build goes straight to a
+`.zip` because re-archiving an `.app` directory drops its executable bit. CI
+runs with no `config.cfg` and no key, so the LLM starts on mock — a test that
+quietly relied on this machine's OpenAI key failed there first; a test that
+needs a backend selects it with `set_provider()`, which does not persist.
+
 Exporting needs the templates in
 `~/Library/Application Support/Godot/export_templates/4.7.1.stable/` (see
 PLAN.md Phase 10), and `rendering/textures/vram_compression/import_etc2_astc`

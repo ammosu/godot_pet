@@ -7,6 +7,11 @@ var _checks := 0
 
 
 func _ready() -> void:
+	# The model section only exists for the OpenAI backend, and which backend
+	# starts up depends on whether this machine has a key — a clean CI runner
+	# lands on mock. set_provider() does not persist, so this touches no config.
+	var original_provider := LLMService.get_provider_name()
+	LLMService.set_provider("openai")
 	var original_model := LLMService.get_model()
 	var original_effort := LLMService.get_reasoning_effort()
 	var pet := PET_SCENE.instantiate()
@@ -50,6 +55,7 @@ func _ready() -> void:
 	_expect(LLMService.get_reasoning_effort() == original_effort,
 		"closing the staged dialog changed the live reasoning effort")
 
+	LLMService.set_provider(original_provider)
 	if _failures == 0:
 		print("Model settings dialog: %d checks passed" % _checks)
 	else:

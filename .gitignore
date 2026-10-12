@@ -43,3 +43,6 @@ compositor-bench.jsonl
 
 # macOS
 .DS_Store
+
+# CI drops the Godot editor here (tools/ci_install_godot.sh).
+.godot-bin/

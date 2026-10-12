@@ -1,0 +1,73 @@
+# Test the project and export the macOS and Windows builds.
+#
+# Everything runs on one Linux runner: Godot cross-exports both platforms, so
+# no macOS or Windows runner is needed to *package* them. Nothing here runs the
+# exported builds; a green export is evidence of packaging, not of the app
+# working on that platform.
+#
+# Pushing a tag like v0.2.0 also attaches both archives to a GitHub release.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: 4.7.1
+  GODOT_BIN: ${{ github.workspace }}/.godot-bin/godot
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Godot
+        run: tools/ci_install_godot.sh
+      - name: Run project checks
+        run: tools/check_project.sh
+
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The template bundle is 1.3 GB; only the two platforms' files are kept,
+      # and cached so a normal run does not download it at all.
+      - name: Cache export templates
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/godot/export_templates/${{ env.GODOT_VERSION }}.stable
+          key: godot-templates-${{ env.GODOT_VERSION }}-macos-windows
+
+      - name: Install Godot and templates
+        run: tools/ci_install_godot.sh --templates
+
+      - name: Export
+        run: tools/export_builds.sh
+
+      - name: Upload macOS build
+        uses: actions/upload-artifact@v4
+        with:
+          name: GodotPet-macOS
+          path: build/dist/GodotPet-macOS.zip
+          compression-level: 0
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: GodotPet-Windows
+          path: build/dist/GodotPet-Windows.zip
+          compression-level: 0
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/dist/GodotPet-macOS.zip
+            build/dist/GodotPet-Windows.zip
+    permissions:
+      contents: write
