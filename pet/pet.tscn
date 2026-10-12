@@ -102,6 +102,11 @@ title = "這個資料夾有沒存好的東西"
 ok_button_text = "就這樣開始"
 cancel_button_text = "我先去存"
 
+[node name="QuitConfirm" type="ConfirmationDialog" parent="."]
+title = "現在就結束嗎？"
+ok_button_text = "停掉並結束"
+cancel_button_text = "先不要"
+
 [node name="ModelSettings" type="ConfirmationDialog" parent="."]
 script = ExtResource("14_model_dialog")
 title = "語言模型設定"

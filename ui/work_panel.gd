@@ -31,6 +31,7 @@ var _job_status: Label
 var _steps: VBoxContainer
 var _steps_scroll: ScrollContainer
 var _cancel: Button
+var _carries_on: Label
 var _idle_label: Label
 var _spaces: VBoxContainer
 var _spaces_empty: Label
@@ -146,9 +147,14 @@ func _build() -> void:
 
 	var footer := HBoxContainer.new()
 	root.add_child(footer)
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	footer.add_child(spacer)
+	# Closing a window that shows a job reads as stopping it. Said only while
+	# there is one, so an idle panel does not claim something is carrying on.
+	_carries_on = Label.new()
+	_carries_on.text = "關掉這個視窗，工作也會繼續"
+	_carries_on.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_carries_on.add_theme_color_override("font_color", PetStyle.NIGHT_MUTED)
+	_carries_on.add_theme_font_size_override("font_size", roundi(12.0 * _scale))
+	footer.add_child(_carries_on)
 	var close := Button.new()
 	close.text = "關閉"
 	close.pressed.connect(_close)
@@ -210,6 +216,7 @@ func _refresh_job() -> void:
 	_job_box.visible = busy or not _last.is_empty()
 	_idle_label.visible = not _job_box.visible
 	_cancel.visible = busy
+	_carries_on.visible = busy
 
 	if busy:
 		_job_title.text = str(job["request"])
@@ -269,6 +276,9 @@ func _on_progress(entry: Dictionary) -> void:
 func _on_state_changed() -> void:
 	if visible and _spaces != null:
 		_refresh_job()
+		# The busy workspace's row is frozen while its job runs; see
+		# _make_space_row(). Without this its buttons never come back.
+		_refresh_spaces()
 
 
 func _on_finished(result: Dictionary) -> void:
@@ -352,10 +362,19 @@ func _make_space_row(space: Dictionary) -> Control:
 
 	# The level is a button rather than a label: it is the one thing here worth
 	# changing often, and a switch you can read is a switch you can flip.
+	# The folder a job is running in can't be demoted, reset or dropped under it:
+	# the agent was started with the old level and the old session, and removing
+	# the folder from the list would leave a job running somewhere the pet no
+	# longer admits to being allowed.
+	var job := WorkService.current()
+	var in_use := not job.is_empty() and str(job["space"].get("path", "")) == path
+	const IN_USE_TIP := "正在這裡做事，等工作結束或停下來再改"
+
 	var level := Button.new()
 	var editable := str(space["level"]) == WorkspaceService.LEVEL_EDIT
 	level.text = WorkspaceService.level_label(str(space["level"]))
-	level.tooltip_text = "按一下切換：可以改 / 只能看"
+	level.tooltip_text = IN_USE_TIP if in_use else "按一下切換：可以改 / 只能看"
+	level.disabled = in_use
 	PetStyle.make_quiet_button(level, _scale)
 	level.pressed.connect(func() -> void:
 		WorkspaceService.set_level(path,
@@ -370,7 +389,8 @@ func _make_space_row(space: Dictionary) -> Control:
 	if not WorkspaceService.get_session(path).is_empty():
 		var fresh := Button.new()
 		fresh.text = "重來"
-		fresh.tooltip_text = "忘掉上次的脈絡，下次從頭開始"
+		fresh.tooltip_text = IN_USE_TIP if in_use else "忘掉上次的脈絡，下次從頭開始"
+		fresh.disabled = in_use
 		PetStyle.make_quiet_button(fresh, _scale)
 		fresh.pressed.connect(func() -> void:
 			WorkspaceService.clear_session(path)
@@ -379,7 +399,8 @@ func _make_space_row(space: Dictionary) -> Control:
 
 	var drop := Button.new()
 	drop.text = "✕"
-	drop.tooltip_text = "從清單移除（不會刪掉資料夾）"
+	drop.tooltip_text = IN_USE_TIP if in_use else "從清單移除（不會刪掉資料夾）"
+	drop.disabled = in_use
 	PetStyle.make_quiet_button(drop, _scale)
 	drop.pressed.connect(func() -> void:
 		WorkspaceService.remove(path)

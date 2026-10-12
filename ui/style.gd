@@ -395,6 +395,10 @@ static func make_quiet_button(button: Button, scale: float) -> void:
 	button.add_theme_stylebox_override("focus", blank)
 	button.add_theme_stylebox_override("hover", lit)
 	button.add_theme_stylebox_override("pressed", held)
+	# Without these a disabled quiet button falls through to the panel theme's
+	# bordered box and reads as *more* clickable than its enabled neighbours.
+	button.add_theme_stylebox_override("disabled", blank)
+	button.add_theme_color_override("font_disabled_color", Color(NIGHT_TEXT, 0.18))
 	button.add_theme_color_override("font_color", NIGHT_MUTED)
 	button.add_theme_color_override("font_hover_color", Color("fffaf3"))
 	button.add_theme_color_override("font_pressed_color", Color("fffaf3"))

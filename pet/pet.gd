@@ -158,6 +158,9 @@ func _ready() -> void:
 	_microphone.transcribed.connect(_on_chat_submitted)
 	_microphone.saved.connect(_outbox.refresh_if_open)
 	_chat.holding_action_pressed.connect(_microphone.on_holding_action_pressed)
+	_companion_status.care_requested.connect(_feed)
+	_companion_status.recentre_requested.connect(_recentre)
+	_setup_quit_confirm(ui_scale)
 	_chat.hit_region_changed.connect(_refresh_mask)
 	# The row names the voice in use, and every one of these changes it.
 	TTSService.voice_changed.connect(_menu.rebuild)
@@ -670,8 +673,11 @@ func _on_menu_action(id: int) -> void:
 		MenuId.SPEECH_INPUT:
 			_microphone.toggle_speech_input()
 		MenuId.RECENTRE:
-			_window_ctl.park_at_default_spot()
-			_brain.set_home_here()
+			_recentre()
+		MenuId.STOP_WORK:
+			# cancel() reports what the job had already changed by itself, through
+			# WorkFlow's failed line — nothing to say here.
+			WorkService.cancel()
 		MenuId.MODEL_SETTINGS:
 			_model_settings.open()
 		MenuId.VOICE_SETTINGS:
@@ -700,7 +706,52 @@ func _on_menu_action(id: int) -> void:
 		MenuId.LOAD:
 			_monitor.open(_window_ctl.get_ui_scale())
 		MenuId.QUIT:
-			get_tree().quit()
+			_request_quit()
+
+
+func _recentre() -> void:
+	_window_ctl.park_at_default_spot()
+	_brain.set_home_here()
+
+
+func _setup_quit_confirm(ui_scale: float) -> void:
+	var dialog: ConfirmationDialog = $QuitConfirm
+	dialog.exclusive = false
+	dialog.theme = PetStyle.dialog_theme(ui_scale)
+	PetStyle.fit_dialog_text(dialog, PetStyle.DIALOG_TEXT_WIDTH, ui_scale)
+	# The way out of the dialog is the quiet button; the one that ends something
+	# in progress should not be the one an Enter lands on by habit.
+	PetStyle.make_ghost_button(dialog.get_ok_button(), ui_scale)
+	dialog.confirmed.connect(func() -> void: get_tree().quit())
+
+
+## Quitting used to be immediate whatever was running. A job is killed by
+## WorkService._exit_tree() with its edits left half-made on disk, and nothing
+## said so; a recording is saved but cut short. Ask only when one of those is
+## true — an idle pet still quits in one click.
+func _request_quit() -> void:
+	var warning := quit_warning(WorkService.current(), RecorderService.is_recording(),
+		SpeechInputService.is_busy())
+	if warning.is_empty():
+		get_tree().quit()
+		return
+	var dialog: ConfirmationDialog = $QuitConfirm
+	dialog.dialog_text = warning
+	PetStyle.popup_fitted(dialog)
+
+
+## What quitting now would cut short, one line per thing, each saying what
+## actually happens to it — not one generic 「會中斷」. Empty when nothing is.
+static func quit_warning(job: Dictionary, recording: bool, listening: bool) -> String:
+	var lines := PackedStringArray()
+	if not job.is_empty():
+		lines.append("我還在 %s 做事。現在結束會直接停掉它，已經改過的檔案會留在原地，不會還原。"
+			% str(job.get("space", {}).get("name", "")))
+	if recording:
+		lines.append("錄音還沒停。結束前會先把錄到的部分存進「我做的東西」。")
+	if listening:
+		lines.append("你跟我說的話還沒變成文字，現在結束這段就沒了。")
+	return "\n\n".join(lines)
 
 
 ## Which persona the editor opens on is the pet's business — it knows the

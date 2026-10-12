@@ -5,12 +5,19 @@ class_name CompanionStatusPanel
 ## numeric for decay and thresholds, but this surface deliberately avoids bars
 ## and percentages so caring for the companion does not become dashboard work.
 
-const DESIGN_SIZE := Vector2i(380, 330)
+const DESIGN_SIZE := Vector2i(380, 370)
+
+## The two things worth doing about what this window shows. The panel only asks:
+## what the pet does and says in response is pet.gd's business, as for every
+## other window here.
+signal care_requested
+signal recentre_requested
 
 var _scale := 1.0
 var _heading: Label
 var _rows: VBoxContainer
 var _gap: Label
+var _care: Button
 
 
 func _ready() -> void:
@@ -56,6 +63,21 @@ func _build() -> void:
 	_gap.add_theme_font_size_override("font_size", roundi(12.0 * _scale))
 	root.add_child(_gap)
 
+	# Reading 有點餓 and having to go back to the right-click menu to do anything
+	# about it is a round trip the window can save.
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", roundi(8.0 * _scale))
+	root.add_child(actions)
+	_care = Button.new()
+	_care.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_care.pressed.connect(care_requested.emit)
+	actions.add_child(_care)
+	var recentre := Button.new()
+	recentre.text = "回到角落"
+	recentre.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	recentre.pressed.connect(recentre_requested.emit)
+	actions.add_child(recentre)
+
 	root.add_child(HSeparator.new())
 	var footer := HBoxContainer.new()
 	root.add_child(footer)
@@ -78,6 +100,10 @@ func refresh() -> void:
 	for child in _rows.get_children():
 		child.queue_free()
 	_heading.text = "%s現在怎麼樣" % CompanionProfile.self_name()
+	# A role without a care action has nothing to offer here, the same way the
+	# menu drops the row.
+	_care.visible = CompanionProfile.care_enabled()
+	_care.text = CompanionProfile.care_action_label()
 	if CompanionProfile.care_enabled():
 		_add_row(&"care")
 	_add_row(&"energy")

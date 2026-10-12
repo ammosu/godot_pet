@@ -216,6 +216,28 @@ only so many things to ask a pet to do — so they stay one click away, which is
 what the menu is for. A sixth panel now costs nothing; a sixth verb would be the
 signal to think again.
 
+**Two root rows carry their value** — 語言模型（gpt-5.6-luna）and 說話（VoxCPM）
+— and they are re-labelled on every open, not only on rebuild. The point is the
+fallback: VoxCPM going down swaps the pet onto the OS voice (espeak, on Linux),
+and before this the first anyone knew of it was hearing it. With the root row
+reading 說話（系統語音）it is visible before a word is said. 造型 and 行為 stay
+bare: a pack id runs to twenty characters, and 行為 is four switches with no one
+value. The cost is width, not height: the idle menu went 184 → 247px on Xvfb.
+
+**While a job runs, 幫我做事 has its stop under it**:
+停下手上的工作（pet-playground・2:13）, gone again on the first open after the
+job ends. It is not a sixth verb but that verb's state, the way 停止錄音 is
+錄一段話's, so it costs a row only while there is something to stop — measured on
+Xvfb 1080p, 456px idle and 486px busy, and 352px wide with that folder name.
+Whether the row exists is decided in `open_at_mouse()`, by comparing
+`WorkService.is_busy()` with what the menu was built with, rather than by
+rebuilding on `WorkService.state_changed` — that can land while the menu is open
+and pull the submenu out from under the pointer.
+
+Explanatory disabled rows (the reason under a greyed voice backend) use
+`MenuId.NOTE` and are never indexed. An `add_item()` with no id takes its *index*
+as its id, so a reason row at index 6 would have been SPEAK.
+
 Any change to the menu is checked against `tools/menu_dump.gd`, which writes
 every row of the tree to a file so a before and an after can be diffed — its
 header says how to get a baseline that is actually deterministic.
@@ -226,7 +248,8 @@ Two judgements worth not re-litigating:
   that show something happening *now* and burying them costs a click at exactly
   the wrong moment. The pet already says 還在弄 on its own while a job runs, so
   the menu is not how you learn it is still alive — and a group with an exception
-  in it has no honest name.
+  in it has no honest name. What that left out was *stopping* it, three levels
+  down; the busy row above answers that without un-burying the window.
 - **Submenus carry no `…`.** In this menu the ellipsis means "opens something
   further", which a submenu's arrow already says; `查看` is the door, and the
   five rows behind it keep their ellipses because they open real windows.
@@ -1113,7 +1136,9 @@ run here has to say **why**, in a finished sentence. A voice depends on things
 outside the repository (an engine, a model, a language pack) and every one of
 them is missing on some machine; 說話出聲（不能用）is a dead end, while naming the
 file that isn't there is something the user can act on. The 說話 submenu puts that
-sentence in the row's tooltip.
+sentence in the row's tooltip, and its first clause (`PetMenu.short_reason()`,
+cut at the first 。/，and before any bracket) on a disabled row under it — a
+tooltip is only found by hovering, and on a touchpad or keyboard not at all.
 
 Voice languages are reported as BCP 47 with a **hyphen** (`zh-TW`), while
 `OS.get_locale()` uses an underscore (`zh_TW`), and
@@ -1897,6 +1922,20 @@ the bubble, the voice or the history any other way. It asks for the input with
 Cancelling reports the damage. Stopping half way is not the same as nothing
 having happened, and an agent cancelled after rewriting three files that said
 only 「好，我停下來了」 would be the most misleading thing this service could say.
+
+**Quitting asks first, but only when something would be cut short.**
+`pet.gd::_request_quit()` used to be `get_tree().quit()`, and a job was killed by
+`WorkService._exit_tree()` with its edits left half-made and nothing said.
+`quit_warning()` names each thing separately and what really happens to it — the
+job stops and its edits stay; a recording is *saved* (`RecorderService` stops it
+on exit), just cut short; a voice turn in flight is lost. An idle pet still quits
+in one click.
+
+While a job runs, its workspace row in the 工作 window is frozen — level, 重來 and
+✕ all disabled. The agent was started with that level and that session, and
+dropping the folder would leave a job running somewhere the pet no longer admits
+to being allowed. `_on_state_changed` redraws the rows as well as the job, or the
+buttons would never come back.
 
 Windows reports unsupported, like `PresenceService` does and for the same kind of
 reason: the launcher is `/bin/sh`, and neither CLI is realistically installed

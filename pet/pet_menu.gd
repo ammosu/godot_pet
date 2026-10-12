@@ -51,6 +51,11 @@ enum MenuId {
 	VOICE_SETTINGS, PROMPT_DEFAULT, PROMPT_CURRENT,
 	COMPANION_STATUS,
 	SPEECH_INPUT,
+	STOP_WORK,
+	## A disabled row that only explains the one above it. Shared by all of them
+	## and never indexed: an add_item() with no id takes its index, which is some
+	## other row's id — a reason row at index 6 would be SPEAK.
+	NOTE,
 }
 
 ## The body size currently in use, for the ticked row in 大小. Set by pet.gd,
@@ -73,6 +78,9 @@ var _submenus := {}
 var _item_menus := {}
 ## The voice names the 說話 submenu was last drawn with. See open_at_mouse().
 var _listed_voices := PackedStringArray()
+## Whether the menu was last built with a job running, so the stop row appears
+## and goes on the open that first sees the change. See open_at_mouse().
+var _listed_busy := false
 
 
 ## Called from pet.gd's _ready(). The visual and the brain are only read, for
@@ -133,14 +141,14 @@ func rebuild() -> void:
 
 	add_submenu_node_item("造型", _build_looks_menu(current))
 	add_submenu_node_item("大小", _build_size_menu())
-	add_submenu_node_item("語言模型", _build_model_menu())
+	add_submenu_node_item(_model_root_label(), _build_model_menu())
 	# Next to 語言模型 because they are the same question asked twice: which model
 	# thinks, and which one speaks. A fifth setting group rather than another row
 	# in 行為, because speech stopped being one switch — there is now a backend, a
 	# voice, and the on/off, and three questions is what a submenu is for. It also
 	# takes a row *out* of 行為, where the one naming a voice never fitted among
 	# rows describing what the pet does.
-	add_submenu_node_item("說話", build_speech_menu())
+	add_submenu_node_item(_speech_root_label(), build_speech_menu())
 	add_submenu_node_item("行為", _build_behaviour_menu(current))
 
 	add_separator()
@@ -159,6 +167,14 @@ func rebuild() -> void:
 	# CLI is a feature nobody discovers exists, the same call the 依你的節奏搭話
 	# row makes where PresenceService reports unsupported.
 	set_item_disabled(get_item_count() - 1, not WorkService.is_supported())
+	# The job's own stop, straight under the verb that started it and only while
+	# there is one. Not a seventh verb: it is 幫我做事's state, the way 停止錄音 is
+	# 錄一段話's. Without it a running job could only be stopped three levels down
+	# (查看 → 工作… → 停下來) — the pet saying 還在弄 tells you it is alive, not how
+	# to make it stop.
+	_listed_busy = WorkService.is_busy()
+	if _listed_busy:
+		add_item(_stop_work_label(), MenuId.STOP_WORK)
 	# The sixth verb, which CLAUDE.md names as the point to stop and think. The
 	# thinking: 錄音 is something you ask the pet to do *for* you and the result is
 	# something it then holds — the same shape as 幫我做事, not the shape of a
@@ -277,6 +293,13 @@ func build_speech_menu() -> PopupMenu:
 		var reason := TTSService.backend_unavailable_reason(backend)
 		menu.set_item_disabled(index, not reason.is_empty())
 		menu.set_item_tooltip(index, reason)
+		# The reason's first clause as a row of its own, because a tooltip is only
+		# found by hovering — and on a touchpad or the keyboard, not at all. The
+		# whole sentence names a URL or an environment variable and stays in the
+		# tooltip; the clause is what fits a menu row.
+		if not reason.is_empty():
+			menu.add_item("　%s" % short_reason(reason), MenuId.NOTE)
+			menu.set_item_disabled(menu.item_count - 1, true)
 	# Keep repair controls in this submenu rather than a third popup. Native
 	# Windows menus may open that popup back across the first-level menu near a
 	# screen edge; crossing it then changes the hovered first-level item and makes
@@ -302,8 +325,9 @@ func build_speech_menu() -> PopupMenu:
 
 ## Naming the voice saves adding a whole picker just to see which one is in use.
 ## The unavailable case keeps the label short and puts the reason in the row's
-## tooltip: it is a sentence now — which model file is missing, which package —
-## and a menu row is not where a sentence goes.
+## tooltip: it is a sentence — which model file is missing, which package — and a
+## menu row is not where a whole sentence goes. The backend rows below carry its
+## first clause, see short_reason().
 func _voice_label() -> String:
 	if not TTSService.is_available():
 		return "說話出聲（現在沒有可用的聲音）"
@@ -445,6 +469,60 @@ func _build_games_menu() -> PopupMenu:
 	return menu
 
 
+## The first clause of a reason, without the address or detail in brackets: the
+## part that says *what* is wrong, which is what has to be readable without
+## hovering. The full sentence stays in the tooltip.
+static func short_reason(reason: String) -> String:
+	var cut := reason.length()
+	for mark in ["。", "，", "；"]:
+		var at := reason.find(mark)
+		if at > 0:
+			cut = mini(cut, at)
+	var clause := reason.substr(0, cut)
+	var bracket := clause.find("（")
+	if bracket > 0:
+		clause = clause.substr(0, bracket)
+	return clause.strip_edges()
+
+
+## The two setting groups whose current value is worth seeing without opening
+## them: which model answers, and which voice speaks — and above all whether it
+## has quietly fallen back. VoxCPM going down swaps the pet onto the OS voice,
+## which on Linux is espeak, and the first sign used to be hearing it.
+## 造型 and 行為 stay bare: a pack id can run to twenty characters, and 行為 is
+## four switches with no one value to show.
+func _model_root_label() -> String:
+	if LLMService.get_provider_name() == "openai":
+		return "語言模型（%s）" % LLMService.get_model()
+	return "語言模型（%s）" % LLMService.provider_label(LLMService.get_provider_name())
+
+
+func _speech_root_label() -> String:
+	if not TTSService.is_available():
+		return "說話（沒有可用的聲音）"
+	if not TTSService.is_enabled():
+		return "說話（不出聲）"
+	return "說話（%s）" % short_backend_label(TTSService.get_backend_name())
+
+
+## backend_label() without its parenthetical, which would nest one bracket inside
+## another on the root row.
+static func short_backend_label(backend: String) -> String:
+	var label := TTSService.backend_label(backend)
+	var bracket := label.find("（")
+	label = label.substr(0, bracket) if bracket > 0 else label
+	return label.trim_suffix(" 語音服務")
+
+
+func _stop_work_label() -> String:
+	var job := WorkService.current()
+	if job.is_empty():
+		return "停下手上的工作"
+	var seconds := int(job["seconds"])
+	return "停下手上的工作（%s・%d:%02d）" % [
+		str(job["space"].get("name", "")), seconds / 60, seconds % 60]
+
+
 ## One row carrying both halves as a backup. The live bubble now has the direct
 ## stop action, but keeping this label truthful avoids a second start while a
 ## recording is already active.
@@ -464,6 +542,20 @@ func _speech_input_label() -> String:
 	return "用聲音跟我說話…"
 
 
+## The two root rows that carry a value. Re-labelled on every open rather than
+## trusting every path that changes them to rebuild: a backend falling over mid-
+## session is exactly the change that does not announce itself to the menu.
+func _refresh_root_labels() -> void:
+	for i in item_count:
+		var sub := get_item_submenu_node(i)
+		if sub == null:
+			continue
+		if sub.name == "Model":
+			set_item_text(i, _model_root_label())
+		elif sub.name == "Speech":
+			set_item_text(i, _speech_root_label())
+
+
 ## Rows that open a submenu are skipped. add_submenu_node_item() gives them no
 ## id of their own, so they take their index — and on the root, 說話, 行為 and
 ## 遊戲 land on 3, 4 and 7, which are NUDGES, PRESENCE and ROAM. The root is
@@ -473,7 +565,7 @@ func _speech_input_label() -> String:
 func _index_items(menu: PopupMenu) -> void:
 	for i in menu.item_count:
 		var id := menu.get_item_id(i)
-		if id >= 0 and menu.get_item_submenu_node(i) == null:
+		if id >= 0 and id != MenuId.NOTE and menu.get_item_submenu_node(i) == null:
 			_item_menus[id] = menu
 
 
@@ -525,6 +617,10 @@ func open_at_mouse() -> void:
 	# list for as long as it stayed open.
 	var voices := TTSService.list_voices()
 	stale = stale or voices != _listed_voices
+	# A job starting or ending adds or removes a row. Checked here rather than by
+	# rebuilding on WorkService.state_changed, which can land while the menu is
+	# open and pull the submenu out from under the pointer.
+	stale = stale or WorkService.is_busy() != _listed_busy
 
 	if stale:
 		rebuild()
@@ -536,6 +632,8 @@ func open_at_mouse() -> void:
 	# taken as the menu opens; the live one is the bubble, which the menu covers.
 	set_row_text(MenuId.RECORD, _record_label())
 	set_row_text(MenuId.SPEECH_INPUT, _speech_input_label())
+	set_row_text(MenuId.STOP_WORK, _stop_work_label())
+	_refresh_root_labels()
 	reset_size()
 	popup(Rect2i(DisplayServer.mouse_get_position(), size))
 
