@@ -7,12 +7,14 @@ var _failures := 0
 var _checks := 0
 var _finished: Array[String] = []
 var _events: Array[Array] = []
+var _stubs: Array[Node] = []
 
 
 func _ready() -> void:
 	var tests := {
 		"ranges decode highest first": _test_ranges,
 		"plain rows become actions": _test_plain_rows,
+		"checkboxes tick in place": _test_set_checked,
 	}
 	for name: String in tests:
 		_events.clear()
@@ -44,7 +46,12 @@ func _done(name: String) -> void:
 func _menu() -> PetMenu:
 	var menu := PetMenu.new()
 	add_child(menu)
-	menu.setup(1.0, PetVisual.new(), PetBrain.new(), "__default__")
+	# Only read from, and kept out of the tree so their @onready never runs;
+	# freed alongside the menu by _release().
+	var visual := PetVisual.new()
+	var brain := PetBrain.new()
+	_stubs.append_array([visual, brain])
+	menu.setup(1.0, visual, brain, "__default__")
 	menu.action.connect(func(id: int) -> void: _events.append(["action", id]))
 	menu.pack_chosen.connect(func(id: String) -> void: _events.append(["pack", id]))
 	menu.size_chosen.connect(func(f: float) -> void: _events.append(["size", f]))
@@ -64,7 +71,7 @@ func _test_ranges() -> void:
 	menu.id_pressed.emit(PetMenu.MenuId.FALLBACK)
 	_expect(_events == [["size", 0.5], ["size", 1.5], ["game", last_game], ["pack", "__default__"]],
 		"range decoding produced %s" % [_events])
-	menu.free()
+	_release(menu)
 	_done("ranges decode highest first")
 
 
@@ -74,18 +81,28 @@ func _test_plain_rows() -> void:
 		menu.id_pressed.emit(id)
 	_expect(_events == [["action", PetMenu.MenuId.FEED], ["action", PetMenu.MenuId.RECORD],
 		["action", PetMenu.MenuId.QUIT]], "plain rows produced %s" % [_events])
-	menu.free()
+	_release(menu)
 	_done("plain rows become actions")
 
 
-## Rows live in submenus; set_checked has to find them there.
+## Rows live in submenus; set_checked has to find them there. Every 行為 row,
+## because three of them share an id with a root submenu entry.
 func _test_set_checked() -> void:
 	var menu := _menu()
 	var behaviour: PopupMenu = menu.get_node("Behaviour")
-	var index := behaviour.get_item_index(PetMenu.MenuId.ROAM)
-	var before := behaviour.is_item_checked(index)
-	menu.set_checked(PetMenu.MenuId.ROAM, not before)
-	_expect(behaviour.is_item_checked(index) == not before,
-		"set_checked did not reach the row in 行為")
-	menu.free()
+	for id in [PetMenu.MenuId.NUDGES, PetMenu.MenuId.PRESENCE, PetMenu.MenuId.MONITOR,
+			PetMenu.MenuId.ROAM, PetMenu.MenuId.CALIBRATE]:
+		var index := behaviour.get_item_index(id)
+		var before := behaviour.is_item_checked(index)
+		menu.set_checked(id, not before)
+		_expect(behaviour.is_item_checked(index) == not before,
+			"set_checked(%s) did not reach its row in 行為" % PetMenu.MenuId.find_key(id))
+	_release(menu)
 	_done("checkboxes tick in place")
+
+
+func _release(menu: PetMenu) -> void:
+	menu.free()
+	for stub in _stubs:
+		stub.free()
+	_stubs.clear()

@@ -464,10 +464,16 @@ func _speech_input_label() -> String:
 	return "用聲音跟我說話…"
 
 
+## Rows that open a submenu are skipped. add_submenu_node_item() gives them no
+## id of their own, so they take their index — and on the root, 說話, 行為 and
+## 遊戲 land on 3, 4 and 7, which are NUDGES, PRESENCE and ROAM. The root is
+## indexed last, so it used to win: toggling any of those three in 行為 left its
+## tick unchanged until the menu was next rebuilt, in a submenu that stays open
+## on purpose so you can flip several at once.
 func _index_items(menu: PopupMenu) -> void:
 	for i in menu.item_count:
 		var id := menu.get_item_id(i)
-		if id >= 0:
+		if id >= 0 and menu.get_item_submenu_node(i) == null:
 			_item_menus[id] = menu
 
 
