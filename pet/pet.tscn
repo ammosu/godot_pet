@@ -1,4 +1,4 @@
-[gd_scene load_steps=18 format=3]
+[gd_scene load_steps=19 format=3]
 
 [ext_resource type="Script" path="res://pet/pet.gd" id="1_pet"]
 [ext_resource type="Script" path="res://pet/window_controller.gd" id="2_window"]
@@ -17,6 +17,7 @@
 [ext_resource type="Script" path="res://pet/dialogs/voice_settings_dialog.gd" id="15_voice_dialog"]
 [ext_resource type="Script" path="res://pet/dialogs/prompt_settings_dialog.gd" id="16_prompt_dialog"]
 [ext_resource type="Script" path="res://pet/dialogs/entry_dialog.gd" id="17_entry_dialog"]
+[ext_resource type="Script" path="res://pet/work_flow.gd" id="18_work_flow"]
 
 [node name="Pet" type="Node2D"]
 script = ExtResource("1_pet")
@@ -184,6 +185,9 @@ cancel_button_text = "取消"
 autowrap_mode = 3
 
 [node name="Field" type="LineEdit" parent="SecretEntry/Box"]
+
+[node name="WorkFlow" type="Node" parent="."]
+script = ExtResource("18_work_flow")
 
 [node name="CodexLogin" type="ConfirmationDialog" parent="."]
 title = "先讓 Codex 登入"

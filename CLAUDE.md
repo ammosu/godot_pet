@@ -136,6 +136,9 @@ holds no behaviour itself.
 - `autoload/recorder_service.gd` — local recordings saved to the outbox;
   `autoload/speech_input_service.gd` — a separate, explicitly consented
   microphone turn sent to OpenAI transcription and then into ordinary chat.
+- `pet/work_flow.gd` — the walk from picking a workspace to a job's result:
+  the consent, offer, dirty-work and Codex login dialogs, and what the pet says
+  about the job. Speaks only through its `said` signal.
 - `autoload/workspace_service.gd` — the folders the pet may work in, and the git
   questions about them; `autoload/work_service.gd` — the coding-agent CLI run;
   `autoload/codex_cli.gd` — where that CLI is and whether it has an account.
@@ -1750,13 +1753,13 @@ screen look already proves. Three things this forces:
   stands unmodified on a fresh install — it only became *untrue* once a workspace
   existed.
 - **The tag carries the folder**, as `[work:名字]`, because an unnamed tag is only
-  unambiguous when there is exactly one. `_resolve_space()` falls back to
+  unambiguous when there is exactly one. `WorkFlow._resolve_space()` falls back to
   containment matching, since a model paraphrases a name it half-remembers.
 - **Nothing launches from the tag.** Unlike a screenshot, this spends money and
-  can edit files, so `pet.gd` puts it to the user first — quoting what they said
+  can edit files, so `WorkFlow` puts it to the user first — quoting what they said
   and naming the folder and its level, because that dialog is the only place they
   can see what the model concluded before it acts. Accepting goes through
-  `_begin_work`, so consent, the busy check, the login prompt and the
+  `WorkFlow.begin()`, so consent, the busy check, the login prompt and the
   uncommitted-work warning all still apply: a second way in, not a way around.
 
 Measured after the change, `gpt-5.4-mini`, 6/6: all three workspace questions
@@ -1770,7 +1773,7 @@ the model to answer such a request with nothing but the tag, and a small model
 follows them over an appended footnote. That is exactly how the
 `[look]` refusal path once ended up saying nothing at all.
 
-`_abandon_pending_work()` is the single exit for every refusal. Besides speaking,
+`WorkFlow._abandon_pending_work()` is the single exit for every refusal. Besides speaking,
 it clears `_pending_space` — or a later menu-driven job inherits it — and
 `_queued_request`, or the next folder the user picks silently runs the sentence
 they just abandoned.
@@ -1816,7 +1819,7 @@ Only claude resumes. `codex exec` has no equivalent on this path, which
 
 Editing in place is the default because it was chosen deliberately, having been
 shown what it means. The one thing standing between that and losing work git
-cannot recover is `_setup_dirty_warning_dialog()`: asked **per job**, not per
+cannot recover is the dirty-work warning in `WorkFlow.setup()`: asked **per job**, not per
 folder, because the answer changes every time, and only where it means something
 — an editable workspace, in a git repo, with something uncommitted in it. It is a
 question with two named outcomes (我先去存 / 就這樣開始) rather than a notice,
@@ -1828,9 +1831,14 @@ answers yes just as loudly as a modified one.
 
 #### Things the pet has to say, and when
 
-- `_on_work_submitted` speaks *before* the job starts. The result lands minutes
+All of this lives in `pet/work_flow.gd`, which says it through its `said` signal
+— pet.gd connects that straight to `_on_pet_nudged`, so the flow cannot reach
+the bubble, the voice or the history any other way. It asks for the input with
+`wants_input` rather than opening it, since the field belongs to the pet window.
+
+- `WorkFlow.submit()` speaks *before* the job starts. The result lands minutes
   later, and without a line up front the pet just walks off mid-job.
-- `_on_work_progress` carries the occasional 還在弄 line, driven off the progress
+- `WorkFlow._on_work_progress` carries the occasional 還在弄 line, driven off the progress
   signal rather than a timer of its own — steps arrive continuously, so it needs
   no new process loop. It is left `unprompted`, unlike everything else in this
   flow: a "still working" line has nothing worth talking over a reply or an open
@@ -1838,7 +1846,7 @@ answers yes just as loudly as a modified one.
 - **`_on_pet_nudged` takes `unprompted`, and it is a different question from
   `record`.** A line answering something the user just asked for has to appear
   even while the input is open — and this flow *opens the input itself*, so
-  everything in it passes `false, false`. Other direct responses still routed
+  everything in it is said with `unprompted = false`, and never recorded. Other direct responses still routed
   through the default (餵食, the API-key confirmation, the game score,
   好啦那我不看) have the same latent hole.
 

@@ -1441,6 +1441,12 @@ unprompted, speak)` 在檔案裡被叫了 47 次，是每句台詞走向 TTS 和
   （`_on_secret_submitted` / `_on_url_submitted`）留在 `pet.gd`，因為那是寵物在說話。
   六處重複的主要按鈕樣式收成 `PetStyle.make_primary_button()`，這次先用在這四個。
   在隔離的 Xvfb 上逐一打開截圖確認樣式與重構前相同。
+- **階段 2 完成。** 工作流程搬進 `pet/work_flow.gd`（`WorkFlow`，一般 `Node`），
+  `pet.gd` 2228 → 1808 行。四個對話框仍是 `Pet` 的直接子節點，由 `setup()` 交進去。
+  對外三個訊號：`said` 接 `_on_pet_nudged`、`wants_input` 接 `_chat.ask_what_to_do`、
+  `job_ended` 接工作面板的重新整理；`_chat.work_submitted` 直接接 `WorkFlow.submit`。
+  原本這塊沒有任何測試，補了 `test_work_flow`，只驗訊號與旗標，不會真的叫代理或模型。
+  在 Xvfb 上走過一次：開工 → 同意框 → 取消，泡泡裡出現「好，那我不動你的資料夾。」。
 
 ## 3. 時程估計
 
