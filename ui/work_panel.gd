@@ -151,10 +151,14 @@ func _build() -> void:
 	# there is one, so an idle panel does not claim something is carrying on.
 	_carries_on = Label.new()
 	_carries_on.text = "關掉這個視窗，工作也會繼續"
-	_carries_on.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_carries_on.add_theme_color_override("font_color", PetStyle.NIGHT_MUTED)
 	_carries_on.add_theme_font_size_override("font_size", roundi(12.0 * _scale))
 	footer.add_child(_carries_on)
+	# Separate from the label: a hidden child takes no space, and with the label
+	# as the only expander an idle footer would push 關閉 to the left edge.
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	footer.add_child(spacer)
 	var close := Button.new()
 	close.text = "關閉"
 	close.pressed.connect(_close)
