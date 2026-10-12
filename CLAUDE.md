@@ -251,6 +251,17 @@ Two Godot specifics worth knowing before editing it:
 - Missing theme items fall through to the engine default, so a theme built by
   duplicating `ui/theme.tres` keeps the CJK font and inherits the stock icons.
 
+The questions the app asks — the consent, offer, warning and login dialogs —
+open through `PetStyle.popup_fitted()` after `fit_dialog_text()` gave their label
+a width, and the two are a pair. An autowrapping `AcceptDialog` label has a
+one-pixel minimum width, so on its own the dialog's width came from whatever
+else was in it (259px for a two-button warning, 846px for a one-line notice), and
+a dialog whose text changes per open was measured before the label had laid the
+new text out — the screen-look consent came up 344px tall for 240px of content.
+Measuring again a frame later fixes the height, but only with a width set first,
+or the second measure collapses the text into a column. There are two widths,
+`DIALOG_TEXT_WIDTH` and `_WIDE`, so these read as one family.
+
 ### Coordinates and DPI
 
 **Viewport pixels are 1:1 with window pixels, and this must stay true.**

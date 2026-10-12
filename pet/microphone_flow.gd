@@ -26,8 +26,18 @@ signal saved
 var _speech_consent: ConfirmationDialog
 
 
-func setup(speech_consent: ConfirmationDialog) -> void:
+func setup(scale: float, speech_consent: ConfirmationDialog) -> void:
 	_speech_consent = speech_consent
+	# It used to have none of this — no theme, no wrap, the engine's own buttons
+	# — and opened as one 846px line on a stock grey slab, the only question in
+	# the app that did not look like one. The accept button is the loud one
+	# because it sends audio away, the same rule the screen look's follows. The
+	# cancel keeps the theme's ordinary button: the ghost treatment is reserved
+	# for the deliberately quiet choices, like the screen look's 以後都不用問我.
+	_speech_consent.exclusive = false
+	_speech_consent.theme = PetStyle.dialog_theme(scale)
+	PetStyle.fit_dialog_text(_speech_consent, PetStyle.DIALOG_TEXT_WIDTH_WIDE, scale)
+	PetStyle.make_primary_button(_speech_consent.get_ok_button(), scale)
 	_speech_consent.confirmed.connect(_start_speech_input)
 	RecorderService.tick.connect(_on_recording_tick)
 	RecorderService.saved.connect(_on_recording_saved)
@@ -96,7 +106,7 @@ func toggle_speech_input() -> void:
 		_say("neutral", "我還在錄音，先停下來才能聽你說話。")
 		return
 	if not bool(Config.get_value("speech_input", "consented", false)):
-		_speech_consent.popup_centered()
+		PetStyle.popup_fitted(_speech_consent)
 		return
 	_start_speech_input()
 

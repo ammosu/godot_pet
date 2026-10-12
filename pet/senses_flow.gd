@@ -38,7 +38,7 @@ func setup(scale: float, consent: ConfirmationDialog,
 	# undersized. A Theme on the dialog reaches the label and the buttons alike;
 	# per-node font overrides only reach the node they're on.
 	_consent.theme = PetStyle.dialog_theme(scale)
-	_consent.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PetStyle.fit_dialog_text(_consent, PetStyle.DIALOG_TEXT_WIDTH, scale)
 
 	# "好" and "不要" said nothing about what was about to happen. Name the action
 	# in the button, so the dialog is still readable to someone who skipped the
@@ -75,7 +75,7 @@ func setup(scale: float, consent: ConfirmationDialog,
 	]))
 	_presence_consent.exclusive = false
 	_presence_consent.theme = PetStyle.dialog_theme(scale)
-	_presence_consent.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PetStyle.fit_dialog_text(_presence_consent, PetStyle.DIALOG_TEXT_WIDTH, scale)
 	_presence_consent.ok_button_text = "好，開始留意"
 	_presence_consent.cancel_button_text = "不用了"
 	PetStyle.make_ghost_button(_presence_consent.get_ok_button(), scale)
@@ -112,8 +112,7 @@ func _on_screen_look_requested(question: String, record_question: bool) -> void:
 	lines.append("・看到的內容不會寫進我的長期記憶")
 	lines.append("・拍的那一瞬間，我會先把自己藏起來")
 	_consent.dialog_text = "\n".join(lines)
-	_consent.reset_size()
-	_consent.popup_centered()
+	PetStyle.popup_fitted(_consent)
 
 
 func _resolve_look(allowed: bool, remember: bool) -> void:
@@ -150,8 +149,7 @@ func toggle_presence() -> void:
 		PresenceService.set_enabled(true)
 		check_changed.emit(MenuId.PRESENCE, true)
 	else:
-		_presence_consent.reset_size()
-		_presence_consent.popup_centered()
+		PetStyle.popup_fitted(_presence_consent)
 
 
 ## No consent dialog, unlike the two above, and the difference is what is being

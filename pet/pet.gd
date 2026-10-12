@@ -150,7 +150,7 @@ func _ready() -> void:
 	_work_flow.said.connect(_on_pet_nudged)
 	_work_flow.wants_input.connect(_chat.ask_what_to_do)
 	_work_flow.job_ended.connect(_work.refresh_if_open)
-	_microphone.setup($SpeechConsent)
+	_microphone.setup(ui_scale, $SpeechConsent)
 	_microphone.said.connect(_on_pet_nudged)
 	_microphone.holding.connect(_chat.show_holding)
 	_microphone.holding_ended.connect(_chat.hide_bubble)

@@ -692,6 +692,44 @@ static func make_choice_button(button: Button, scale: float, chosen: bool) -> vo
 	button.add_theme_font_size_override("font_size", roundi(13.0 * scale))
 
 
+# --- Question dialogs --------------------------------------------------------
+
+## How wide the text of a question the app asks may run, in design units. Two
+## widths rather than one per dialog, so the questions read as one family: the
+## standard one, and a wide one for the dialogs with the most to say.
+const DIALOG_TEXT_WIDTH := 440.0
+const DIALOG_TEXT_WIDTH_WIDE := 560.0
+
+
+## Give a dialog's built-in label a width to wrap at. Without one an autowrapping
+## label's minimum width is a single pixel, so the dialog's width came from
+## whatever else was in it — 259px for a two-button warning, 846px for a one-line
+## notice — and its height from a wrap at the wrong width. See popup_fitted().
+static func fit_dialog_text(dialog: AcceptDialog, width: float, scale: float) -> void:
+	var label := dialog.get_label()
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.custom_minimum_size.x = width * scale
+
+
+## Open a dialog sized to its text, centred. The first size is measured before
+## the label has laid its new text out at the dialog's real width, so a dialog
+## whose text changes per open came up with the height of the wrap it was about to
+## stop having — 344px for 240px of content on the screen-look consent, the rest
+## blank. Measuring again once the frame has laid it out gives the right height;
+## it needs fit_dialog_text() first, or the second measure collapses the width to
+## the buttons and the text to a narrow column.
+static func popup_fitted(dialog: AcceptDialog) -> void:
+	dialog.reset_size()
+	dialog.popup_centered()
+	await dialog.get_tree().process_frame
+	await dialog.get_tree().process_frame
+	if not dialog.visible:
+		return
+	var centre := dialog.position + dialog.size / 2
+	dialog.reset_size()
+	dialog.position = centre - dialog.size / 2
+
+
 # --- Consent dialog buttons ---------------------------------------------------
 
 ## The one action that sends a picture of the screen somewhere. It should not

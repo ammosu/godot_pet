@@ -90,7 +90,7 @@ func setup(scale: float, work_consent: ConfirmationDialog,
 	]))
 	_work_consent.exclusive = false
 	_work_consent.theme = PetStyle.dialog_theme(scale)
-	_work_consent.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PetStyle.fit_dialog_text(_work_consent, PetStyle.DIALOG_TEXT_WIDTH_WIDE, scale)
 	PetStyle.make_ghost_button(_work_consent.get_ok_button(), scale)
 	_work_consent.confirmed.connect(_on_work_consent_confirmed)
 	# Declining used to do nothing at all — no line, and `_pending_space` left
@@ -108,7 +108,7 @@ func setup(scale: float, work_consent: ConfirmationDialog,
 	# something uncommitted in it.
 	_dirty_warning.exclusive = false
 	_dirty_warning.theme = PetStyle.dialog_theme(scale)
-	_dirty_warning.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PetStyle.fit_dialog_text(_dirty_warning, PetStyle.DIALOG_TEXT_WIDTH, scale)
 	PetStyle.make_ghost_button(_dirty_warning.get_ok_button(), scale)
 	_dirty_warning.confirmed.connect(_on_dirty_warning_confirmed)
 	_dirty_warning.canceled.connect(
@@ -116,7 +116,7 @@ func setup(scale: float, work_consent: ConfirmationDialog,
 
 	_work_offer.exclusive = false
 	_work_offer.theme = PetStyle.dialog_theme(scale)
-	_work_offer.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PetStyle.fit_dialog_text(_work_offer, PetStyle.DIALOG_TEXT_WIDTH, scale)
 	_work_offer.ok_button_text = "好，去做"
 	_work_offer.cancel_button_text = "不用，用講的就好"
 	PetStyle.make_ghost_button(_work_offer.get_ok_button(), scale)
@@ -143,7 +143,7 @@ func setup(scale: float, work_consent: ConfirmationDialog,
 	]))
 	_codex_login.exclusive = false
 	_codex_login.theme = PetStyle.dialog_theme(scale)
-	_codex_login.get_label().autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PetStyle.fit_dialog_text(_codex_login, PetStyle.DIALOG_TEXT_WIDTH_WIDE, scale)
 
 	# The main action gets the loud treatment, not the ghost one. Ghosting it made
 	# both routes read as equally optional and the primary one look disabled —
@@ -184,8 +184,7 @@ func begin(space: Dictionary) -> void:
 	_pending_space = space
 
 	if not WorkService.has_consented():
-		_work_consent.reset_size()
-		_work_consent.popup_centered()
+		PetStyle.popup_fitted(_work_consent)
 		return
 	if WorkService.is_busy():
 		_say("neutral", "我還在做上一件事啦，等我弄完。")
@@ -211,8 +210,7 @@ func begin(space: Dictionary) -> void:
 			]))
 			_dirty_warning.ok_button_text = "就這樣開始"
 			_dirty_warning.cancel_button_text = "我先去存"
-			_dirty_warning.reset_size()
-			_dirty_warning.popup_centered()
+			PetStyle.popup_fitted(_dirty_warning)
 			return
 
 	_pending_space = {}
@@ -236,8 +234,7 @@ func _codex_ready() -> bool:
 	# Having the CLI is checked when the menu is built; having an *account* is
 	# recoverable, so it is asked about here rather than disabling the entry.
 	if not CodexCli.is_logged_in():
-		_codex_login.reset_size()
-		_codex_login.popup_centered()
+		PetStyle.popup_fitted(_codex_login)
 		return false
 	return true
 
@@ -329,8 +326,7 @@ func _on_work_requested(space_name: String, request: String) -> void:
 		"",
 		"要的話我就開工，可能要幾分鐘；不要的話我就直接用講的回你。",
 	]))
-	_work_offer.reset_size()
-	_work_offer.popup_centered()
+	PetStyle.popup_fitted(_work_offer)
 
 
 ## Whichever folder the model named, or the only one there is. An unnamed tag is
