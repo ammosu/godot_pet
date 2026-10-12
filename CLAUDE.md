@@ -65,7 +65,10 @@ that catches this, not `--import`.
 
 The lightweight headless suite covers voice backends, companion/profile safety,
 OpenAI request settings, pet visuals, window policy, recording limits, the frame
-budget and the model, prompt and voice settings dialogs. Run the whole dynamically discovered
+budget, the model, prompt and voice settings dialogs, the conversation and
+workspace failure paths, stopping a job's whole process tree, the menu's id
+decoding, and the contract each flow node keeps with pet.gd (`WorkFlow`,
+`SensesFlow`, `SettingsFlow`, `MicrophoneFlow`). Run the whole dynamically discovered
 suite through the project check script:
 
 ```sh
@@ -212,6 +215,10 @@ every feature since the transcript has added one. The verbs don't — there are
 only so many things to ask a pet to do — so they stay one click away, which is
 what the menu is for. A sixth panel now costs nothing; a sixth verb would be the
 signal to think again.
+
+Any change to the menu is checked against `tools/menu_dump.gd`, which writes
+every row of the tree to a file so a before and an after can be diffed — its
+header says how to get a baseline that is actually deterministic.
 
 Two judgements worth not re-litigating:
 
