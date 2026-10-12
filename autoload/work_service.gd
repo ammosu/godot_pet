@@ -110,10 +110,68 @@ func _ready() -> void:
 ## Same reason CodexCli kills its own child: `OS.create_process` children outlive
 ## the app, and an abandoned agent keeps write access to the user's repository.
 ## Thanks to the `exec` in _command(), this pid is the agent itself rather than a
-## shell whose death it would survive.
+## shell whose death it would survive; kill_tree() takes the agent's own children
+## with it.
 func _exit_tree() -> void:
 	if _pid != -1:
-		OS.kill(_pid)
+		kill_tree(_pid)
+
+
+## Stop the agent **and everything it started**. `exec` makes `_pid` the agent,
+## but the agent runs tools of its own — a test suite, a compiler, a dev server —
+## and `OS.kill()` takes only the one pid. Its children are then reparented to
+## init and carry on: still writing into the repository, still holding ports, on
+## a job the user just said to stop.
+##
+## The tree is frozen with SIGSTOP before it is killed, so nothing in it can fork
+## a child the snapshot missed between being listed and being stopped; a second
+## listing then picks up anything forked while the first was being taken.
+static func kill_tree(root: int) -> void:
+	var pids := _descendants(root)
+	pids.append(root)
+	_signal("STOP", pids)
+	for pid in _descendants(root):
+		if not pids.has(pid):
+			pids.append(pid)
+	_signal("KILL", pids)
+
+
+## Every live process below `root`, from one `ps` listing — the parent links have
+## to be read before anything dies, since an orphan's parent becomes init.
+static func _descendants(root: int) -> PackedInt32Array:
+	var out := []
+	if OS.execute("ps", ["-A", "-o", "pid=", "-o", "ppid="], out, true) != 0 or out.is_empty():
+		return PackedInt32Array()
+	var children := {}
+	for line in str(out[0]).split("\n", false):
+		var fields := line.strip_edges().split(" ", false)
+		if fields.size() < 2:
+			continue
+		var parent := int(fields[1])
+		# An Array, not a PackedInt32Array: packed arrays are copied on read out
+		# of a Dictionary, so appending to one appends to a copy.
+		if not children.has(parent):
+			children[parent] = []
+		(children[parent] as Array).append(int(fields[0]))
+	var found := PackedInt32Array()
+	var queue := PackedInt32Array([root])
+	while not queue.is_empty():
+		var pid := queue[queue.size() - 1]
+		queue.remove_at(queue.size() - 1)
+		for child in children.get(pid, []):
+			if not found.has(child):
+				found.append(child)
+				queue.append(child)
+	return found
+
+
+static func _signal(name: String, pids: PackedInt32Array) -> void:
+	if pids.is_empty():
+		return
+	var args := PackedStringArray(["-" + name])
+	for pid in pids:
+		args.append(str(pid))
+	OS.execute("kill", args)
 
 
 # --- What's available ---------------------------------------------------------
@@ -279,7 +337,7 @@ func would_resume(space: Dictionary) -> bool:
 func cancel() -> void:
 	if _pid == -1:
 		return
-	OS.kill(_pid)
+	kill_tree(_pid)
 	# Drain what it managed to write before dying: the steps it had already taken
 	# are real, and the files it already changed are on disk either way.
 	_drain()
@@ -439,7 +497,7 @@ func _process(delta: float) -> void:
 	if OS.is_process_running(_pid):
 		if _elapsed < TIMEOUT:
 			return
-		OS.kill(_pid)
+		kill_tree(_pid)
 		# Drain once more: whatever it managed to do before being killed is still
 		# worth reporting, and the changes are on disk either way.
 		_drain()

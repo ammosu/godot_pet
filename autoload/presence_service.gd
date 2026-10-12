@@ -37,10 +37,6 @@ const POLL_INTERVAL := 30.0
 ## and the call does not return until the user has answered it.
 const PROC_TIMEOUT_MS := 400
 const FIRST_PROC_TIMEOUT_MS := 4000
-## Poll granularity, which is also the floor on what a sample costs: `xprop`
-## returns in about 3ms, and at 10ms the two Linux calls rounded a ~6ms sample
-## up to a ~20ms stall — a visible frame drop every POLL_INTERVAL.
-const PROC_POLL_MS := 2
 
 const LINUX_XPROP_PATHS := ["/usr/bin/xprop", "/usr/local/bin/xprop", "/bin/xprop"]
 const MACOS_OSASCRIPT := "/usr/bin/osascript"
@@ -55,6 +51,9 @@ var _linux_tool := ""
 var _timer: Timer
 ## Cleared by the first completed sample. Only that one gets the long timeout.
 var _first_sample := true
+## A sample spans frames now, so a timer tick or a re-enable can land while one
+## is still out. One at a time.
+var _sampling := false
 
 
 func _ready() -> void:
@@ -136,7 +135,14 @@ func seconds_in_current_app() -> float:
 
 
 func _poll() -> void:
-	var app := _sample()
+	if _sampling:
+		return
+	_sampling = true
+	var app: String = await _sample()
+	_sampling = false
+	# Switched off while the sample was out: its answer belongs to nobody.
+	if not _enabled:
+		return
 	# Spend the long budget once and once only. A failed first sample has
 	# already waited it out, and retrying at four seconds a tick would be the
 	# freeze the short budget exists to prevent.
@@ -155,9 +161,9 @@ func _poll() -> void:
 func _sample() -> String:
 	match OS.get_name():
 		"Linux":
-			return _sample_linux()
+			return await _sample_linux()
 		"macOS":
-			return _sample_macos()
+			return await _sample_macos()
 		_:
 			return ""
 
@@ -165,11 +171,11 @@ func _sample() -> String:
 func _sample_linux() -> String:
 	if _linux_tool.is_empty():
 		return ""
-	var root := _run(_linux_tool, PackedStringArray(["-root", "_NET_ACTIVE_WINDOW"]))
+	var root: String = await _run(_linux_tool, PackedStringArray(["-root", "_NET_ACTIVE_WINDOW"]))
 	var id := _extract_window_id(root)
 	if id.is_empty() or id == "0x0":
 		return ""
-	var wm_class := _run(_linux_tool, PackedStringArray(["-id", id, "WM_CLASS"]))
+	var wm_class: String = await _run(_linux_tool, PackedStringArray(["-id", id, "WM_CLASS"]))
 	return _parse_wm_class(wm_class)
 
 
@@ -197,14 +203,21 @@ func _parse_wm_class(output: String) -> String:
 
 
 func _sample_macos() -> String:
-	return _run(MACOS_OSASCRIPT, PackedStringArray(["-e", MACOS_SCRIPT])).strip_edges()
+	var name: String = await _run(MACOS_OSASCRIPT, PackedStringArray(["-e", MACOS_SCRIPT]))
+	return name.strip_edges()
 
 
 ## Bounded wait on a subprocess, mirroring SecretStore._run_with_stdin() minus
 ## the stdin write — the one thing this needs to read here, never send.
 ## Every call but possibly the very first macOS one returns in single-digit
 ## milliseconds; the timeout exists for that one, where a fresh Automation
-## permission prompt can otherwise sit unanswered indefinitely. Explicitly
+## permission prompt can otherwise sit unanswered indefinitely.
+##
+## **The wait yields frames rather than sleeping.** It used to spin on
+## `OS.delay_msec()`, which is fine at 6ms and is a frozen pet at the 4s the
+## first macOS sample is allowed — the whole window stops, exactly while the
+## user is looking at the permission prompt it raised. Awaiting a frame costs a
+## sample one frame of latency, which nothing here is waiting on. Explicitly
 ## closes stdio rather than letting refcounting reclaim it eventually — this
 ## runs on an indefinite repeating timer, unlike SecretStore's one-shot
 ## writes, so a leaked pipe handle here is a slow fd leak, not a non-issue.
@@ -215,10 +228,9 @@ func _run(tool: String, args: PackedStringArray) -> String:
 	var pid: int = process["pid"]
 	var stdio: FileAccess = process["stdio"]
 	var budget := FIRST_PROC_TIMEOUT_MS if _first_sample else PROC_TIMEOUT_MS
-	var waited := 0
-	while OS.is_process_running(pid) and waited < budget:
-		OS.delay_msec(PROC_POLL_MS)
-		waited += PROC_POLL_MS
+	var deadline := Time.get_ticks_msec() + budget
+	while OS.is_process_running(pid) and Time.get_ticks_msec() < deadline:
+		await get_tree().process_frame
 	if OS.is_process_running(pid):
 		OS.kill(pid)
 		stdio.close()
