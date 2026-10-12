@@ -140,6 +140,10 @@ holds no behaviour itself.
   `Menu` node: what is in it, what each row says, and decoding which row was
   picked. Settings it changes itself; anything the pet *does* goes back to
   pet.gd as a signal.
+- `pet/settings_flow.gd` — what happens after a setting you typed lands (a
+  key, the voice service's address), the voice service's health and library,
+  the pre-rendered lines, and the voice layer's own notices — which are shown
+  but never spoken, being often about speech having just broken.
 - `pet/senses_flow.gd` — the consent for each thing the pet can watch (the
   screen, the app in front, the machine) and the line it says about load.
   Speaks only through `said`, keeping the gate's defaults.
