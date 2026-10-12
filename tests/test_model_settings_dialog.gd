@@ -21,7 +21,7 @@ func _ready() -> void:
 	_expect(_menu_has_text(model_menu, "更換模型與推理程度…"),
 		"submenu does not expose the settings window")
 
-	pet.call("_open_model_settings")
+	(pet.get_node("ModelSettings") as ModelSettingsDialog).open()
 	await get_tree().process_frame
 	var dialog: ConfirmationDialog = pet.get_node("ModelSettings")
 	var model_picker: OptionButton = pet.get_node("ModelSettings/Box/Grid/Model")

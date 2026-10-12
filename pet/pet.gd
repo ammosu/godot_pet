@@ -77,31 +77,11 @@ enum MenuId {
 @onready var _work_consent: ConfirmationDialog = $WorkConsent
 @onready var _work_offer: ConfirmationDialog = $WorkOffer
 @onready var _dirty_warning: ConfirmationDialog = $DirtyWarning
-@onready var _model_settings: ConfirmationDialog = $ModelSettings
-@onready var _model_settings_current: Label = $ModelSettings/Box/Current
-@onready var _model_picker: OptionButton = $ModelSettings/Box/Grid/Model
-@onready var _reasoning_picker: OptionButton = $ModelSettings/Box/Grid/Reasoning
-@onready var _model_settings_hint: Label = $ModelSettings/Box/Hint
-@onready var _voice_settings: ConfirmationDialog = $VoiceSettings
-@onready var _voice_settings_current: Label = $VoiceSettings/Box/Current
-@onready var _voice_picker: OptionButton = $VoiceSettings/Box/Grid/Voice
-@onready var _prompt_settings: ConfirmationDialog = $PromptSettings
-@onready var _prompt_settings_current: Label = $PromptSettings/Box/Current
-@onready var _prompt_override: CheckBox = $PromptSettings/Box/Override
-@onready var _prompt_editor: TextEdit = $PromptSettings/Box/Editor
-@onready var _prompt_settings_hint: Label = $PromptSettings/Box/Hint
-## Where every key and the service address are typed. One window reused rather
-## than four, because they differ only in what they are called and whether the
-## characters are hidden — and four near-identical dialogs is four places for a
-## theme or a button style to drift.
-@onready var _secret_entry: ConfirmationDialog = $SecretEntry
-@onready var _secret_field: LineEdit = $SecretEntry/Box/Field
-## The explanation, as a label of our own rather than `dialog_text`.
-## **`AcceptDialog` gives every Control child the same content rect**, so the
-## built-in label and the field were drawn on top of each other — measured on
-## screen, the blurb struck through the middle of the text being typed. One child
-## is the only arrangement that lays out, so both live in a VBox.
-@onready var _secret_blurb: Label = $SecretEntry/Box/Blurb
+@onready var _model_settings: ModelSettingsDialog = $ModelSettings
+@onready var _voice_settings: VoiceSettingsDialog = $VoiceSettings
+@onready var _prompt_settings: PromptSettingsDialog = $PromptSettings
+## Where every key and the service address are typed.
+@onready var _entry: EntryDialog = $SecretEntry
 @onready var _codex_login: ConfirmationDialog = $CodexLogin
 @onready var _speech_consent: ConfirmationDialog = $SpeechConsent
 @onready var _memory: MemoryPanel = $Memory
@@ -127,12 +107,11 @@ var _listed_voices := PackedStringArray()
 ## How many pre-rendered lines are still outstanding, so the menu row can say so
 ## and refuse to start a second batch on top of the first.
 var _prerender_left := 0
-## What the entry window is collecting: a `Config` secret name, or `URL_ENTRY`
-## for the one thing it asks for that is not a secret. The window is one node
-## serving four settings, so the asker has to say which — otherwise the handler
-## could only ever store one, and the rest would quietly land under its name.
+## What the entry window collects besides `Config` secret names: the one thing
+## it asks for that is not a secret. The window is one node serving four
+## settings, so each ask says which — otherwise the handler could only ever store
+## one, and the rest would quietly land under its name.
 const URL_ENTRY := "voxcpm_url"
-var _pending_entry := OPENAI_KEY
 ## Whether the next discovery result is one the user is waiting on. Discovery
 ## re-runs on every menu open, so without this the pet would report the state of
 ## the voice service every time the menu is touched for anything at all.
@@ -166,11 +145,6 @@ var _pending_work := {}
 ## A request the user has already typed, so the walk through _begin_work's gates
 ## ends by starting the job rather than asking them to type it a second time.
 var _queued_request := ""
-## Empty means the shared default; every concrete value is a pet selection id.
-## The draft survives turning inheritance off and back on before applying.
-var _prompt_target_id := ""
-var _prompt_inherited_text := ""
-var _prompt_draft := ""
 
 
 func _ready() -> void:
@@ -229,10 +203,13 @@ func _ready() -> void:
 	_setup_work_consent_dialog()
 	_setup_work_offer_dialog()
 	_setup_dirty_warning_dialog()
-	_setup_model_settings_dialog()
-	_setup_voice_settings_dialog()
-	_setup_prompt_settings_dialog()
-	_setup_entry_dialog()
+	var ui_scale := _window_ctl.get_ui_scale()
+	_model_settings.setup(ui_scale)
+	_model_settings.applied.connect(_build_menu)
+	_voice_settings.setup(ui_scale)
+	_prompt_settings.setup(ui_scale)
+	_entry.setup(ui_scale)
+	_entry.submitted.connect(_on_entry_submitted)
 	_setup_codex_login_dialog()
 	CodexCli.login_finished.connect(_on_codex_login_finished)
 	CodexCli.login_hint.connect(_on_codex_login_hint)
@@ -886,19 +863,6 @@ func _build_model_menu() -> PopupMenu:
 	return menu
 
 
-## The id is what matters, so it leads; the note is a parenthetical and only some
-## models have one.
-func _model_label(model: Dictionary) -> String:
-	var note := str(model.get("note", ""))
-	if note.is_empty():
-		return str(model["id"])
-	return "%s（%s）" % [model["id"], note]
-
-
-func _reasoning_label(effort: Dictionary) -> String:
-	return "%s（%s）" % [effort["label"], effort["id"]]
-
-
 ## Which voice, whether to use it, and — once there is a local engine — whose it
 ## is. The row still names the voice rather than hiding it behind a picker, which
 ## is the one thing that would have made the Afrikaans bug visible: it said
@@ -1215,28 +1179,28 @@ func _on_menu_pressed(id: int) -> void:
 			_window_ctl.park_at_default_spot()
 			_brain.set_home_here()
 		MenuId.MODEL_SETTINGS:
-			_open_model_settings()
+			_model_settings.open()
 		MenuId.VOICE_SETTINGS:
-			_open_voice_settings()
+			_voice_settings.open()
 		MenuId.PROMPT_DEFAULT:
 			_open_prompt_settings(false)
 		MenuId.PROMPT_CURRENT:
 			_open_prompt_settings(true)
 		MenuId.SET_KEY:
-			_ask_for_entry(OPENAI_KEY, "OpenAI API key",
+			_entry.ask(OPENAI_KEY, "OpenAI API key",
 				"用來聊天跟看螢幕的。%s" % _entry_storage_note(), true)
 		MenuId.SET_ELEVEN_KEY:
-			_ask_for_entry(ElevenVoice.KEY_NAME, "ElevenLabs API key",
+			_entry.ask(ElevenVoice.KEY_NAME, "ElevenLabs API key",
 				"雲端語音要用的。%s" % _entry_storage_note(), true)
 		MenuId.SET_VOXCPM_KEY:
-			_ask_for_entry(VoxCPMVoice.KEY_NAME, "VoxCPM 服務的 API key",
+			_entry.ask(VoxCPMVoice.KEY_NAME, "VoxCPM 服務的 API key",
 				"只有在服務開了驗證時才需要。%s" % _entry_storage_note(), true)
 		MenuId.SET_VOXCPM_URL:
 			# The one entry here that is not a secret, so it is not masked and it
 			# opens showing the current value: editing an address is a different
 			# act from retyping one from memory, and retyping is how a working
 			# setting becomes a typo.
-			_ask_for_entry(URL_ENTRY, "VoxCPM 服務位置",
+			_entry.ask(URL_ENTRY, "VoxCPM 服務位置",
 				"語音服務在哪裡。存好之後我會馬上連連看，連不上會跟你說。",
 				false, TTSService.voxcpm_url())
 		MenuId.LOOK:
@@ -1267,50 +1231,10 @@ func _api_key_label() -> String:
 		% ["更換" if Config.has_secret(OPENAI_KEY) else "設定", suffix]
 
 
-## Collect one setting in its own window.
-##
-## **Not in the speech bubble, which is where all of this used to happen.** Three
-## reasons, in the order they matter: a key typed into the pet's own input is
-## being typed into the *transparent, click-through* window, behind a passthrough
-## mask that has to be kept in step with whatever the field is doing — the one
-## surface in this app with a rule about not eating desktop clicks. It is also
-## conversation-shaped, and pasting a credential is not something you say to a
-## pet. And a bubble fades on a timer, so a dialog that asks a question the user
-## has to go and find the answer to could time out mid-paste.
-##
-## A `ConfirmationDialog` like every other question here, so it is a real OS
-## window (subwindow embedding is off project-wide) and touches no mask at all.
-func _ask_for_entry(what: String, title: String, blurb: String,
-		masked: bool, current := "") -> void:
-	_pending_entry = what
-	_secret_entry.title = title
-	_secret_blurb.text = blurb
-	_secret_field.secret = masked
-	_secret_field.text = current
-	_secret_field.caret_column = current.length()
-	_secret_entry.reset_size()
-	_secret_entry.popup_centered()
-	_secret_field.grab_focus()
-
-
 func _entry_storage_note() -> String:
 	var where := Config.secret_backend_name()
 	return "會存進 %s。" % where if not where.is_empty() \
 		else "這台機器沒有安全儲存，只能存成明文設定檔。"
-
-
-func _on_entry_confirmed() -> void:
-	var value := _secret_field.text.strip_edges()
-	# Cleared straight away rather than on close: the field is one node reused by
-	# four settings, and a key left sitting in it is a key the next dialog opens
-	# showing — in plain text, if that one happens to be the address.
-	_secret_field.text = ""
-	if value.is_empty():
-		return
-	if _pending_entry == URL_ENTRY:
-		_on_url_submitted(value)
-	else:
-		_on_secret_submitted(value)
 
 
 ## A service address the user typed.
@@ -1373,14 +1297,20 @@ func _on_voice_library_refreshed(healthy: bool, reason: String, voices: int,
 		_on_pet_nudged("sad", reason, false, false)
 
 
-func _on_secret_submitted(value: String) -> void:
+func _on_entry_submitted(what: String, value: String) -> void:
+	if what == URL_ENTRY:
+		_on_url_submitted(value)
+	else:
+		_on_secret_submitted(what, value)
+
+
+func _on_secret_submitted(key: String, value: String) -> void:
 	# Almost always a stray character from a bad paste — API keys are ASCII, and
 	# the Keychain can't round-trip anything else. See SecretStore.write().
 	if not SecretStore.is_ascii(value):
 		_on_pet_nudged("sad", "這個 key 有奇怪的字元，是不是貼到多餘的東西了？")
 		return
 
-	var key := _pending_entry
 	var secured := Config.set_secret(key, value)
 	# Adopted right away rather than sending the user back to the menu — a key is
 	# the only thing standing between the mock and the real thing in both cases.
@@ -1618,365 +1548,17 @@ func _setup_work_consent_dialog() -> void:
 	_work_consent.canceled.connect(_abandon_pending_work.bind("好，那我不動你的資料夾。"))
 
 
-## A compact instrument panel for the two settings that shape every reply. The
-## right-click menu only reports the live values and opens this native window;
-## choices stay staged here until 套用 is pressed.
-func _setup_model_settings_dialog() -> void:
-	var scale := _window_ctl.get_ui_scale()
-	_model_settings.exclusive = false
-	_model_settings.theme = PetStyle.dialog_theme(scale)
-	_model_settings_current.custom_minimum_size = Vector2(380.0 * scale, 0)
-	_model_settings_current.add_theme_color_override("font_color", PetStyle.ACCENT_TEXT)
-	_model_settings_current.add_theme_font_size_override("font_size", roundi(17.0 * scale))
-	_model_settings_hint.custom_minimum_size = Vector2(380.0 * scale, 0)
-	_model_settings_hint.add_theme_color_override("font_color", PetStyle.NIGHT_MUTED)
-	_model_settings_hint.add_theme_font_size_override("font_size", roundi(13.0 * scale))
-	_model_picker.custom_minimum_size = Vector2(250.0 * scale, 0)
-	_reasoning_picker.custom_minimum_size = Vector2(250.0 * scale, 0)
-	($ModelSettings/Box as VBoxContainer).add_theme_constant_override(
-		"separation", roundi(14.0 * scale))
-	($ModelSettings/Box/Grid as GridContainer).add_theme_constant_override(
-		"h_separation", roundi(18.0 * scale))
-	($ModelSettings/Box/Grid as GridContainer).add_theme_constant_override(
-		"v_separation", roundi(12.0 * scale))
-	for label in [$ModelSettings/Box/Grid/ModelLabel,
-			$ModelSettings/Box/Grid/ReasoningLabel]:
-		(label as Label).add_theme_color_override("font_color", PetStyle.NIGHT_MUTED)
-	_model_picker.get_popup().theme = PetStyle.menu_theme(scale)
-	_reasoning_picker.get_popup().theme = PetStyle.menu_theme(scale)
-
-	var ok := _model_settings.get_ok_button()
-	var primary := PetStyle.primary_button_styles(scale)
-	for state in primary:
-		ok.add_theme_stylebox_override(state, primary[state])
-	ok.add_theme_color_override("font_color", PetStyle.INK)
-	ok.add_theme_color_override("font_hover_color", PetStyle.INK)
-	ok.add_theme_color_override("font_pressed_color", PetStyle.INK)
-	PetStyle.make_ghost_button(_model_settings.get_cancel_button(), scale)
-
-	_model_picker.item_selected.connect(_on_model_settings_model_selected)
-	_reasoning_picker.item_selected.connect(_on_model_settings_reasoning_selected)
-	_model_settings.confirmed.connect(_apply_model_settings)
-
-
-func _open_model_settings() -> void:
-	var models := LLMService.list_models()
-	var efforts := LLMService.list_reasoning_efforts()
-	if models.is_empty() or efforts.is_empty():
-		return
-
-	_model_picker.clear()
-	var current_model := LLMService.get_model()
-	var current_index := -1
-	for model in models:
-		_model_picker.add_item(_model_label(model))
-		var index := _model_picker.item_count - 1
-		_model_picker.set_item_metadata(index, str(model["id"]))
-		if str(model["id"]) == current_model:
-			current_index = index
-	# Preserve a model entered directly in config instead of silently replacing
-	# it merely because the settings window was opened.
-	if current_index < 0:
-		_model_picker.add_item("%s（自訂）" % current_model)
-		current_index = _model_picker.item_count - 1
-		_model_picker.set_item_metadata(current_index, current_model)
-	_model_picker.select(current_index)
-
-	_reasoning_picker.clear()
-	for effort in efforts:
-		_reasoning_picker.add_item(_reasoning_label(effort))
-		var index := _reasoning_picker.item_count - 1
-		_reasoning_picker.set_item_metadata(index, str(effort["id"]))
-	_sync_reasoning_picker(LLMService.get_reasoning_effort())
-	_model_settings.reset_size()
-	_model_settings.popup_centered()
-
-
-func _selected_picker_value(picker: OptionButton) -> String:
-	if picker.selected < 0:
-		return ""
-	return str(picker.get_item_metadata(picker.selected))
-
-
-## Keep all six levels visible, but make the selected model's capability
-## obvious. A newly incompatible choice is clamped only in the staged UI.
-func _sync_reasoning_picker(preferred: String) -> void:
-	var model := _selected_picker_value(_model_picker)
-	var supported := LLMService.get_supported_reasoning_efforts_for_model(model)
-	var effective := LLMService.effective_reasoning_effort_for_model(model, preferred)
-	for i in _reasoning_picker.item_count:
-		var effort_id := str(_reasoning_picker.get_item_metadata(i))
-		_reasoning_picker.set_item_disabled(i, not supported.has(effort_id))
-		if effort_id == effective:
-			_reasoning_picker.select(i)
-	_refresh_model_settings_readout()
-
-
-func _on_model_settings_model_selected(_index: int) -> void:
-	_sync_reasoning_picker(_selected_picker_value(_reasoning_picker))
-
-
-func _on_model_settings_reasoning_selected(_index: int) -> void:
-	_refresh_model_settings_readout()
-
-
-func _refresh_model_settings_readout() -> void:
-	var model := _selected_picker_value(_model_picker)
-	var effort := _selected_picker_value(_reasoning_picker)
-	var changed := model != LLMService.get_model() \
-		or effort != LLMService.get_reasoning_effort()
-	_model_settings_current.text = "%s　%s · 推理 %s" % [
-		"準備改成" if changed else "現在使用", model, effort]
-	var note := ""
-	for entry in LLMService.list_reasoning_efforts():
-		if str(entry["id"]) == effort:
-			note = str(entry.get("note", ""))
-			break
-	_model_settings_hint.text = "%s%s" % [
-		note, "。按「套用」後，下一次對話就會使用新設定。" if changed else "。"]
-
-
-func _apply_model_settings() -> void:
-	var model := _selected_picker_value(_model_picker)
-	var effort := _selected_picker_value(_reasoning_picker)
-	if model.is_empty() or effort.is_empty():
-		return
-	LLMService.select_model(model)
-	LLMService.select_reasoning_effort(effort)
-	_build_menu()
-
-
-## Voice characters follow the model dialog's staged interaction: opening and
-## browsing changes nothing, and the selected character takes effect only after
-## 套用. The picker can grow and scroll without making the speech menu taller.
-func _setup_voice_settings_dialog() -> void:
-	var scale := _window_ctl.get_ui_scale()
-	_voice_settings.exclusive = false
-	_voice_settings.theme = PetStyle.dialog_theme(scale)
-	_voice_settings_current.custom_minimum_size = Vector2(340.0 * scale, 0)
-	_voice_settings_current.add_theme_color_override("font_color", PetStyle.ACCENT_TEXT)
-	_voice_settings_current.add_theme_font_size_override("font_size", roundi(17.0 * scale))
-	_voice_picker.custom_minimum_size = Vector2(250.0 * scale, 0)
-	($VoiceSettings/Box as VBoxContainer).add_theme_constant_override(
-		"separation", roundi(14.0 * scale))
-	($VoiceSettings/Box/Grid as GridContainer).add_theme_constant_override(
-		"h_separation", roundi(18.0 * scale))
-	($VoiceSettings/Box/Grid/VoiceLabel as Label).add_theme_color_override(
-		"font_color", PetStyle.NIGHT_MUTED)
-	_voice_picker.get_popup().theme = PetStyle.menu_theme(scale)
-
-	var ok := _voice_settings.get_ok_button()
-	var primary := PetStyle.primary_button_styles(scale)
-	for state in primary:
-		ok.add_theme_stylebox_override(state, primary[state])
-	ok.add_theme_color_override("font_color", PetStyle.INK)
-	ok.add_theme_color_override("font_hover_color", PetStyle.INK)
-	ok.add_theme_color_override("font_pressed_color", PetStyle.INK)
-	PetStyle.make_ghost_button(_voice_settings.get_cancel_button(), scale)
-
-	_voice_picker.item_selected.connect(_on_voice_settings_selected)
-	_voice_settings.confirmed.connect(_apply_voice_settings)
-
-
-func _open_voice_settings() -> void:
-	var voices := TTSService.list_voices()
-	if voices.is_empty():
-		return
-	_fill_voice_picker(voices, TTSService.active_voice())
-	_voice_settings.reset_size()
-	_voice_settings.popup_centered()
-
-
-## Separate from opening the window so a large synthetic library can exercise
-## the scaling behaviour without depending on voices installed on the machine.
-func _fill_voice_picker(voices: PackedStringArray, active: String) -> void:
-	_voice_picker.clear()
-	var selected := 0
-	for i in voices.size():
-		_voice_picker.add_item(voices[i])
-		_voice_picker.set_item_metadata(i, voices[i])
-		if voices[i] == active:
-			selected = i
-	if not voices.is_empty():
-		_voice_picker.select(selected)
-	_refresh_voice_settings_readout()
-
-
-func _on_voice_settings_selected(_index: int) -> void:
-	_refresh_voice_settings_readout()
-
-
-func _refresh_voice_settings_readout() -> void:
-	var selected := _selected_picker_value(_voice_picker)
-	var changed := not selected.is_empty() and selected != TTSService.active_voice()
-	_voice_settings_current.text = "%s　%s" % [
-		"準備改成" if changed else "現在使用", selected]
-
-
-func _apply_voice_settings() -> void:
-	var voice := _selected_picker_value(_voice_picker)
-	if not voice.is_empty():
-		TTSService.select_voice(voice)
-
-
-## One editor serves both levels of the inheritance chain:
-##
-##   bundled persona.md <- editable default <- current pet override
-##
-## Keeping inheritance explicit matters more than saving a click. Copying the
-## default into every pet would make a later default edit appear to save while
-## most characters quietly kept stale copies.
-func _setup_prompt_settings_dialog() -> void:
-	var scale := _window_ctl.get_ui_scale()
-	_prompt_settings.exclusive = false
-	_prompt_settings.theme = PetStyle.dialog_theme(scale)
-	_prompt_settings_current.custom_minimum_size = Vector2(620.0 * scale, 0)
-	_prompt_settings_current.add_theme_color_override("font_color", PetStyle.ACCENT_TEXT)
-	_prompt_settings_current.add_theme_font_size_override("font_size", roundi(17.0 * scale))
-	_prompt_settings_hint.custom_minimum_size = Vector2(620.0 * scale, 0)
-	_prompt_settings_hint.add_theme_color_override("font_color", PetStyle.NIGHT_MUTED)
-	_prompt_settings_hint.add_theme_font_size_override("font_size", roundi(13.0 * scale))
-	_prompt_editor.custom_minimum_size = Vector2(620.0 * scale, 360.0 * scale)
-	_prompt_editor.scroll_fit_content_height = false
-	_prompt_editor.caret_blink = true
-	_prompt_editor.caret_blink_interval = 0.6
-	_prompt_editor.add_theme_font_size_override("font_size", roundi(14.0 * scale))
-	_prompt_editor.add_theme_constant_override("line_spacing", roundi(4.0 * scale))
-	var field_height := 38.0 * scale
-	var pad_y := 10.0 * scale
-	_prompt_editor.add_theme_stylebox_override("normal",
-		PetStyle.input_style(scale, field_height, false, 0.0, pad_y))
-	_prompt_editor.add_theme_stylebox_override("read_only",
-		PetStyle.input_style(scale, field_height, false, 0.0, pad_y))
-	_prompt_editor.add_theme_stylebox_override("focus",
-		PetStyle.input_focus_style(scale, field_height, false, 0.0, pad_y))
-	_prompt_editor.add_theme_color_override("font_color", PetStyle.INK)
-	_prompt_editor.add_theme_color_override("font_readonly_color", PetStyle.INK_SOFT)
-	_prompt_editor.add_theme_color_override("caret_color", PetStyle.input_caret_color(false))
-	_prompt_editor.add_theme_color_override("selection_color",
-		Color(PetStyle.input_caret_color(false), 0.20))
-	_prompt_editor.add_theme_color_override("background_color", Color(0, 0, 0, 0))
-	_prompt_editor.add_theme_color_override("current_line_color", Color(0, 0, 0, 0))
-	_prompt_override.add_theme_color_override("font_color", PetStyle.NIGHT_TEXT)
-	_prompt_override.add_theme_color_override("font_hover_color", PetStyle.NIGHT_TEXT)
-	($PromptSettings/Box as VBoxContainer).add_theme_constant_override(
-		"separation", roundi(12.0 * scale))
-
-	var ok := _prompt_settings.get_ok_button()
-	var primary := PetStyle.primary_button_styles(scale)
-	for state in primary:
-		ok.add_theme_stylebox_override(state, primary[state])
-	ok.add_theme_color_override("font_color", PetStyle.INK)
-	ok.add_theme_color_override("font_hover_color", PetStyle.INK)
-	ok.add_theme_color_override("font_pressed_color", PetStyle.INK)
-	PetStyle.make_ghost_button(_prompt_settings.get_cancel_button(), scale)
-
-	_prompt_override.toggled.connect(_on_prompt_override_toggled)
-	_prompt_editor.text_changed.connect(_on_prompt_text_changed)
-	_prompt_settings.confirmed.connect(_apply_prompt_settings)
-
-
+## Which persona the editor opens on is the pet's business — it knows the
+## selection and the pack's name; the dialog only edits.
 func _open_prompt_settings(for_current_pet: bool) -> void:
-	if for_current_pet:
-		_prompt_target_id = str(Config.get_value(
-			"pet", "id", DEFAULT_PET_SELECTION))
-		if _prompt_target_id.is_empty():
-			_prompt_target_id = DEFAULT_PET_SELECTION
-		var pack: PetPack = _visual.get_pack()
-		var name := pack.display_name if pack != null else "緊急造型"
-		_prompt_settings_current.text = "正在編輯：%s" % name
-		_prompt_override.text = "這個造型使用專屬個性與對話方式"
-		_prompt_inherited_text = LLMService.get_default_persona()
-		_prompt_draft = LLMService.get_persona_for_pet(_prompt_target_id)
-		_prompt_override.set_pressed_no_signal(
-			LLMService.has_pet_persona_override(_prompt_target_id))
-	else:
-		_prompt_target_id = ""
-		_prompt_settings_current.text = "正在編輯：所有沒有專屬設定的造型"
-		_prompt_override.text = "覆寫內建預設個性與對話方式"
-		_prompt_inherited_text = LLMService.get_bundled_persona()
-		_prompt_draft = LLMService.get_default_persona()
-		_prompt_override.set_pressed_no_signal(
-			LLMService.has_default_persona_override())
-
-	_prompt_editor.editable = _prompt_override.button_pressed
-	_prompt_editor.text = _prompt_draft if _prompt_editor.editable \
-		else _prompt_inherited_text
-	_refresh_prompt_settings()
-	_prompt_settings.reset_size()
-	_prompt_settings.popup_centered()
-	if _prompt_editor.editable:
-		_prompt_editor.call_deferred("grab_focus")
-
-
-func _on_prompt_override_toggled(enabled: bool) -> void:
-	if not enabled and _prompt_editor.editable:
-		_prompt_draft = _prompt_editor.text
-	_prompt_editor.editable = enabled
-	_prompt_editor.text = _prompt_draft if enabled else _prompt_inherited_text
-	_refresh_prompt_settings()
-	if enabled:
-		_prompt_editor.call_deferred("grab_focus")
-
-
-func _on_prompt_text_changed() -> void:
-	if _prompt_editor.editable:
-		_prompt_draft = _prompt_editor.text
-	_refresh_prompt_settings()
-
-
-func _refresh_prompt_settings() -> void:
-	var custom := _prompt_override.button_pressed
-	_prompt_settings.get_ok_button().disabled = custom \
-		and _prompt_editor.text.strip_edges().is_empty()
-	var source := "內建預設" if _prompt_target_id.is_empty() else "目前的預設個性"
-	_prompt_settings_hint.text = "%s。按「套用」後，下一次對話就會生效。\n這裡只調整個性、語氣與常見對話；情緒標記、看螢幕和做事等功能規則由所有造型共用。" \
-		% ["正在編輯自訂內容" if custom else "目前繼承%s；勾選後可修改" % source]
-
-
-func _apply_prompt_settings() -> void:
-	var custom := _prompt_override.button_pressed
-	if _prompt_target_id.is_empty():
-		if custom:
-			LLMService.set_default_persona(_prompt_editor.text)
-		else:
-			LLMService.reset_default_persona()
-	elif custom:
-		LLMService.set_persona_for_pet(_prompt_target_id, _prompt_editor.text)
-	else:
-		LLMService.reset_persona_for_pet(_prompt_target_id)
-
-
-## The entry window. `register_text_enter` is what makes Enter save, which is
-## what everyone will try first — a settings field that only accepts a mouse
-## click on 儲存 reads as broken to anyone who has ever used a password box.
-func _setup_entry_dialog() -> void:
-	var scale := _window_ctl.get_ui_scale()
-	_secret_entry.exclusive = false
-	_secret_entry.theme = PetStyle.dialog_theme(scale)
-	# The primary treatment, not the ghost one: saving is the whole reason this
-	# window opened, and ghosting it makes the main action look disabled — the
-	# mistake ChatLogPanel's 關閉 button and the Codex login dialog both record.
-	var ok := _secret_entry.get_ok_button()
-	var primary := PetStyle.primary_button_styles(scale)
-	for state in primary:
-		ok.add_theme_stylebox_override(state, primary[state])
-	# The fill is the persimmon accent, so the label has to be ink on all three
-	# states or it stays near-white and vanishes into it.
-	ok.add_theme_color_override("font_color", PetStyle.INK)
-	ok.add_theme_color_override("font_hover_color", PetStyle.INK)
-	ok.add_theme_color_override("font_pressed_color", PetStyle.INK)
-	PetStyle.make_ghost_button(_secret_entry.get_cancel_button(), scale)
-	_secret_blurb.custom_minimum_size = Vector2(300.0 * scale, 0)
-	_secret_blurb.add_theme_font_size_override("font_size", roundi(13.0 * scale))
-	_secret_field.custom_minimum_size = Vector2(300.0 * scale, 0)
-	($SecretEntry/Box as VBoxContainer).add_theme_constant_override(
-		"separation", roundi(10.0 * scale))
-	_secret_entry.register_text_enter(_secret_field)
-	_secret_entry.confirmed.connect(_on_entry_confirmed)
-	# Not left to sit in the field: a cancelled paste is still a credential in a
-	# node that stays alive for the life of the app.
-	_secret_entry.canceled.connect(func() -> void: _secret_field.text = "")
+	if not for_current_pet:
+		_prompt_settings.open("", "")
+		return
+	var pet_id := str(Config.get_value("pet", "id", DEFAULT_PET_SELECTION))
+	if pet_id.is_empty():
+		pet_id = DEFAULT_PET_SELECTION
+	var pack: PetPack = _visual.get_pack()
+	_prompt_settings.open(pet_id, pack.display_name if pack != null else "緊急造型")
 
 
 ## The one guard that stands between the level the user chose — edit in place —

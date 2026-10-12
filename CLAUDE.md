@@ -139,6 +139,11 @@ holds no behaviour itself.
 - `autoload/workspace_service.gd` — the folders the pet may work in, and the git
   questions about them; `autoload/work_service.gd` — the coding-agent CLI run;
   `autoload/codex_cli.gd` — where that CLI is and whether it has an account.
+- `pet/dialogs/` — the settings windows (model, voice, persona, the entry
+  field for keys and addresses). Each is the script on its own node in
+  `pet.tscn`, still a direct child of `Pet`: `_register_window_frame_rates()`
+  only walks `get_children()`, so one nested deeper would silently run at the
+  idle rate. They change settings and emit signals; none of them speaks.
 - `ui/style.gd` (`PetStyle`) — every colour and edge, and the builders for the
   themes. See below.
 - `ui/chat_panel.gd` — speech bubble and chat input;
@@ -960,7 +965,7 @@ Three things this flow had to get right, all found on screen rather than reasone
 #### Settings are typed in a window, never in the speech bubble
 
 Every key and the service address go through one `ConfirmationDialog`
-(`pet.gd::_ask_for_entry`), not through `ChatPanel`. Three reasons, in the order
+(`pet/dialogs/entry_dialog.gd`), not through `ChatPanel`. Three reasons, in the order
 they matter:
 
 - A key typed into the pet's input is being typed into the **transparent,

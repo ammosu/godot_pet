@@ -705,6 +705,17 @@ static func primary_button_styles(scale: float) -> Dictionary:
 	}
 
 
+## The persimmon fill, with the label in ink on every state — left alone it stays
+## near-white and vanishes into the accent.
+static func make_primary_button(button: Button, scale: float) -> void:
+	var primary := primary_button_styles(scale)
+	for state in primary:
+		button.add_theme_stylebox_override(state, primary[state])
+	button.add_theme_color_override("font_color", INK)
+	button.add_theme_color_override("font_hover_color", INK)
+	button.add_theme_color_override("font_pressed_color", INK)
+
+
 static func _button_style(scale: float, fill: Color, border: Color) -> StyleBoxFlat:
 	var box := StyleBoxFlat.new()
 	box.bg_color = fill

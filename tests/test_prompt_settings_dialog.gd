@@ -58,15 +58,15 @@ func _test_default_editor(pet: Node) -> void:
 
 	var draft := editor.text + "\n\n測試中的草稿，不會儲存。"
 	toggle.set_pressed_no_signal(true)
-	pet.call("_on_prompt_override_toggled", true)
+	pet.get_node("PromptSettings").call("_on_override_toggled", true)
 	editor.text = draft
-	pet.call("_on_prompt_text_changed")
+	pet.get_node("PromptSettings").call("_on_text_changed")
 	toggle.set_pressed_no_signal(false)
-	pet.call("_on_prompt_override_toggled", false)
+	pet.get_node("PromptSettings").call("_on_override_toggled", false)
 	_expect(not editor.editable and editor.text == LLMService.get_bundled_persona(),
 		"turning off the default override did not show inherited content")
 	toggle.set_pressed_no_signal(true)
-	pet.call("_on_prompt_override_toggled", true)
+	pet.get_node("PromptSettings").call("_on_override_toggled", true)
 	_expect(editor.editable and editor.text == draft,
 		"turning the override back on lost the unsaved draft")
 	dialog.hide()

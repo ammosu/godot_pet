@@ -1,4 +1,4 @@
-[gd_scene load_steps=14 format=3]
+[gd_scene load_steps=18 format=3]
 
 [ext_resource type="Script" path="res://pet/pet.gd" id="1_pet"]
 [ext_resource type="Script" path="res://pet/window_controller.gd" id="2_window"]
@@ -13,6 +13,10 @@
 [ext_resource type="Script" path="res://ui/work_panel.gd" id="11_work"]
 [ext_resource type="Script" path="res://ui/monitor_panel.gd" id="12_monitor"]
 [ext_resource type="Script" path="res://ui/companion_status_panel.gd" id="13_status"]
+[ext_resource type="Script" path="res://pet/dialogs/model_settings_dialog.gd" id="14_model_dialog"]
+[ext_resource type="Script" path="res://pet/dialogs/voice_settings_dialog.gd" id="15_voice_dialog"]
+[ext_resource type="Script" path="res://pet/dialogs/prompt_settings_dialog.gd" id="16_prompt_dialog"]
+[ext_resource type="Script" path="res://pet/dialogs/entry_dialog.gd" id="17_entry_dialog"]
 
 [node name="Pet" type="Node2D"]
 script = ExtResource("1_pet")
@@ -93,6 +97,7 @@ ok_button_text = "就這樣開始"
 cancel_button_text = "我先去存"
 
 [node name="ModelSettings" type="ConfirmationDialog" parent="."]
+script = ExtResource("14_model_dialog")
 title = "語言模型設定"
 ok_button_text = "套用"
 cancel_button_text = "取消"
@@ -123,6 +128,7 @@ size_flags_horizontal = 3
 autowrap_mode = 3
 
 [node name="VoiceSettings" type="ConfirmationDialog" parent="."]
+script = ExtResource("15_voice_dialog")
 title = "更換語音角色"
 ok_button_text = "套用"
 cancel_button_text = "取消"
@@ -144,6 +150,7 @@ text = "角色"
 size_flags_horizontal = 3
 
 [node name="PromptSettings" type="ConfirmationDialog" parent="."]
+script = ExtResource("16_prompt_dialog")
 title = "角色個性與對話"
 ok_button_text = "套用"
 cancel_button_text = "取消"
@@ -166,6 +173,7 @@ wrap_mode = 1
 autowrap_mode = 3
 
 [node name="SecretEntry" type="ConfirmationDialog" parent="."]
+script = ExtResource("17_entry_dialog")
 title = "設定金鑰"
 ok_button_text = "儲存"
 cancel_button_text = "取消"

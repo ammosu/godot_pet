@@ -27,7 +27,7 @@ func _ready() -> void:
 	_expect(summary.get_item_text(2) == "更換角色…",
 		"summary is missing the change-character action")
 
-	pet.call("_fill_voice_picker", voices, voices[36])
+	(pet.get_node("VoiceSettings") as VoiceSettingsDialog).fill(voices, voices[36])
 	var picker: OptionButton = pet.get_node("VoiceSettings/Box/Grid/Voice")
 	_expect(picker.item_count == 50, "voice picker dropped entries from a large library")
 	_expect(str(picker.get_item_metadata(picker.selected)) == "角色 37",

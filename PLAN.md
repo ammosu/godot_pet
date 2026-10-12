@@ -1404,6 +1404,44 @@ macOS 兩半都要有，否則就是 Phase 8 早就寫過的那種無聲失敗�
 狀態、停止舊語音，又不會誤走純文字問答。語音輸入則由獨立服務在使用者明確開始、停止後辨識，
 與只存本機的錄音功能分離。
 
+### 2026-10-12 —— 把 `pet.gd` 拆回組裝根（進行中）
+
+`pet.gd` 長到 2646 行、143 個函式。CLAUDE.md 說它「只接線、不放行為」，真正在做這件事的
+只有前 730 行左右（`_ready`、遮罩、拖曳、造型包、對話呈現）；其餘是十個對話框的流程、整個
+右鍵選單、錄音與語音輸入。拆的方向是把每一塊移到自己的節點，`pet.gd` 只剩接線。
+
+**一條先講好的規則：寵物說話只有一個出口。** `_on_pet_nudged(emotion, text, record,
+unprompted, speak)` 在檔案裡被叫了 47 次，是每句台詞走向 TTS 和對話紀錄的唯一閘門；
+`EventBus.pet_nudged` 只帶兩個參數，`record` / `unprompted` 這些旗標過不去。所以拆出去的
+節點一律只發本地訊號 `said(emotion, text, record, unprompted)`，由 `pet.gd` 在 `_ready()`
+接到 `_on_pet_nudged`，**不准直接碰 `_chat`、`TTSService.speak_line` 或
+`LLMService.note_pet_said`**。每個階段結束都用 grep 檢查這條。
+
+四個階段，耦合低的先拆，一個階段一個 commit：
+
+1. **設定對話框 → `pet/dialogs/`**：模型、聲音、人設、金鑰／網址輸入，各自掛 script
+   （extends `ConfirmationDialog`），對外只有 `open()` 和 `applied` 訊號。節點名稱不變、
+   仍是 `Pet` 的直接子節點 —— `_register_window_frame_rates()` 只看 `get_children()`，
+   包進容器裡的對話框會默默卡在 6 fps；也讓測試裡的 `get_node("ModelSettings/…")` 繼續可用。
+2. **工作流程 → `pet/work_flow.gd`**：三個同意／提案／警告對話框、Codex 登入、
+   `_begin_work` 到 `_on_work_*`，連同 `_pending_space` 等狀態。輸入框仍歸 `pet.gd`：
+   工作流程發 `wants_input(placeholder)`，`_chat.work_submitted` 由 `pet.gd` 轉回去。
+3. **選單 → `pet/pet_menu.gd`，整包一起搬**：建構、分派、`*_BASE` 常數、`MenuId`。
+   「`GAME_BASE` 要比 `PROVIDER_BASE` 先判斷」這條規則住在常數和分派之間，拆開就會走失。
+   驗收是拆之前和拆之後每個子選單的項目文字逐字相同 —— 選單的列數與高度都是量過的。
+4. **（看情況）同意框、錄音、語音輸入**：前三步做完若 `pet.gd` 還超過 900 行再拆。
+
+預期 `pet.gd` 回到 800–900 行。行為完全不變；這次只搬程式碼，不調介面。
+
+進度：
+
+- **階段 1 完成。** 四個設定對話框搬進 `pet/dialogs/`，`pet.gd` 2646 → 2228 行。對話框都是
+  `pet.tscn` 裡原本那個節點掛上自己的 script，名稱與路徑不變；對外只有 `setup(scale)`、
+  `open()` / `ask()` 和訊號，裡面沒有一句寵物台詞。金鑰／網址存好之後要說的話
+  （`_on_secret_submitted` / `_on_url_submitted`）留在 `pet.gd`，因為那是寵物在說話。
+  六處重複的主要按鈕樣式收成 `PetStyle.make_primary_button()`，這次先用在這四個。
+  在隔離的 Xvfb 上逐一打開截圖確認樣式與重構前相同。
+
 ## 3. 時程估計
 
 | 階段 | 時間 | 備註 |
