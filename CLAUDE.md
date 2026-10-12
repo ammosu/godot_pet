@@ -112,6 +112,17 @@ LLM can each be replaced alone. `pet/pet.gd` is the composition root: it turns
 raw input into EventBus signals and wires the pieces together, and deliberately
 holds no behaviour itself.
 
+The pieces that used to live in it are sibling nodes under `Pet` —
+`pet/dialogs/`, `PetMenu`, `WorkFlow`, `SensesFlow`, `SettingsFlow`,
+`MicrophoneFlow` — and one rule holds across all of them: **none of them speaks
+directly.** Each emits a `said` signal that pet.gd connects to `_on_pet_nudged`,
+the single gate through which every companion line reaches the bubble, the
+voice and the history. Their `said` carries the gate's `record` / `unprompted`
+flags (and `speak`, for SettingsFlow) exactly as the old call sites passed them.
+A grep for `_chat`, `speak_line` or `note_pet_said` in those files should find
+nothing. Any of them that drives a dialog is handed it by `setup()`: dialogs are
+Windows, and must stay direct children of `Pet` for the frame-rate walk.
+
 - `pet/window_controller.gd` — the only thing that touches `get_window()`.
 - `pet/pet_brain.gd` — movement/activity FSM. Emits logical state names
   (`idle`, `walk`, `sleep`, …), never animation indices.
@@ -140,6 +151,9 @@ holds no behaviour itself.
   `Menu` node: what is in it, what each row says, and decoding which row was
   picked. Settings it changes itself; anything the pet *does* goes back to
   pet.gd as a signal.
+- `pet/microphone_flow.gd` — local recording and the voice turn. The indicator
+  is the bubble held open, so it asks pet.gd for it (`holding`) instead of
+  drawing it.
 - `pet/settings_flow.gd` — what happens after a setting you typed lands (a
   key, the voice service's address), the voice service's health and library,
   the pre-rendered lines, and the voice layer's own notices — which are shown

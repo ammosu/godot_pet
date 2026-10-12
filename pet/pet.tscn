@@ -1,4 +1,4 @@
-[gd_scene load_steps=22 format=3]
+[gd_scene load_steps=23 format=3]
 
 [ext_resource type="Script" path="res://pet/pet.gd" id="1_pet"]
 [ext_resource type="Script" path="res://pet/window_controller.gd" id="2_window"]
@@ -21,6 +21,7 @@
 [ext_resource type="Script" path="res://pet/pet_menu.gd" id="19_menu"]
 [ext_resource type="Script" path="res://pet/senses_flow.gd" id="20_senses"]
 [ext_resource type="Script" path="res://pet/settings_flow.gd" id="21_settings"]
+[ext_resource type="Script" path="res://pet/microphone_flow.gd" id="22_microphone"]
 
 [node name="Pet" type="Node2D"]
 script = ExtResource("1_pet")
@@ -189,6 +190,9 @@ cancel_button_text = "取消"
 autowrap_mode = 3
 
 [node name="Field" type="LineEdit" parent="SecretEntry/Box"]
+
+[node name="MicrophoneFlow" type="Node" parent="."]
+script = ExtResource("22_microphone")
 
 [node name="SettingsFlow" type="Node" parent="."]
 script = ExtResource("21_settings")

@@ -195,8 +195,8 @@ func toggle_speech() -> void:
 ## Anything the voice layer has to tell the user: a backend that fell over, a
 ## machine too slow for it, a cloning attempt that worked or didn't.
 ##
-## A direct call rather than EventBus.pet_nudged, like every other line the pet
-## says about itself — these must be *shown*, not spoken. Half of them exist
+## Through `said` with `speak = false` rather than EventBus.pet_nudged, which
+## carries no such flag — these must be *shown*, not spoken. Half of them exist
 ## precisely because speech just stopped working, and routing them through the
 ## thing that broke is how a failure notice becomes silence.
 func _on_voice_remarked(text: String) -> void:
