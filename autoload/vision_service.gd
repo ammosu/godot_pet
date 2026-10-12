@@ -69,12 +69,12 @@ func wants_a_look(question: String) -> bool:
 ## bubble like any other.
 func look(question := DEFAULT_QUESTION, record_question := true) -> void:
 	if not is_supported():
-		EventBus.reply_failed.emit("這個系統不支援截圖")
+		_fail("這個系統不支援截圖", record_question)
 		return
 
 	var shot := await _capture()
 	if shot == null or shot.is_empty():
-		EventBus.reply_failed.emit("截不到螢幕畫面")
+		_fail("截不到螢幕畫面", record_question)
 		return
 
 	if _looks_like_wallpaper_only(shot):
@@ -85,6 +85,16 @@ func look(question := DEFAULT_QUESTION, record_question := true) -> void:
 		return
 
 	LLMService.ask_about_image(question, image_to_data_url(shot), record_question)
+
+
+## A typed question is already in history by the time a look is attempted
+## (`record_question` false), and a failed capture answers nothing — so it is
+## dropped, the way LLMService drops a turn whose request failed. Left there,
+## the next request would carry it as a question still waiting for an answer.
+func _fail(message: String, record_question: bool) -> void:
+	if not record_question:
+		MemoryStore.drop_trailing_user_turn()
+	EventBus.reply_failed.emit(message)
 
 
 ## Hide the pet for the length of one capture, so it doesn't spend the

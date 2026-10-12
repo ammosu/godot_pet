@@ -43,6 +43,9 @@ var _dirty := false
 ## Bumped every time the history is thrown away, so a fold already in flight can
 ## tell that it is about to write turns the user has since asked to forget.
 var _epoch := 0
+## Where it saves. Only a test points this anywhere else, so it can exercise
+## persistence without touching the user's real memory.
+var _path := PATH
 
 
 func _ready() -> void:
@@ -218,6 +221,10 @@ func _on_condensed(reply: String, consumed: int, epoch: int) -> void:
 	# 清空 has to rule out.
 	if epoch != _epoch:
 		return
+	# The request failed; LLMService has already said why. The turns stay, and
+	# the next completed exchange tries the fold again.
+	if reply.strip_edges().is_empty():
+		return
 	var data: Variant = JSON.parse_string(_strip_code_fence(reply))
 	if typeof(data) != TYPE_DICTIONARY:
 		push_warning("MemoryStore: could not parse the fold, keeping the turns")
@@ -270,11 +277,12 @@ func _strip_code_fence(text: String) -> String:
 func _save_if_dirty() -> void:
 	if not _dirty:
 		return
-	_dirty = false
-	var file := FileAccess.open(PATH, FileAccess.WRITE)
+	var file := FileAccess.open(_path, FileAccess.WRITE)
 	if file == null:
-		push_warning("MemoryStore: cannot write %s" % PATH)
+		# Still dirty, so the next tick — or quitting — tries again.
+		push_warning("MemoryStore: cannot write %s" % _path)
 		return
+	_dirty = false
 	# Cap what reaches disk so a long-running session can't grow the file
 	# without bound between folds, and drop ephemeral turns entirely — quitting
 	# should take whatever the pet saw on screen with it.
@@ -291,12 +299,12 @@ func _save_if_dirty() -> void:
 
 
 func _load() -> void:
-	var raw := FileAccess.get_file_as_string(PATH)
+	var raw := FileAccess.get_file_as_string(_path)
 	if raw.is_empty():
 		return
 	var data: Variant = JSON.parse_string(raw)
 	if typeof(data) != TYPE_DICTIONARY:
-		push_warning("MemoryStore: ignoring malformed %s" % PATH)
+		push_warning("MemoryStore: ignoring malformed %s" % _path)
 		return
 
 	_summary = str(data.get("summary", ""))

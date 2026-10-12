@@ -70,6 +70,9 @@ var _buffer := PackedByteArray()
 var _reply := ""
 var _http_code := 0
 var _saw_done := false
+## A `finish_reason` on the last choice is the other way a stream says it is
+## complete, for compatible servers that never send `[DONE]`.
+var _saw_finish := false
 var _quiet_for := 0.0
 ## Held only for the duration of one request, so the key isn't kept in memory.
 var _authorization := ""
@@ -134,6 +137,7 @@ func send(messages: Array, system: String) -> void:
 	_buffer = PackedByteArray()
 	_http_code = 0
 	_saw_done = false
+	_saw_finish = false
 	_quiet_for = 0.0
 	_body = _build_payload(messages, system).to_utf8_buffer()
 
@@ -226,9 +230,10 @@ func _poll_body() -> void:
 	if _http_code != 200:
 		_fail(_describe_http_error())
 		return
-	# The stream ended without [DONE] and without a word: the connection dropped
-	# rather than completed, so report it instead of showing an empty bubble.
-	if not _saw_done and _reply.is_empty():
+	# The stream ended without saying it was complete: the connection dropped.
+	# A half sentence is not a reply, and finishing with it would write the
+	# fragment into permanent history as if the pet had meant to stop there.
+	if not _saw_done and not _saw_finish:
 		_fail("回應中斷了")
 		return
 	var reply := _reply
@@ -276,6 +281,8 @@ func _handle_event(raw: String) -> void:
 		var choices: Array = data.get("choices", [])
 		if choices.is_empty():
 			continue
+		if choices[0].get("finish_reason") != null:
+			_saw_finish = true
 		var delta: Dictionary = choices[0].get("delta", {})
 		var text := str(delta.get("content", ""))
 		if not text.is_empty():

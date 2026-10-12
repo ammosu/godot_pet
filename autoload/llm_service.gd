@@ -359,6 +359,7 @@ func interrupt() -> void:
 ## signals simply aren't wired to EventBus, so there's no path by which a stray
 ## chunk could be spoken aloud or typed out. Returns false when the active
 ## backend can't do useful work, so callers can degrade instead of waiting.
+## `on_done` is called exactly once either way; an empty reply means it failed.
 func request_background(system: String, prompt: String, on_done: Callable) -> bool:
 	if _provider_name == "mock" or not PROVIDERS.has(_provider_name):
 		return false
@@ -369,8 +370,11 @@ func request_background(system: String, prompt: String, on_done: Callable) -> bo
 	worker.finished.connect(func(text: String) -> void:
 		on_done.call(text)
 		worker.queue_free())
+	# A failure still answers, with an empty reply: a caller left waiting on a
+	# callback that never comes stays "in flight" for the rest of the run.
 	worker.failed.connect(func(message: String) -> void:
 		push_warning("LLMService: background request failed — %s" % message)
+		on_done.call("")
 		worker.queue_free())
 	worker.send([{"role": "user", "content": prompt}], system)
 	return true
@@ -457,8 +461,7 @@ func ask_about_image(question: String, data_url: String, record_question := true
 		ephemeral := true) -> void:
 	if _provider == null:
 		return
-	if _provider.is_busy():
-		_provider.cancel()
+	_interrupt_reply()
 
 	# Skipped when the model asked to look mid-reply: the question is already the
 	# newest turn, and appending it again would leave the pet talking to itself.
@@ -480,6 +483,21 @@ func ask_about_image(question: String, data_url: String, record_question := true
 	_provider.send(messages, build_system_prompt())
 
 
+## A new turn replaces whatever the pet was mid-way through saying. Cancelling
+## fires no `failed`, so the history has to be squared here: what already
+## reached the bubble was said and is kept, and a question that got no words at
+## all is dropped — otherwise the next request carries two user turns in a row,
+## and the model answers the abandoned one.
+func _interrupt_reply() -> void:
+	if not _provider.is_busy():
+		return
+	_provider.cancel()
+	if _tag_resolved and not _clean_reply.strip_edges().is_empty():
+		MemoryStore.append("assistant", _clean_reply, _reply_is_ephemeral)
+	else:
+		MemoryStore.drop_trailing_user_turn()
+
+
 func _on_user_said(text: String) -> void:
 	_start_user_turn(text, true)
 
@@ -497,9 +515,7 @@ func _start_user_turn(text: String, check_look: bool) -> void:
 	var trimmed := text.strip_edges()
 	if trimmed.is_empty() or _provider == null:
 		return
-	# A new message replaces whatever the pet was mid-way through saying.
-	if _provider.is_busy():
-		_provider.cancel()
+	_interrupt_reply()
 
 	MemoryStore.append("user", trimmed)
 	_last_question = trimmed

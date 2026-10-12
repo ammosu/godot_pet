@@ -90,6 +90,10 @@ func get_space(path: String) -> Dictionary:
 ## folder added twice by two different routes is recognised as one.
 func normalise(path: String) -> String:
 	var clean := path.replace("\\", "/").strip_edges()
+	# `/home//me` names the home directory as surely as `/home/me` does, and
+	# every check below is a string comparison.
+	while clean.contains("//"):
+		clean = clean.replace("//", "/")
 	while clean.length() > 1 and clean.ends_with("/"):
 		clean = clean.substr(0, clean.length() - 1)
 	return clean
@@ -109,6 +113,24 @@ func rejection_reason(raw: String) -> String:
 	if not DirAccess.dir_exists_absolute(path):
 		return "找不到這個資料夾，或者那是一個檔案。"
 
+	var reason := _scope_reason(path)
+	if reason.is_empty():
+		# A symlink is judged by where it lands, not by its name: a harmless-looking
+		# `~/notes` pointing at `~/.ssh` would otherwise pass every rule here.
+		var resolved := _resolve(path)
+		if resolved != path:
+			reason = _scope_reason(resolved)
+	if not reason.is_empty():
+		return reason
+
+	if has(path):
+		return "這個已經在清單裡了。"
+	return ""
+
+
+## The rules about *what* a folder is, kept apart so they can be applied to both
+## the path as typed and the path it resolves to.
+func _scope_reason(path: String) -> String:
 	# The whole disk, or the whole home directory. Either one makes the allowlist
 	# meaningless in a single click, which is exactly what an allowlist is for.
 	if path == "/" or path.get_slice_count("/") <= 2:
@@ -131,10 +153,20 @@ func rejection_reason(raw: String) -> String:
 	# ambiguous between the two.
 	if path == normalise(OutboxService.folder_path()):
 		return "那是我放東西的資料夾，本來就歸我管。"
-
-	if has(path):
-		return "這個已經在清單裡了。"
 	return ""
+
+
+## The canonical path, symlinks followed. Work is POSIX-only (WorkService runs
+## through `/bin/sh`), so `realpath` is there wherever this matters; where it
+## isn't, the path is judged as typed.
+func _resolve(path: String) -> String:
+	if OS.get_name() == "Windows":
+		return path
+	var out := []
+	if OS.execute("realpath", [path], out, true) != 0 or out.is_empty():
+		return path
+	var resolved := normalise(str(out[0]))
+	return resolved if resolved.begins_with("/") else path
 
 
 ## Add a folder. Returns the reason it couldn't be, or empty on success.
